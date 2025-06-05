@@ -1,6 +1,6 @@
 module github.com/sleroq/kopoka
 
-go 1.21.6
+go 1.24
 
 require (
 	github.com/everpcpc/pixiv v0.1.2
