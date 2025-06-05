@@ -1,1 +1,3 @@
 /scripts/env.bash
+dist/
+result/
