@@ -17,7 +17,7 @@
           version = "0.1.0";
           src = ./.;
           vendorHash = "sha256-VaBULqPyqcwe0+4V+KIwqjifYrUcvHWDME2E8V2KlGs=";
-          nativeBuildInputs = [ pkgs.go_1_24 ];
+          nativeBuildInputs = [ pkgs.go_1_25 ];
           subPackages = [ "src" ];
           ldflags = [ "-s" "-w" ];
           postInstall = ''
@@ -34,7 +34,7 @@
 
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
-            go_1_24
+            go_1_25
             gopls
             gotools
             go-tools
