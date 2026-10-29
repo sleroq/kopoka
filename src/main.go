@@ -36,29 +36,6 @@ func setupTelegramBot() (*tgbotapi.BotAPI, *tgbotapi.UpdateConfig, error) {
 	return bot, &u, nil
 }
 
-func setupPixivClient() (*pixiv.AppPixivAPI, error) {
-	tokenDeadlineSec, err := strconv.Atoi(os.Getenv("PIXIV_TOKEN_DEADLINE"))
-	if err != nil {
-		return nil, fmt.Errorf("parsing PIXIV_TOKEN_DEADLINE: %w", err)
-	}
-
-	tokenDeadline := time.Now().Add(time.Duration(tokenDeadlineSec) * time.Second)
-
-	_, err = pixiv.LoadAuth(
-		os.Getenv("PIXIV_ACCESS_TOKEN"),
-		os.Getenv("PIXIV_REFRESH_TOKEN"),
-		tokenDeadline,
-	)
-
-	if err != nil {
-		return nil, fmt.Errorf("logging into Pixiv: %w", err)
-	}
-
-	app := pixiv.NewApp()
-
-	return app, nil
-}
-
 func pixivCaption(illust *pixiv.Illust) string {
 	return fmt.Sprintf(
 		"<a href=\"%s\">%s</a>\n",
@@ -80,9 +57,13 @@ func handlePixivLink(app *pixiv.AppPixivAPI, link *url.URL) ([]interface{}, erro
 		return nil, fmt.Errorf("fetching Pixiv illust: %w", err)
 	}
 
+	client := &http.Client{Timeout: 30 * time.Second}
 	var photos []interface{}
 	for i, page := range illust.MetaPages {
-		file := tgbotapi.FileURL(page.Images.Original)
+		file, err := downloadPixivPhoto(client, page.Images.Original, page.Images.Large)
+		if err != nil {
+			return nil, err
+		}
 		photo := tgbotapi.NewInputMediaPhoto(file)
 
 		if i%10 == 0 {
@@ -94,7 +75,10 @@ func handlePixivLink(app *pixiv.AppPixivAPI, link *url.URL) ([]interface{}, erro
 	}
 
 	if len(photos) == 0 {
-		file := tgbotapi.FileURL(illust.MetaSinglePage.OriginalImageURL)
+		file, err := downloadPixivPhoto(client, illust.MetaSinglePage.OriginalImageURL, illust.Images.Large)
+		if err != nil {
+			return nil, err
+		}
 		photo := tgbotapi.NewInputMediaPhoto(file)
 		photo.Caption = pixivCaption(illust)
 		photo.ParseMode = "HTML"
