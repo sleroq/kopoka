@@ -105,7 +105,7 @@ func handlePixivLink(app *pixiv.AppPixivAPI, link *url.URL) ([]interface{}, erro
 }
 
 func matchXImageLinks(body string, origPath string) ([]string, error) {
-	re, err := regexp.Compile(`(?m)https://mosaic\.fxtwitter\.com/jpeg/\d+(/\w+)+`)
+	re, err := regexp.Compile(`(?m)https://mosaic\.fxtwitter\.com/jpeg/\d+(/[\w-]+)+`)
 	if err != nil {
 		return nil, fmt.Errorf("compiling regex: %w", err)
 	}
@@ -163,7 +163,7 @@ func handleXLink(link *url.URL) ([]interface{}, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fetching X link: %w", err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	link.Host = "fxtwitter.com"
 
 	body, err := io.ReadAll(res.Body)
