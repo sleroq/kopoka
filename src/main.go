@@ -244,19 +244,10 @@ func main() {
 					continue
 				}
 
-				for i := 0; i < len(photos); i += 10 {
-					photoGroup := photos[i:min(i+10, len(photos))]
-
-					group := tgbotapi.NewMediaGroup(
-						update.Message.Chat.ID,
-						photoGroup,
-					)
-					group.ReplyToMessageID = update.Message.MessageID
-
-					_, err := bot.SendMediaGroup(group)
-					if err != nil {
-						log.Println(err)
-					}
+				photos = mergeArtPhotos(photos)
+				err = sendPhotos(bot, update.Message.Chat.ID, update.Message.MessageID, photos)
+				if err != nil {
+					log.Println(err)
 				}
 			}
 		}
