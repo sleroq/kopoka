@@ -90,9 +90,8 @@ func artGridMatches(images []image.Image, columns int) (image.Point, bool) {
 			return image.Point{}, false
 		}
 	}
-	// Telegram photos must have width+height <= 10000 and aspect ratio <= 20.
-	validSize := size.X+size.Y <= 10000 && max(size.X, size.Y) <= 20*min(size.X, size.Y)
-	return size, validSize
+	// Resizing can fit Telegram's dimensions, but cannot fix an aspect ratio over 20.
+	return size, max(size.X, size.Y) <= 20*min(size.X, size.Y)
 }
 
 func artSeamIsDistinct(a, b image.Image, horizontal bool) bool {
