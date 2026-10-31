@@ -6,20 +6,28 @@
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
       in
       {
-        packages.default = pkgs.buildGoModule rec {
+        packages.default = pkgs.buildGoModule {
           pname = "kopoka";
           version = "0.1.0";
           src = ./.;
           vendorHash = "sha256-VaBULqPyqcwe0+4V+KIwqjifYrUcvHWDME2E8V2KlGs=";
-          nativeBuildInputs = [ pkgs.go_1_25 ];
           subPackages = [ "src" ];
-          ldflags = [ "-s" "-w" ];
+          ldflags = [
+            "-s"
+            "-w"
+          ];
           postInstall = ''
             mv $out/bin/src $out/bin/kopoka
           '';
@@ -34,7 +42,7 @@
 
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
-            go_1_25
+            go
             gopls
             gotools
             go-tools
@@ -44,8 +52,8 @@
             echo "Go version: $(go version)"
             echo ""
             echo "Available commands:"
-            echo "  go build -o dist/kopoka src/*.go  # Build the bot"
-            echo "  go run src/*.go                  # Run the bot directly"
+            echo "  go build -o dist/kopoka ./src     # Build the bot"
+            echo "  go run ./src                      # Run the bot directly"
             echo "  go mod tidy                      # Update dependencies"
             echo ""
             echo "Make sure to set the required environment variables:"
@@ -57,5 +65,6 @@
           type = "app";
           program = "${self.packages.${system}.default}/bin/kopoka";
         };
-      });
-} 
+      }
+    );
+}

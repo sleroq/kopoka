@@ -8,4 +8,4 @@ cd "$(dirname "$SCRIPTPATH")"
 
 source ./scripts/env.bash
 
-go run src/*.go
+go run ./src
