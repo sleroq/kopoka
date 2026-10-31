@@ -11,6 +11,7 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"golang.org/x/image/draw"
 )
 
 func downloadArtPhoto(client *http.Client, file tgbotapi.RequestFileData) (image.Image, error) {
@@ -47,8 +48,18 @@ func mergeArtPhotos(photos []interface{}) []interface{} {
 			merged = append(merged, photos[panel.first])
 			continue
 		}
+		img := panel.image
+		size := img.Bounds().Size()
+		if total := size.X + size.Y; total > 10000 {
+			// Telegram requires width+height <= 10000. Resize the complete artwork,
+			// not individual panels, so the seams stay aligned.
+			bounds := image.Rect(0, 0, size.X*10000/total, size.Y*10000/total)
+			resized := image.NewRGBA(bounds)
+			draw.CatmullRom.Scale(resized, bounds, img, img.Bounds(), draw.Src, nil)
+			img = resized
+		}
 		var data bytes.Buffer
-		err := jpeg.Encode(&data, panel.image, &jpeg.Options{Quality: 95})
+		err := jpeg.Encode(&data, img, &jpeg.Options{Quality: 95})
 		if err != nil {
 			log.Printf("Warning: unable to encode merged art photos: %v", err)
 			return photos

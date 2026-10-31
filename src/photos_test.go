@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"image"
+	"image/draw"
 	"image/png"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"strconv"
 	"strings"
@@ -115,6 +117,58 @@ func TestMergeArtPhotosRetainsOriginalURLs(t *testing.T) {
 	got := mergeArtPhotos(photos)
 	if !reflect.DeepEqual(got, photos) {
 		t.Fatal("unmatched pictures were reencoded or reordered")
+	}
+}
+
+func TestMergeArtPhotosLargeTriptych(t *testing.T) {
+	// Source: https://x.com/emyo27/status/2116464003270779205.
+	// Only the outer three columns of each original JPEG are retained.
+	file, err := os.Open("testdata/emyo27-triptych-edges.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = file.Close() }()
+	edges, err := png.Decode(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var photos []interface{}
+	for i := range 3 {
+		panel := image.NewRGBA(image.Rect(0, 0, 2247, 4096))
+		draw.Draw(panel, image.Rect(0, 0, 3, 4096), edges, image.Pt(i*6, 0), draw.Src)
+		draw.Draw(panel, image.Rect(2244, 0, 2247, 4096), edges, image.Pt(i*6+3, 0), draw.Src)
+		var data bytes.Buffer
+		if err := png.Encode(&data, panel); err != nil {
+			t.Fatal(err)
+		}
+		photo := tgbotapi.NewInputMediaPhoto(tgbotapi.FileBytes{Name: "panel.png", Bytes: data.Bytes()})
+		if i == 0 {
+			photo.Caption = "EMyo/えみょ"
+			photo.ParseMode = "HTML"
+		}
+		photos = append(photos, photo)
+	}
+
+	got := mergeArtPhotos(photos)
+	if len(got) != 1 {
+		t.Fatalf("got %d photos, want all three panels merged into one", len(got))
+	}
+	photo := got[0].(tgbotapi.InputMediaPhoto)
+	if photo.Caption != "EMyo/えみょ" || photo.ParseMode != "HTML" {
+		t.Fatal("lost artwork caption")
+	}
+	upload := photo.Media.(tgbotapi.FileBytes)
+	config, format, err := image.DecodeConfig(bytes.NewReader(upload.Bytes))
+	if err != nil || format != "jpeg" {
+		t.Fatalf("invalid JPEG upload: %s %v", format, err)
+	}
+	// 6741x4096 exceeds Telegram's width+height limit; fit the whole image.
+	if config.Width != 6220 || config.Height != 3779 {
+		t.Fatalf("upload is %dx%d, want 6220x3779", config.Width, config.Height)
+	}
+	if len(upload.Bytes) > 10*1024*1024 {
+		t.Fatal("merged photo exceeds Telegram's upload limit")
 	}
 }
 

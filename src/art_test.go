@@ -272,8 +272,8 @@ func TestJoinArtGridRejectsSharedPatternedBorders(t *testing.T) {
 	}
 }
 
-func TestJoinArtGridRespectsTelegramDimensions(t *testing.T) {
-	// Even a strong seam must not produce an undeliverable photo.
+func TestJoinArtGridRejectsExtremeAspectRatio(t *testing.T) {
+	// Uniform resizing cannot make an extreme aspect ratio deliverable.
 	scene := artScene(image.Rect(0, 0, 400, 320), 0)
 	a := image.NewRGBA(image.Rect(0, 0, 4900, 320))
 	b := image.NewRGBA(image.Rect(0, 0, 4900, 320))
@@ -284,6 +284,6 @@ func TestJoinArtGridRespectsTelegramDimensions(t *testing.T) {
 	}
 	got := joinArtGrid([]image.Image{a, b})
 	if got != nil {
-		t.Fatal("joined photo exceeds Telegram dimensions and aspect ratio")
+		t.Fatal("joined photo exceeds Telegram's aspect ratio limit")
 	}
 }
