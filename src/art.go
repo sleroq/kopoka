@@ -5,6 +5,7 @@ import (
 	"image/color"
 	"image/draw"
 	"math"
+	"slices"
 )
 
 type artPanel struct {
@@ -111,16 +112,21 @@ func artSeamMatches(a, b image.Image, horizontal bool) bool {
 	if len(left) < 16 || len(left) != len(right) {
 		return false
 	}
-	aligned := edgeDifference(left, right, 0)
-	if aligned > 10 {
-		return false
+	for _, trimmed := range []bool{false, true} {
+		aligned := edgeDifference(left, right, 0, trimmed)
+		if aligned > 10 {
+			continue
+		}
+		displaced := math.Inf(1)
+		for _, divisor := range []int{16, 8, 4} {
+			shift := len(left) / divisor
+			displaced = min(displaced, edgeDifference(left, right, shift, trimmed), edgeDifference(left, right, len(left)-shift, trimmed))
+		}
+		if displaced-aligned >= 8 && aligned <= 0.4*displaced {
+			return true
+		}
 	}
-	displaced := math.Inf(1)
-	for _, divisor := range []int{16, 8, 4} {
-		shift := len(left) / divisor
-		displaced = min(displaced, edgeDifference(left, right, shift), edgeDifference(left, right, len(left)-shift))
-	}
-	return displaced-aligned >= 8 && aligned <= 0.4*displaced
+	return false
 }
 
 // Average four pixels along the touching edge to tolerate JPEG noise. Do not
@@ -157,12 +163,22 @@ func artEdgeProfile(img image.Image, horizontal, trailing bool) []edgeColor {
 	return profile
 }
 
-func edgeDifference(a, b []edgeColor, shift int) float64 {
-	var difference float64
+func edgeDifference(a, b []edgeColor, shift int, trimmed bool) float64 {
+	differences := make([]float64, len(a))
 	for i := range a {
 		for c := range a[i] {
-			difference += math.Abs(a[i][c] - b[(i+shift)%len(b)][c])
+			differences[i] += math.Abs(a[i][c]-b[(i+shift)%len(b)][c]) / 3
 		}
 	}
-	return difference / float64(3*len(a))
+	if trimmed {
+		// Sharp contours can change abruptly across a genuine cut. The best
+		// half must still beat displaced edges under the same trimmed score.
+		slices.Sort(differences)
+		differences = differences[:len(differences)/2]
+	}
+	var difference float64
+	for _, value := range differences {
+		difference += value
+	}
+	return difference / float64(len(differences))
 }

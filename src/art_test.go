@@ -85,6 +85,8 @@ func TestJoinArtPanelsRejectsUnrelated(t *testing.T) {
 	draw.Draw(white, bounds, image.White, image.Point{}, draw.Src)
 	bordered := artScene(bounds, 0)
 	draw.Draw(bordered, image.Rect(0, 0, 3, 320), image.White, image.Point{}, draw.Src)
+	sharedPatch := artScene(bounds, 2)
+	draw.Draw(sharedPatch, image.Rect(0, 0, 1, 80), first, image.Pt(199, 0), draw.Src)
 	tests := []struct {
 		name   string
 		images []image.Image
@@ -92,6 +94,7 @@ func TestJoinArtPanelsRejectsUnrelated(t *testing.T) {
 		{"same dimensions and palette", []image.Image{first, second}},
 		{"blank matching borders", []image.Image{white, bordered}},
 		{"blank panels", []image.Image{white, white}},
+		{"small shared edge patch", []image.Image{first, sharedPatch}},
 		{"single picture", []image.Image{first}},
 		{"empty post", nil},
 	}
@@ -169,13 +172,14 @@ func TestJoinArtPanelsReportedPosts(t *testing.T) {
 		widths        []int
 		height        int
 	}{
-		{"2106005292253364454", "triptych-edges.png", []int{832, 607, 609}, 1024},
-		{"2113237963190792414", "four-panel-edges.png", []int{262, 511, 708, 439}, 1080},
+		{"onlymikufans/status/2106005292253364454", "triptych-edges.png", []int{832, 607, 609}, 1024},
+		{"onlymikufans/status/2113237963190792414", "four-panel-edges.png", []int{262, 511, 708, 439}, 1080},
+		{"310ri_310/status/2116470643172757896", "310ri-triptych-edges.png", []int{946, 946, 946}, 2048},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.post, func(t *testing.T) {
-			// Source: https://x.com/onlymikufans/status/ + tt.post.
+			// Source: https://x.com/ + tt.post.
 			file, err := os.Open("testdata/" + tt.fixture)
 			if err != nil {
 				t.Fatal(err)
@@ -198,6 +202,16 @@ func TestJoinArtPanelsReportedPosts(t *testing.T) {
 			got := joinArtPanels(images)
 			if len(got) != 1 || got[0].image.Bounds() != image.Rect(0, 0, width, tt.height) {
 				t.Fatalf("reported panels were not joined into %dx%d: %+v", width, tt.height, got)
+			}
+			for i, a := range images {
+				for j, b := range images {
+					if j <= i+1 {
+						continue
+					}
+					if artSeamIsDistinct(a, b, true) {
+						t.Errorf("unrelated edges of panels %d and %d matched", i+1, j+1)
+					}
+				}
 			}
 		})
 	}
