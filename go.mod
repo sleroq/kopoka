@@ -1,11 +1,11 @@
 module github.com/sleroq/kopoka
 
-go 1.24
+go 1.26.0
 
 require (
 	github.com/everpcpc/pixiv v0.1.2
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
-	golang.org/x/image v0.30.0
+	golang.org/x/image v0.47.0
 )
 
 require (
