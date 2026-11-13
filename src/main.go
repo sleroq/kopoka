@@ -1,13 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
-	"io"
+	"html"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -88,98 +88,60 @@ func handlePixivLink(app *pixiv.AppPixivAPI, link *url.URL) ([]interface{}, erro
 	return photos, nil
 }
 
-func matchXImageLinks(body string, origPath string) ([]string, error) {
-	re, err := regexp.Compile(`(?m)https://mosaic\.fxtwitter\.com/jpeg/\d+(/[\w-]+)+`)
-	if err != nil {
-		return nil, fmt.Errorf("compiling regex: %w", err)
-	}
-
-	mosaicURL, err := url.Parse(re.FindString(body))
-	if err != nil {
-		return nil, fmt.Errorf("parsing mosaic URL: %w", err)
-	}
-
-	path := strings.Split(mosaicURL.Path, "/")
-	IDsCount := len(path) - 3
-
-	var links []string
-	for i := 1; i <= IDsCount; i++ {
-		imageUrl := fmt.Sprintf("https://d.fixupx.com%s/photo/%d", origPath, i)
-		links = append(links, imageUrl)
-	}
-
-	if len(links) == 0 {
-		re2, err := regexp.Compile(`(?m)<meta property="twitter:image" content="(.+?)"/>`)
-		if err != nil {
-			return nil, fmt.Errorf("compiling regex: %w", err)
-		}
-
-		matches := re2.FindStringSubmatch(body)
-		if len(matches) == 2 {
-			links = append(links, matches[1])
-		}
-	}
-
-	return links, nil
-}
-
-func matchXAuthor(body string) (string, error) {
-	re, err := regexp.Compile(`(?m)type="application/json\+oembed" title="(.*)"`)
-	if err != nil {
-		return "", fmt.Errorf("compiling regex: %w", err)
-	}
-
-	matches := re.FindStringSubmatch(body)
-
-	if len(matches) < 2 {
-		return "", fmt.Errorf("no matches found")
-	}
-
-	return matches[1], nil
-}
-
 func handleXLink(link *url.URL) ([]interface{}, error) {
-	client := &http.Client{}
-	client.Timeout = 10 * time.Second
-
-	link.Host = "i.fixupx.com"
-	res, err := client.Get(link.String())
+	client := &http.Client{Timeout: 10 * time.Second}
+	apiLink := *link
+	apiLink.Host = "api.fxtwitter.com"
+	res, err := client.Get(apiLink.String())
 	if err != nil {
 		return nil, fmt.Errorf("fetching X link: %w", err)
 	}
 	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetching X link: HTTP %s", res.Status)
+	}
+
+	var response struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+		Tweet   *struct {
+			Author struct {
+				Name string `json:"name"`
+			} `json:"author"`
+			Media struct {
+				Photos []struct {
+					URL string `json:"url"`
+				} `json:"photos"`
+			} `json:"media"`
+		} `json:"tweet"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&response); err != nil {
+		return nil, fmt.Errorf("decoding X link response: %w", err)
+	}
+	if response.Code != http.StatusOK || response.Tweet == nil {
+		return nil, fmt.Errorf("FxTwitter API error %d: %s", response.Code, response.Message)
+	}
+	if response.Tweet.Author.Name == "" {
+		return nil, fmt.Errorf("FxTwitter response missing author name")
+	}
+
 	link.Host = "fxtwitter.com"
-
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		return nil, fmt.Errorf("reading X link response: %w", err)
-	}
-
-	author, err := matchXAuthor(string(body))
-	if err != nil {
-		return nil, fmt.Errorf("matching author name: %w", err)
-	}
-
-	links, err := matchXImageLinks(string(body), link.Path)
-	if err != nil {
-		return nil, fmt.Errorf("matching images: %w", err)
-	}
-
 	var photos []interface{}
-	for i, imageLink := range links {
-		file := tgbotapi.FileURL(imageLink)
-		photo := tgbotapi.NewInputMediaPhoto(file)
+	for i, image := range response.Tweet.Media.Photos {
+		if image.URL == "" {
+			return nil, fmt.Errorf("FxTwitter response missing photo URL at index %d", i)
+		}
+		photo := tgbotapi.NewInputMediaPhoto(tgbotapi.FileURL(image.URL))
 		if i%10 == 0 {
 			photo.Caption = fmt.Sprintf(
 				"<a href=\"%s\">%s</a>\n",
-				link.String(),
-				author,
+				html.EscapeString(link.String()),
+				html.EscapeString(response.Tweet.Author.Name),
 			)
 			photo.ParseMode = "HTML"
 		}
 		photos = append(photos, photo)
 	}
-
 	return photos, nil
 }
 

@@ -1,120 +1,111 @@
 package main
 
 import (
+	"bytes"
+	"fmt"
+	"image"
 	"io"
 	"net/http"
 	"net/url"
-	"slices"
-	"strconv"
 	"strings"
 	"testing"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-const xMultipleImagesHTML = `<meta property="twitter:image" content="https://mosaic.fxtwitter.com/jpeg/2103104016725016856/HS-58ZWaoAAA7vb/HS-58p2bAAA_lS1/HS-589IaUAAkbgB/HS-59PUasAAKIpk"/>
-<link rel="alternate" href="https://fixupx.com/owoembed?status=2103104016725016856" type="application/json+oembed" title="ぽん">`
+type xPostTransport func(*http.Request) (*http.Response, error)
 
-func TestMatchXImageLinks(t *testing.T) {
-	const postPath = "/valhalla0707/status/2103104016725016856"
-	const photoURL = "https://d.fixupx.com" + postPath + "/photo/"
+func (f xPostTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-	tests := []struct {
-		name string
-		body string
-		want []string
-	}{
-		{
-			name: "four images from reported post",
-			body: xMultipleImagesHTML,
-			want: []string{photoURL + "1", photoURL + "2", photoURL + "3", photoURL + "4"},
-		},
-		{
-			name: "two images with hyphens and underscores",
-			body: `<meta property="twitter:image" content="https://mosaic.fxtwitter.com/jpeg/123/first_image/second-image"/>`,
-			want: []string{photoURL + "1", photoURL + "2"},
-		},
-		{
-			name: "three images with a hyphen in the middle ID",
-			body: `<meta property="twitter:image" content="https://mosaic.fxtwitter.com/jpeg/123/first/second-image/third"/>`,
-			want: []string{photoURL + "1", photoURL + "2", photoURL + "3"},
-		},
-		{
-			name: "existing mosaic IDs",
-			body: `<meta property="twitter:image" content="https://mosaic.fxtwitter.com/jpeg/123/first_image/second_image"/>`,
-			want: []string{photoURL + "1", photoURL + "2"},
-		},
-		{
-			name: "single image",
-			body: `<meta property="twitter:image" content="https://pbs.twimg.com/media/single-image.jpg"/>`,
-			want: []string{"https://pbs.twimg.com/media/single-image.jpg"},
-		},
-		{
-			name: "no images",
-			body: `<html></html>`,
-		},
+func TestHandleXLink(t *testing.T) {
+	var images []string
+	for i := range 12 {
+		images = append(images, fmt.Sprintf(`{"url":"https://example.com/%d.jpg"}`, i))
 	}
 
+	tests := []struct {
+		name    string
+		status  int
+		body    string
+		wantErr bool
+		count   int
+	}{
+		{"ordered photos", 200, `{"code":200,"tweet":{"author":{"name":"ぽん & friends"},"media":{"photos":[` + strings.Join(images, ",") + `]}}}`, false, 12},
+		{"no photos", 200, `{"code":200,"tweet":{"author":{"name":"ぽん"}}}`, false, 0},
+		{"http error", 404, `{}`, true, 0},
+		{"api error", 200, `{"code":404,"message":"not found"}`, true, 0},
+		{"malformed json", 200, `{`, true, 0},
+		{"missing tweet", 200, `{"code":200}`, true, 0},
+		{"missing author", 200, `{"code":200,"tweet":{}}`, true, 0},
+		{"missing photo url", 200, `{"code":200,"tweet":{"author":{"name":"a"},"media":{"photos":[{}]}}}`, true, 0},
+	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := matchXImageLinks(tt.body, postPath)
-			if err != nil {
-				t.Fatal(err)
+			original := http.DefaultTransport
+			http.DefaultTransport = xPostTransport(func(r *http.Request) (*http.Response, error) {
+				if r.URL.String() != "https://api.fxtwitter.com/user/status/123" {
+					t.Errorf("unexpected request: %s", r.URL)
+				}
+				return &http.Response{
+					StatusCode: tt.status,
+					Status:     http.StatusText(tt.status),
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(tt.body)),
+					Request:    r,
+				}, nil
+			})
+			t.Cleanup(func() { http.DefaultTransport = original })
+			link, _ := url.Parse("https://x.com/user/status/123")
+			photos, err := handleXLink(link)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("error = %v, want error %v", err, tt.wantErr)
 			}
-			if !slices.Equal(got, tt.want) {
-				t.Errorf("image links = %v, want %v", got, tt.want)
+			if len(photos) != tt.count {
+				t.Fatalf("got %d photos, want %d", len(photos), tt.count)
+			}
+			for i, media := range photos {
+				photo := media.(tgbotapi.InputMediaPhoto)
+				if want := tgbotapi.FileURL(fmt.Sprintf("https://example.com/%d.jpg", i)); photo.Media != want {
+					t.Errorf("photo %d = %v, want %v", i, photo.Media, want)
+				}
+				if i%10 == 0 {
+					if photo.Caption != "<a href=\"https://fxtwitter.com/user/status/123\">ぽん &amp; friends</a>\n" || photo.ParseMode != "HTML" {
+						t.Errorf("photo %d caption: %+v", i, photo.BaseInputMedia)
+					}
+				} else if photo.Caption != "" || photo.ParseMode != "" {
+					t.Errorf("unexpected caption on photo %d", i)
+				}
 			}
 		})
 	}
 }
 
-type xPostTransport func(*http.Request) (*http.Response, error)
-
-func (f xPostTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	return f(r)
-}
-
-func TestHandleXLinkMultipleImages(t *testing.T) {
-	originalTransport := http.DefaultTransport
-	http.DefaultTransport = xPostTransport(func(r *http.Request) (*http.Response, error) {
-		if r.URL.String() != "https://i.fixupx.com/valhalla0707/status/2103104016725016856" {
-			t.Errorf("unexpected request: %s", r.URL)
-		}
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(xMultipleImagesHTML)),
-			Request:    r,
-		}, nil
-	})
-	t.Cleanup(func() { http.DefaultTransport = originalTransport })
-
-	link, err := url.Parse("https://x.com/valhalla0707/status/2103104016725016856")
-	if err != nil {
-		t.Fatal(err)
+func TestXPostLiveMerge(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live X API regression")
 	}
+	link, _ := url.Parse("https://x.com/Cookiaria/status/2120987799931265207")
 	photos, err := handleXLink(link)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(photos) != 4 {
-		t.Fatalf("got %d photos, want 4", len(photos))
+	if len(photos) != 20 {
+		t.Fatalf("got %d input photos, want 20", len(photos))
 	}
-	for i, media := range photos {
-		photo, ok := media.(tgbotapi.InputMediaPhoto)
-		if !ok {
-			t.Fatalf("photo %d has type %T, want InputMediaPhoto", i+1, media)
-		}
-		wantURL := tgbotapi.FileURL("https://d.fixupx.com/valhalla0707/status/2103104016725016856/photo/" + strconv.Itoa(i+1))
-		if photo.Media != wantURL {
-			t.Errorf("photo %d URL = %v, want %v", i+1, photo.Media, wantURL)
-		}
-		if i == 0 {
-			if photo.Caption != "<a href=\"https://fxtwitter.com/valhalla0707/status/2103104016725016856\">ぽん</a>\n" || photo.ParseMode != "HTML" {
-				t.Errorf("unexpected first photo caption: %+v", photo.BaseInputMedia)
-			}
-		} else if photo.Caption != "" {
-			t.Errorf("photo %d has an unexpected caption: %q", i+1, photo.Caption)
-		}
+	merged := mergeArtPhotos(photos)
+	if len(merged) != 1 {
+		t.Fatalf("got %d merged photos, want 1", len(merged))
+	}
+	photo := merged[0].(tgbotapi.InputMediaPhoto)
+	file, ok := photo.Media.(tgbotapi.FileBytes)
+	if !ok {
+		t.Fatalf("merged media is %T, want FileBytes", photo.Media)
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(file.Bytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Width != 4096 || cfg.Height != 2731 {
+		t.Errorf("dimensions = %dx%d, want 4096x2731", cfg.Width, cfg.Height)
 	}
 }

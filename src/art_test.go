@@ -172,6 +172,7 @@ func TestJoinArtPanelsReportedPosts(t *testing.T) {
 		widths        []int
 		height        int
 	}{
+		{"Cookiaria/status/2120987799931265207", "low-detail-edges.png", []int{205, 205, 205, 205}, 2731},
 		{"onlymikufans/status/2106005292253364454", "triptych-edges.png", []int{832, 607, 609}, 1024},
 		{"onlymikufans/status/2113237963190792414", "four-panel-edges.png", []int{262, 511, 708, 439}, 1080},
 		{"310ri_310/status/2116470643172757896", "310ri-triptych-edges.png", []int{946, 946, 946}, 2048},

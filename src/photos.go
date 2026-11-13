@@ -42,6 +42,7 @@ func mergeArtPhotos(photos []interface{}) []interface{} {
 		}
 		images[i] = img
 	}
+
 	var merged []interface{}
 	for _, panel := range joinArtPanels(images) {
 		if panel.first == panel.last {
