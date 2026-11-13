@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 
@@ -81,8 +82,8 @@ func TestHandleXLink(t *testing.T) {
 }
 
 func TestXPostLiveMerge(t *testing.T) {
-	if testing.Short() {
-		t.Skip("live X API regression")
+	if testing.Short() || os.Getenv("KOPOKA_LIVE_TESTS") != "1" {
+		t.Skip("live X API regression; set KOPOKA_LIVE_TESTS=1 to run")
 	}
 	link, _ := url.Parse("https://x.com/Cookiaria/status/2120987799931265207")
 	photos, err := handleXLink(link)
