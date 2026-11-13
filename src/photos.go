@@ -27,7 +27,7 @@ func downloadArtPhoto(client *http.Client, file tgbotapi.RequestFileData) (image
 	return img, err
 }
 
-func mergeArtPhotos(photos []interface{}) []interface{} {
+func mergeArtPhotos(photos []any) []any {
 	if len(photos) < 2 {
 		return photos
 	}
@@ -43,7 +43,7 @@ func mergeArtPhotos(photos []interface{}) []interface{} {
 		images[i] = img
 	}
 
-	var merged []interface{}
+	var merged []any
 	for _, panel := range joinArtPanels(images) {
 		if panel.first == panel.last {
 			merged = append(merged, photos[panel.first])
@@ -76,14 +76,14 @@ func mergeArtPhotos(photos []interface{}) []interface{} {
 	return merged
 }
 
-func sendPhotos(bot *tgbotapi.BotAPI, chatID int64, replyID int, photos []interface{}) error {
+func sendPhotos(bot *tgbotapi.BotAPI, chatID int64, replyID int, photos []any) error {
 	if len(photos) == 0 {
 		return nil
 	}
 	original := photos[0].(tgbotapi.InputMediaPhoto)
 	for start := 0; start < len(photos); start += 10 {
 		end := min(start+10, len(photos))
-		batch := make([]interface{}, 0, end-start)
+		batch := make([]any, 0, end-start)
 		for i := start; i < end; i++ {
 			photo := photos[i].(tgbotapi.InputMediaPhoto)
 			photo.Caption = ""

@@ -44,7 +44,7 @@ func pixivCaption(illust *pixiv.Illust) string {
 	)
 }
 
-func handlePixivLink(app *pixiv.AppPixivAPI, link *url.URL) ([]interface{}, error) {
+func handlePixivLink(app *pixiv.AppPixivAPI, link *url.URL) ([]any, error) {
 	idStr := strings.Split(link.Path, "/artworks/")[1]
 	id, err := strconv.Atoi(idStr)
 
@@ -58,7 +58,7 @@ func handlePixivLink(app *pixiv.AppPixivAPI, link *url.URL) ([]interface{}, erro
 	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
-	var photos []interface{}
+	var photos []any
 	for i, page := range illust.MetaPages {
 		file, err := downloadPixivPhoto(client, page.Images.Original, page.Images.Large)
 		if err != nil {
@@ -88,7 +88,7 @@ func handlePixivLink(app *pixiv.AppPixivAPI, link *url.URL) ([]interface{}, erro
 	return photos, nil
 }
 
-func handleXLink(link *url.URL) ([]interface{}, error) {
+func handleXLink(link *url.URL) ([]any, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	apiLink := *link
 	apiLink.Host = "api.fxtwitter.com"
@@ -126,7 +126,7 @@ func handleXLink(link *url.URL) ([]interface{}, error) {
 	}
 
 	link.Host = "fxtwitter.com"
-	var photos []interface{}
+	var photos []any
 	for i, image := range response.Tweet.Media.Photos {
 		if image.URL == "" {
 			return nil, fmt.Errorf("FxTwitter response missing photo URL at index %d", i)
@@ -169,12 +169,12 @@ func showProcessing(bot *tgbotapi.BotAPI, chatID int64) func() {
 }
 
 func processLink(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, message *tgbotapi.Message, link *url.URL) error {
-	var fetchPhotos func() ([]interface{}, error)
+	var fetchPhotos func() ([]any, error)
 	switch link.Host {
 	case "www.pixiv.net", "pixiv.net":
-		fetchPhotos = func() ([]interface{}, error) { return handlePixivLink(app, link) }
+		fetchPhotos = func() ([]any, error) { return handlePixivLink(app, link) }
 	case "x.com", "fixupx.com", "vxtwitter.com", "fixvx.com", "twitter.com", "fxtwitter.com":
-		fetchPhotos = func() ([]interface{}, error) { return handleXLink(link) }
+		fetchPhotos = func() ([]any, error) { return handleXLink(link) }
 	default:
 		return nil
 	}

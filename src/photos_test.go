@@ -25,7 +25,7 @@ func TestMergeArtPhotosDownloadFailure(t *testing.T) {
 			}
 			_, _ = w.Write([]byte(body))
 		}))
-		photos := []interface{}{
+		photos := []any{
 			tgbotapi.NewInputMediaPhoto(tgbotapi.FileURL(server.URL)),
 			tgbotapi.NewInputMediaPhoto(tgbotapi.FileURL(server.URL)),
 		}
@@ -63,7 +63,7 @@ func TestMergeArtPhotosDownloadAndMetadata(t *testing.T) {
 	first := tgbotapi.NewInputMediaPhoto(tgbotapi.FileURL(server.URL + "/0"))
 	first.Caption = "caption"
 	first.ParseMode = "HTML"
-	photos := []interface{}{first, tgbotapi.NewInputMediaPhoto(tgbotapi.FileURL(server.URL + "/1"))}
+	photos := []any{first, tgbotapi.NewInputMediaPhoto(tgbotapi.FileURL(server.URL + "/1"))}
 
 	got := mergeArtPhotos(photos)
 	if count != 2 || len(got) != 1 {
@@ -87,7 +87,7 @@ func TestMergeArtPhotosDownloadAndMetadata(t *testing.T) {
 
 	// Pixiv images are already downloaded for upload before merging.
 	first.Media = tgbotapi.FileBytes{Name: "0.png", Bytes: encoded[0].Bytes()}
-	uploads := []interface{}{
+	uploads := []any{
 		first,
 		tgbotapi.NewInputMediaPhoto(tgbotapi.FileBytes{Name: "1.png", Bytes: encoded[1].Bytes()}),
 	}
@@ -110,7 +110,7 @@ func TestMergeArtPhotosRetainsOriginalURLs(t *testing.T) {
 		_, _ = w.Write(encoded.Bytes())
 	}))
 	defer server.Close()
-	photos := []interface{}{
+	photos := []any{
 		tgbotapi.NewInputMediaPhoto(tgbotapi.FileURL(server.URL + "/0")),
 		tgbotapi.NewInputMediaPhoto(tgbotapi.FileURL(server.URL + "/1")),
 	}
@@ -133,7 +133,7 @@ func TestMergeArtPhotosLargeTriptych(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var photos []interface{}
+	var photos []any
 	for i := range 3 {
 		panel := image.NewRGBA(image.Rect(0, 0, 2247, 4096))
 		draw.Draw(panel, image.Rect(0, 0, 3, 4096), edges, image.Pt(i*6, 0), draw.Src)
@@ -239,7 +239,7 @@ func TestSendPhotosBatches(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			photos := make([]interface{}, size)
+			photos := make([]any, size)
 			for i := range photos {
 				p := tgbotapi.NewInputMediaPhoto(tgbotapi.FileBytes{Name: "joined-art.jpg", Bytes: []byte("jpeg")})
 				p.Caption = "stale"
