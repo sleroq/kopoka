@@ -145,6 +145,50 @@ func handleXLink(link *url.URL) ([]interface{}, error) {
 	return photos, nil
 }
 
+func showProcessing(bot *tgbotapi.BotAPI, chatID int64) func() {
+	sendAction := func() {
+		if _, err := bot.Request(tgbotapi.NewChatAction(chatID, tgbotapi.ChatUploadPhoto)); err != nil {
+			log.Printf("sending chat action: %v", err)
+		}
+	}
+	sendAction()
+	stop := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(4 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				sendAction()
+			case <-stop:
+				return
+			}
+		}
+	}()
+	return func() { close(stop) }
+}
+
+func processLink(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, message *tgbotapi.Message, link *url.URL) error {
+	var fetchPhotos func() ([]interface{}, error)
+	switch link.Host {
+	case "www.pixiv.net", "pixiv.net":
+		fetchPhotos = func() ([]interface{}, error) { return handlePixivLink(app, link) }
+	case "x.com", "fixupx.com", "vxtwitter.com", "fixvx.com", "twitter.com", "fxtwitter.com":
+		fetchPhotos = func() ([]interface{}, error) { return handleXLink(link) }
+	default:
+		return nil
+	}
+
+	stop := showProcessing(bot, message.Chat.ID)
+	defer stop()
+
+	photos, err := fetchPhotos()
+	if err != nil {
+		return err
+	}
+	return sendPhotos(bot, message.Chat.ID, message.MessageID, mergeArtPhotos(photos))
+}
+
 func main() {
 	bot, u, err := setupTelegramBot()
 	if err != nil {
@@ -178,37 +222,7 @@ func main() {
 				}
 				parsed.RawQuery = ""
 
-				var photos []interface{}
-
-				switch parsed.Host {
-				case "www.pixiv.net":
-					fallthrough
-				case "pixiv.net":
-					photos, err = handlePixivLink(pApp, parsed)
-				case "x.com":
-					fallthrough
-				case "fixupx.com":
-					fallthrough
-				case "vxtwitter.com":
-					fallthrough
-				case "fixvx.com":
-					fallthrough
-				case "twitter.com":
-					fallthrough
-				case "fxtwitter.com":
-					photos, err = handleXLink(parsed)
-				default:
-					continue
-				}
-
-				if err != nil {
-					log.Println(err)
-					continue
-				}
-
-				photos = mergeArtPhotos(photos)
-				err = sendPhotos(bot, update.Message.Chat.ID, update.Message.MessageID, photos)
-				if err != nil {
+				if err := processLink(bot, pApp, update.Message, parsed); err != nil {
 					log.Println(err)
 				}
 			}
