@@ -443,7 +443,7 @@ func (t *thumbnails) xSource(link *url.URL) (thumbnailSource, error) {
 	return thumbnailSource{media: items, count: len(items)}, nil
 }
 
-func (t *thumbnails) mergeSource(source thumbnailSource) (image.Image, int, error) {
+func (t *thumbnails) mergeSource(source thumbnailSource) (image.Image, int, bool, error) {
 	media := make([]any, 0, len(source.media))
 	for _, item := range source.media {
 		if item.Type == "video" || item.Type == "gif" {
@@ -453,22 +453,28 @@ func (t *thumbnails) mergeSource(source thumbnailSource) (image.Image, int, erro
 		var file tgbotapi.FileBytes
 		var err error
 		if source.pixivPages {
-			file, err = downloadPixivPhoto(t.client, item.URL, item.ThumbnailURL)
+			file, err = downloadPixivPhoto(t.client, item.ThumbnailURL, item.URL)
 		} else {
-			file, err = downloadArtFile(t.client, tgbotapi.FileURL(item.URL))
+			file, err = downloadArtFile(t.client, tgbotapi.FileURL(xPhotoURL(item.URL)))
 		}
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, false, err
 		}
 		media = append(media, tgbotapi.NewInputMediaPhoto(file))
 	}
+	first, isPhoto := media[0].(tgbotapi.InputMediaPhoto)
 	media = mergeArtPhotos(media)
+	merged := false
+	if isPhoto {
+		joined := media[0].(tgbotapi.InputMediaPhoto)
+		merged = !bytes.Equal(first.Media.(tgbotapi.FileBytes).Bytes, joined.Media.(tgbotapi.FileBytes).Bytes)
+	}
 	actual := source.count
 	if len(source.media) > 1 {
 		actual = len(media)
 	}
 	img, err := downloadArtPhoto(t.client, mediaBase(media[0]).Media)
-	return img, actual, err
+	return img, actual, merged, err
 }
 
 func (t *thumbnails) generate(link *url.URL, count int) ([]byte, []byte, int, error) {
@@ -476,7 +482,7 @@ func (t *thumbnails) generate(link *url.URL, count int) ([]byte, []byte, int, er
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	img, actual, err := t.mergeSource(source)
+	img, actual, merged, err := t.mergeSource(source)
 	if err != nil {
 		return nil, nil, 0, err
 	}
@@ -495,7 +501,7 @@ func (t *thumbnails) generate(link *url.URL, count int) ([]byte, []byte, int, er
 	canvas := image.NewRGBA(image.Rect(0, 0, width, height))
 	draw.Draw(canvas, canvas.Bounds(), image.NewUniform(color.White), image.Point{}, draw.Src)
 	draw.CatmullRom.Scale(canvas, canvas.Bounds(), img, b, draw.Over, nil)
-	if err := t.decorate(canvas, source.pixiv, count); err != nil {
+	if err := t.decorate(canvas, source.pixiv, count, merged); err != nil {
 		return nil, nil, 0, err
 	}
 
@@ -514,7 +520,7 @@ func (t *thumbnails) generate(link *url.URL, count int) ([]byte, []byte, int, er
 	return out.Bytes(), large.Bytes(), actual, nil
 }
 
-func (t *thumbnails) decorate(canvas *image.RGBA, pix bool, count int) error {
+func (t *thumbnails) decorate(canvas *image.RGBA, pix bool, count int, merged bool) error {
 	width, height := canvas.Bounds().Dx(), canvas.Bounds().Dy()
 	// Offset shadows and a faint border keep overlays distinct against any artwork.
 	tile := image.NewRGBA(image.Rect(0, 0, 76*4, 76*4))
@@ -533,10 +539,23 @@ func (t *thumbnails) decorate(canvas *image.RGBA, pix bool, count int) error {
 	margin := int(math.Round(float64(shorter) * 12 / 384))
 	tileBounds := image.Rect(width-margin-tileSize, height-margin-tileSize, width-margin, height-margin)
 	draw.CatmullRom.Scale(canvas, tileBounds, tile, tile.Bounds(), draw.Over, nil)
-	if count > 1 {
+	if count > 1 || merged {
 		badge := image.NewRGBA(image.Rect(0, 0, 384*4, 56*4))
-		if err := t.badge(badge, count); err != nil {
-			return err
+		right := 370 * 4
+		if count > 1 {
+			left, err := t.badge(badge, count)
+			if err != nil {
+				return err
+			}
+			right = left - 8*4
+		}
+		if merged {
+			left := right - 44*4
+			badgeBackground(badge, left, right)
+			for i := range 4 {
+				x := left + (13+i*6)*4
+				rounded(badge, image.Rect(x, 26*4, x+2*4, 42*4), 1*4, color.NRGBA{255, 255, 255, 255})
+			}
 		}
 		badgeHeight := max(1, int(math.Round(float64(shorter)*56/384)))
 		draw.CatmullRom.Scale(canvas, image.Rect(width-shorter, 0, width, badgeHeight), badge, badge.Bounds(), draw.Over, nil)
@@ -561,21 +580,25 @@ func rounded(dst *image.RGBA, r image.Rectangle, radius float32, c color.NRGBA) 
 	z.Draw(dst, dst.Bounds(), image.NewUniform(c), image.Point{})
 }
 
-func (t *thumbnails) badge(dst *image.RGBA, count int) error {
+func (t *thumbnails) badge(dst *image.RGBA, count int) (int, error) {
 	face, err := opentype.NewFace(t.font, &opentype.FaceOptions{Size: 22 * 4, DPI: 72, Hinting: font.HintingFull})
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer func() { _ = face.Close() }()
 	label := strconv.Itoa(count)
 	width := font.MeasureString(face, label).Ceil()
 	left := 370*4 - (width + 47*4)
-	rounded(dst, image.Rect(left+2*4, 17*4, 372*4, 55*4), 12*4, color.NRGBA{0, 0, 0, 70})
-	rounded(dst, image.Rect(left, 15*4, 370*4, 53*4), 12*4, color.NRGBA{255, 255, 255, 100})
-	rounded(dst, image.Rect(left+1*4, 16*4, 369*4, 52*4), 11*4, color.NRGBA{20, 22, 27, 235})
+	badgeBackground(dst, left, 370*4)
 	rounded(dst, image.Rect(left+12*4, 26*4, left+25*4, 37*4), 2*4, color.NRGBA{255, 255, 255, 150})
 	rounded(dst, image.Rect(left+15*4, 29*4, left+28*4, 40*4), 2*4, color.NRGBA{255, 255, 255, 255})
 	d := font.Drawer{Dst: dst, Src: image.NewUniform(color.White), Face: face, Dot: fixed.P(left+35*4, 42*4)}
 	d.DrawString(label)
-	return nil
+	return left, nil
+}
+
+func badgeBackground(dst *image.RGBA, left, right int) {
+	rounded(dst, image.Rect(left+2*4, 17*4, right+2*4, 55*4), 12*4, color.NRGBA{0, 0, 0, 70})
+	rounded(dst, image.Rect(left, 15*4, right, 53*4), 12*4, color.NRGBA{255, 255, 255, 100})
+	rounded(dst, image.Rect(left+1*4, 16*4, right-1*4, 52*4), 11*4, color.NRGBA{20, 22, 27, 235})
 }

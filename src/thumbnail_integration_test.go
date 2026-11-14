@@ -24,6 +24,8 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"golang.org/x/image/font"
+	"golang.org/x/image/font/opentype"
 )
 
 type offlinePreviewTransport struct{}
@@ -179,7 +181,7 @@ func TestInlineThumbnailFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
-	if _, err := db.Exec(`UPDATE thumbnail_cache SET render_version=2 WHERE artwork_id='x:1'`); err != nil {
+	if _, err := db.Exec(`UPDATE thumbnail_cache SET render_version=3 WHERE artwork_id='x:1'`); err != nil {
 		t.Fatal(err)
 	}
 	previews, err := newThumbnails("https://preview.example.com", nil, bot, db, "@cache")
@@ -252,7 +254,7 @@ func reopenCachedThumbnail(t *testing.T, s *thumbnailTestServer, bot *tgbotapi.B
 	var version int
 	row := db.QueryRow(`SELECT render_version FROM thumbnail_cache WHERE artwork_id='x:1' AND media_count=0`)
 	err := row.Scan(&version)
-	if err != nil || version != 3 {
+	if err != nil || version != 4 {
 		t.Fatalf("cached render version: %d, %v", version, err)
 	}
 	before := s.upstream.Load()
@@ -317,7 +319,7 @@ func uncachedThumbnailURLs(t *testing.T, result map[string]any) (string, string)
 		t.Fatalf("inline result: %#v", result)
 	}
 	pq, tq := p.Query(), thumb.Query()
-	if pq.Get("size") != "large" || tq.Has("size") || tq.Get("url") == "" || tq.Get("v") != "3" {
+	if pq.Get("size") != "large" || tq.Has("size") || tq.Get("url") == "" || tq.Get("v") != "4" {
 		t.Fatalf("preview queries: %v, %v", pq, tq)
 	}
 	pq.Del("size")
@@ -711,8 +713,8 @@ func servePixivThumbnailDetail(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("illust_id") == "124" {
 		_, _ = fmt.Fprint(w, `{"illust":{"id":124,"type":"illust","page_count":2,
             "image_urls":{"large":"https://i.pximg.net/cover.jpg"},
-            "meta_pages":[{"image_urls":{"original":"https://i.pximg.net/p0","large":"https://i.pximg.net/cover.jpg"}},
-            {"image_urls":{"original":"https://i.pximg.net/p1","large":"https://i.pximg.net/cover.jpg"}}]}}`)
+            "meta_pages":[{"image_urls":{"original":"https://i.pximg.net/cover.jpg","large":"https://i.pximg.net/p0"}},
+            {"image_urls":{"original":"https://i.pximg.net/cover.jpg","large":"https://i.pximg.net/p1"}}]}}`)
 		return
 	}
 	_, _ = fmt.Fprint(w, `{"illust":{"id":123,"type":"illust","page_count":12,
@@ -721,7 +723,7 @@ func servePixivThumbnailDetail(w http.ResponseWriter, r *http.Request) {
 
 func checkPixivMergedPreview(t *testing.T, previews *thumbnails, downloads *atomic.Int32) {
 	t.Helper()
-	_, large, actual, err := previews.generate(inlineLink("https://www.pixiv.net/artworks/124"), 0)
+	small, large, actual, err := previews.generate(inlineLink("https://www.pixiv.net/artworks/124"), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -729,6 +731,8 @@ func checkPixivMergedPreview(t *testing.T, previews *thumbnails, downloads *atom
 	if err != nil {
 		t.Fatal(err)
 	}
+	checkMergeBadge(t, previews, small, 1, true)
+	checkMergeBadge(t, previews, large, 1, true)
 	if img.Bounds().Size() != image.Pt(400, 320) || actual != 1 || downloads.Load() != 3 {
 		t.Fatalf("Pixiv merged preview: size %v, count %d, downloads %d", img.Bounds().Size(), actual, downloads.Load())
 	}
@@ -796,6 +800,14 @@ func TestMergedThumbnailSources(t *testing.T) {
 		t.Fatalf("joined preview: dimensions %v, count %d", img.Bounds().Size(), work.actual)
 	}
 
+	checkMergeBadge(t, previews, work.data, 2, true)
+	checkMergeBadge(t, previews, work.large, 2, true)
+	override, _, actual, err := previews.generate(link, 1)
+	if err != nil || actual != 2 {
+		t.Fatalf("merged count override: count %d, error %v", actual, err)
+	}
+	checkMergeBadge(t, previews, override, 1, true)
+
 	awaitCachedThumbnail(t, db, "x:10", 2)
 	before := downloads.Load()
 	id, _, _ := previews.photo(link, 2)
@@ -808,10 +820,10 @@ func TestMergedThumbnailSources(t *testing.T) {
 		count int
 		size  image.Point
 	}{
-		{"11", 3, image.Pt(240, 384)}, {"12", 2, image.Pt(240, 384)},
+		{"11", 3, image.Pt(240, 384)}, {"12", 2, image.Pt(240, 384)}, {"14", 3, image.Pt(240, 384)},
 	} {
 		link := inlineLink("https://x.com/user/status/" + tc.id)
-		_, large, actual, err := previews.generate(link, 0)
+		small, large, actual, err := previews.generate(link, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -819,6 +831,8 @@ func TestMergedThumbnailSources(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		checkMergeBadge(t, previews, small, tc.count, false)
+		checkMergeBadge(t, previews, large, tc.count, false)
 		if img.Bounds().Size() != tc.size || actual != tc.count {
 			t.Fatalf("%s: size %v count %d", tc.id, img.Bounds().Size(), actual)
 		}
@@ -871,7 +885,7 @@ func mergedThumbnailServer(t *testing.T) (*httptest.Server, *atomic.Int32, *atom
 		case "/p0", "/p1", "/p2":
 			downloads.Add(1)
 			_, _ = w.Write(panels[int(r.URL.Path[2]-'0')])
-		case "/user/status/10", "/user/status/11", "/user/status/12", "/user/status/13":
+		case "/user/status/10", "/user/status/11", "/user/status/12", "/user/status/13", "/user/status/14":
 			photo := func(n int) map[string]string {
 				return map[string]string{"type": "photo", "url": fmt.Sprintf("%s/p%d", server.URL, n)}
 			}
@@ -886,6 +900,8 @@ func mergedThumbnailServer(t *testing.T) (*httptest.Server, *atomic.Int32, *atom
 				items = []map[string]string{video, photo(0), photo(1)}
 			case "/user/status/13":
 				items = []map[string]string{photo(0), {"type": "photo", "url": server.URL + "/missing"}}
+			case "/user/status/14":
+				items = []map[string]string{photo(2), {"type": "video"}, photo(0), photo(1)}
 			}
 			response := map[string]any{
 				"code": 200, "tweet": map[string]any{"media": map[string]any{"all": items}},
@@ -896,4 +912,44 @@ func mergedThumbnailServer(t *testing.T) (*httptest.Server, *atomic.Int32, *atom
 		}
 	}))
 	return server, downloads, uploads
+}
+
+func checkMergeBadge(t *testing.T, previews *thumbnails, data []byte, count int, want bool) {
+	t.Helper()
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	face, err := opentype.NewFace(previews.font, &opentype.FaceOptions{Size: 22 * 4, DPI: 72, Hinting: font.HintingFull})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = face.Close() }()
+	right := 370.0
+	if count > 1 {
+		right -= float64(font.MeasureString(face, fmt.Sprint(count)).Ceil())/4 + 47 + 8
+	}
+	left := right - 44
+	size := img.Bounds().Size()
+	scale := float64(min(size.X, size.Y)) / 384
+	pixel := func(x, y float64) uint32 {
+		r, g, b, _ := img.At(size.X-int((384-x)*scale), int(y*scale)).RGBA()
+		return (r + g + b) / 3
+	}
+	dark := pixel(left+8, 34) < 18000
+	strokes := 0
+	for i := range 4 {
+		bright := false
+		for dx := -1.0; dx <= 1; dx++ {
+			if pixel(left+14+float64(i*6)+dx/scale, 34) > 27000 {
+				bright = true
+			}
+		}
+		if bright {
+			strokes++
+		}
+	}
+	if got := dark && strokes == 4; got != want {
+		t.Errorf("merge badge count=%d size=%v: dark=%v strokes=%d, want %v", count, size, dark, strokes, want)
+	}
 }
