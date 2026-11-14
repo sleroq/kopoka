@@ -76,7 +76,7 @@ func TestHandleXLink(t *testing.T) {
 					t.Errorf("photo %d = %v, want %v", i, photo.Media, want)
 				}
 				if i%10 == 0 {
-					if photo.Caption != "<a href=\"https://fxtwitter.com/user/status/123\">ぽん &amp; friends</a>\n" || photo.ParseMode != "HTML" {
+					if photo.Caption != "<a href=\"https://fxtwitter.com/user/status/123\">ぽん &amp; friends</a>" || photo.ParseMode != "HTML" {
 						t.Errorf("photo %d caption: %+v", i, photo.BaseInputMedia)
 					}
 				} else if photo.Caption != "" || photo.ParseMode != "" {

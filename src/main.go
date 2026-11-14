@@ -43,7 +43,7 @@ func setupTelegramBot() (*tgbotapi.BotAPI, *tgbotapi.UpdateConfig, error) {
 
 func pixivCaption(illust *pixiv.Illust) string {
 	return fmt.Sprintf(
-		"<a href=\"%s\">%s</a>\n",
+		"<a href=\"%s\">%s</a>",
 		"https://www.pixiv.net/artworks/"+strconv.Itoa(int(illust.ID)),
 		html.EscapeString(illust.User.Name),
 	)
@@ -139,7 +139,7 @@ func handleXLink(link *url.URL, metadata *artwork) ([]any, error) {
 		}
 		if i%10 == 0 {
 			base.Caption = fmt.Sprintf(
-				"<a href=\"%s\">%s</a>\n",
+				"<a href=\"%s\">%s</a>",
 				html.EscapeString(link.String()),
 				html.EscapeString(post.Author),
 			)

@@ -189,8 +189,9 @@ func checkPixivInlineFlow(t *testing.T, server *httptest.Server, app *pixiv.AppP
 	rich := (*answer)[0]["input_message_content"].(map[string]any)["rich_message"].(map[string]any)
 	block := rich["blocks"].([]any)[0].(map[string]any)
 	media := block["animation"].(map[string]any)
-	caption := block["caption"].(map[string]any)["text"].([]any)[0].(map[string]any)
-	if block["type"] != "animation" || media["type"] != "animation" || media["media"] != "animation-id" || caption["text"] != "artist" || caption["url"] != link.String() {
+	captionText := block["caption"].(map[string]any)["text"].([]any)
+	caption := captionText[0].(map[string]any)
+	if block["type"] != "animation" || media["type"] != "animation" || media["media"] != "animation-id" || len(captionText) != 1 || caption["text"] != "artist" || caption["url"] != link.String() {
 		t.Fatalf("cached animation: %#v", block)
 	}
 	if len(*uploads) != 2 || (*uploads)[0] != "123" || (*uploads)[1] != "@cache" {

@@ -86,7 +86,7 @@ func richArtwork(a artwork) map[string]any {
 	if kind == "animation" {
 		return map[string]any{"blocks": []any{map[string]any{
 			"type": "animation", "animation": map[string]any{"type": "animation", "media": a.Photos[0]},
-			"caption": map[string]any{"text": []any{map[string]any{"type": "url", "text": a.Author, "url": a.URL}, "\n"}},
+			"caption": map[string]any{"text": []any{map[string]any{"type": "url", "text": a.Author, "url": a.URL}}},
 		}}}
 	}
 	media := []any{map[string]any{"id": "0", "media": map[string]any{"type": kind, "media": a.Photos[0]}}}
@@ -94,7 +94,7 @@ func richArtwork(a artwork) map[string]any {
 	if kind == "video" {
 		markup = `<video src="tg://video?id=0"></video>`
 	}
-	html := fmt.Sprintf("<figure>%s<figcaption>%s</figcaption></figure>", markup, a.Caption)
+	html := fmt.Sprintf("<figure>%s<figcaption>%s</figcaption></figure>", markup, strings.TrimSuffix(a.Caption, "\n"))
 	return map[string]any{"html": html, "media": media}
 }
 
@@ -112,7 +112,7 @@ func slideshow(a artwork) map[string]any {
 		}
 		media = append(media, map[string]any{"id": key, "media": map[string]any{"type": kind, "media": id}})
 	}
-	fmt.Fprintf(&markup, "<figcaption>%s</figcaption></tg-slideshow>", a.Caption)
+	fmt.Fprintf(&markup, "<figcaption>%s</figcaption></tg-slideshow>", strings.TrimSuffix(a.Caption, "\n"))
 	return map[string]any{"html": markup.String(), "media": media}
 }
 

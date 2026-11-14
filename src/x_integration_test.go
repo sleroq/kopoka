@@ -42,7 +42,7 @@ func TestXProviderFallback(t *testing.T) {
 		t.Fatalf("media = %v, error = %v", media, err)
 	}
 	photo, ok := media[0].(tgbotapi.InputMediaPhoto)
-	if !ok || photo.Media != tgbotapi.FileURL("https://pbs.twimg.com/media/image.jpg?name=large") || photo.Caption != "<a href=\"https://fxtwitter.com/user/status/123?view=1\">A &amp; B</a>\n" || photo.ParseMode != "HTML" {
+	if !ok || photo.Media != tgbotapi.FileURL("https://pbs.twimg.com/media/image.jpg?name=large") || photo.Caption != "<a href=\"https://fxtwitter.com/user/status/123?view=1\">A &amp; B</a>" || photo.ParseMode != "HTML" {
 		t.Fatalf("photo = %+v", media[0])
 	}
 	for i, want := range []string{"https://media/video", "https://media/gif"} {
