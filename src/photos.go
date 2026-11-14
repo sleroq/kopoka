@@ -77,9 +77,15 @@ func mergeArtPhotos(photos []any) []any {
 }
 
 func sendPhotos(bot *tgbotapi.BotAPI, chatID int64, replyID int, photos []any) error {
+	_, err := sendPhotosWithIDs(bot, chatID, replyID, photos)
+	return err
+}
+
+func sendPhotosWithIDs(bot *tgbotapi.BotAPI, chatID int64, replyID int, photos []any) ([]string, error) {
 	if len(photos) == 0 {
-		return nil
+		return nil, nil
 	}
+	var ids []string
 	original := photos[0].(tgbotapi.InputMediaPhoto)
 
 	for start := 0; start < len(photos); start += 10 {
@@ -104,20 +110,30 @@ func sendPhotos(bot *tgbotapi.BotAPI, chatID int64, replyID int, photos []any) e
 			photo.Caption = media.Caption
 			photo.ParseMode = media.ParseMode
 			photo.CaptionEntities = media.CaptionEntities
-			if _, err := retryTelegram(func() (tgbotapi.Message, error) {
+			message, err := retryTelegram(func() (tgbotapi.Message, error) {
 				return bot.Send(photo)
-			}); err != nil {
-				return err
+			})
+			if err != nil {
+				return nil, err
+			}
+			if len(message.Photo) > 0 && message.Photo[len(message.Photo)-1].FileID != "" {
+				ids = append(ids, message.Photo[len(message.Photo)-1].FileID)
 			}
 		} else {
 			group := tgbotapi.NewMediaGroup(chatID, batch)
 			group.ReplyToMessageID = replyID
-			if _, err := retryTelegram(func() ([]tgbotapi.Message, error) {
+			messages, err := retryTelegram(func() ([]tgbotapi.Message, error) {
 				return bot.SendMediaGroup(group)
-			}); err != nil {
-				return err
+			})
+			if err != nil {
+				return nil, err
+			}
+			for _, message := range messages {
+				if len(message.Photo) > 0 && message.Photo[len(message.Photo)-1].FileID != "" {
+					ids = append(ids, message.Photo[len(message.Photo)-1].FileID)
+				}
 			}
 		}
 	}
-	return nil
+	return ids, nil
 }

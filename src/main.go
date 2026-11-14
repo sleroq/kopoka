@@ -207,17 +207,33 @@ func fetchArtPhotos(app *pixiv.AppPixivAPI, link *url.URL, metadata *artwork) ([
 	return mergeArtPhotos(photos), nil
 }
 
-func processLink(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, message *tgbotapi.Message, link *url.URL) error {
+func processLink(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, message *tgbotapi.Message, link *url.URL) error {
 	if !supportedLink(link) {
 		return nil
 	}
 	stop := showProcessing(bot, message.Chat.ID)
 	defer stop()
-	photos, err := fetchArtPhotos(app, link, &artwork{})
+	valid := inlineLink(link.String())
+	a := artwork{}
+	if valid != nil {
+		a.ID, a.URL = artworkID(valid), valid.String()
+	}
+	photos, err := fetchArtPhotos(app, link, &a)
 	if err != nil {
 		return err
 	}
-	return sendPhotos(bot, message.Chat.ID, message.MessageID, photos)
+	ids, err := sendPhotosWithIDs(bot, message.Chat.ID, message.MessageID, photos)
+	if err != nil {
+		return err
+	}
+	if valid != nil && len(photos) > 0 && len(ids) == len(photos) {
+		a.Photos = ids
+		a.Caption = photos[0].(tgbotapi.InputMediaPhoto).Caption
+		if err := saveArtwork(db, message.From.ID, a, false); err != nil {
+			log.Printf("saving chat artwork: %v", err)
+		}
+	}
+	return nil
 }
 
 var codeURLPattern = regexp.MustCompile(`https?://[^\s<>"\x60]+`)
@@ -279,6 +295,10 @@ func handleMessage(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, mes
 		return
 	}
 	log.Printf("[%s] %s", message.From.UserName, message.Text)
+	if command == "settings" || strings.EqualFold(command, "settings@"+bot.Self.UserName) {
+		showSettings(bot, db, message)
+		return
+	}
 	for _, name := range []string{"historyoff", "historyon"} {
 		if command == name || strings.EqualFold(command, name+"@"+bot.Self.UserName) {
 			enabled := name == "historyon"
@@ -302,7 +322,7 @@ func handleMessage(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, mes
 		}
 	}
 	for _, link := range messageLinks(message) {
-		if err := processLink(bot, app, message, link); err != nil {
+		if err := processLink(bot, app, db, message, link); err != nil {
 			log.Println(err)
 		}
 	}
@@ -354,7 +374,9 @@ func main() {
 }
 
 func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.CallbackQuery) {
-	if strings.HasPrefix(query.Data, "history:") {
+	if strings.HasPrefix(query.Data, "settings:") {
+		handleSettingsCallback(bot, db, query)
+	} else if strings.HasPrefix(query.Data, "history:") {
 		handleHistoryCallback(bot, db, query)
 	}
 }

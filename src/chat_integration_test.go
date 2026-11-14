@@ -1,10 +1,12 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf16"
@@ -119,4 +121,155 @@ func TestChatFormattedLinks(t *testing.T) {
 			t.Errorf("caption: %s", caption)
 		}
 	}
+}
+
+func TestChatHistorySettingsFlow(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.db")
+	// A database created before origins existed must retain inline history.
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = legacy.Exec(`CREATE TABLE artwork (id TEXT PRIMARY KEY, url TEXT NOT NULL, author TEXT NOT NULL, text TEXT NOT NULL, caption TEXT NOT NULL, photos TEXT NOT NULL);
+		CREATE TABLE history (sequence INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, artwork_id TEXT NOT NULL, UNIQUE(user_id, artwork_id));
+		INSERT INTO artwork VALUES ('x:99','https://x.com/u/status/99','Old','text','caption','["old"]');
+		INSERT INTO history(user_id,artwork_id) VALUES (1,'x:99');`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = legacy.Close()
+
+	db, err := openArtworkDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	var answers []map[string]any
+	var reply, callback string
+	server := chatHistoryServer(t, &answers, &reply, &callback)
+	defer server.Close()
+	target, _ := url.Parse(server.URL)
+	original := http.DefaultTransport
+	http.DefaultTransport = redirectTransport{target, original}
+	defer func() { http.DefaultTransport = original }()
+	bot, err := tgbotapi.NewBotAPIWithAPIEndpoint("token", server.URL+"/bot%s/%s")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	chat := func(link string) {
+		t.Helper()
+		message := &tgbotapi.Message{MessageID: 42, Chat: &tgbotapi.Chat{ID: 123}, From: &tgbotapi.User{ID: 1}, Text: link,
+			Entities: []tgbotapi.MessageEntity{{Type: "url", Length: len(link)}}}
+		handleMessage(bot, nil, db, message)
+	}
+	command := func(text string) {
+		message := &tgbotapi.Message{MessageID: 42, Chat: &tgbotapi.Chat{ID: 123}, From: &tgbotapi.User{ID: 1}, Text: text,
+			Entities: []tgbotapi.MessageEntity{{Type: "bot_command", Length: len(text)}}}
+		handleMessage(bot, nil, db, message)
+	}
+	toggle := func(user int64, action string) {
+		callback = "pending"
+		query := &tgbotapi.CallbackQuery{ID: "cb", From: &tgbotapi.User{ID: user}, Data: "settings:" + action + ":1",
+			Message: &tgbotapi.Message{MessageID: 43, Chat: &tgbotapi.Chat{ID: 123}}}
+		handleCallback(bot, db, query)
+	}
+	check := func(ids ...string) {
+		t.Helper()
+		handleInlineQuery(bot, db, &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 1}})
+		if len(answers) != len(ids) {
+			t.Fatalf("history: %v want %v", answers, ids)
+		}
+		for i, id := range ids {
+			if answers[i]["id"] != id {
+				t.Fatalf("history: %v want %v", answers, ids)
+			}
+		}
+	}
+
+	chat("https://x.com/u/status/1?tracking=yes")
+	a, err := findArtwork(db, "x:1")
+	if err != nil || a == nil || a.URL != "https://x.com/u/status/1" || a.Author != "Artist" || a.Text != "Title" || a.Photos[0] != "usable" || !strings.Contains(a.Caption, "fxtwitter.com") {
+		t.Fatalf("saved artwork: %#v, %v", a, err)
+	}
+	chat("https://x.com/u/status/3")
+	chat("https://x.com/u/status/4")
+	chat("https://x.com/u/status/invalid")
+	check("x:1", "x:99")
+	command("/settings")
+	if !strings.Contains(reply, "Visible") {
+		t.Fatal(reply)
+	}
+	toggle(2, "chat")
+	if callback == "" {
+		t.Fatal("unauthorized callback accepted")
+	}
+	check("x:1", "x:99")
+	toggle(1, "chat")
+	check("x:99")
+	chat("https://x.com/u/status/2")
+	check("x:99")
+	handleChosenInlineResult(bot, nil, db, &tgbotapi.ChosenInlineResult{From: &tgbotapi.User{ID: 1}, ResultID: "x:1"}, "")
+	chat("https://x.com/u/status/1")
+	check("x:1", "x:99")
+	toggle(1, "history")
+	chat("https://x.com/u/status/5")
+	check("x:1", "x:99")
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = openArtworkDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command("/settings")
+	if !strings.Contains(reply, "Off") || !strings.Contains(reply, "Hidden") {
+		t.Fatal(reply)
+	}
+	toggle(1, "chat")
+	check("x:1", "x:2", "x:99")
+	toggle(1, "history")
+	chat("https://x.com/u/status/5")
+	check("x:5", "x:1", "x:2", "x:99")
+}
+
+func chatHistoryServer(t *testing.T, answers *[]map[string]any, reply, callback *string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/u/status/"):
+			if strings.HasSuffix(r.URL.Path, "/4") {
+				_, _ = w.Write([]byte(`{"code":200,"tweet":{"author":{"name":"Artist"},"media":{"photos":[]}}}`))
+				return
+			}
+			response := `{"code":200,"tweet":{"text":"Title","author":{"name":"Artist"},` +
+				`"media":{"photos":[{"url":"https://example.com/photo"}]}}}`
+			_, _ = w.Write([]byte(response))
+		case strings.HasSuffix(r.URL.Path, "/getMe"):
+			_, _ = w.Write([]byte(`{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`))
+		case strings.HasSuffix(r.URL.Path, "/sendChatAction"), strings.HasSuffix(r.URL.Path, "/editMessageText"):
+			_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+		case strings.HasSuffix(r.URL.Path, "/sendPhoto"):
+			if strings.Contains(r.FormValue("caption"), "/status/3") {
+				_, _ = w.Write([]byte(`{"ok":false,"error_code":400,"description":"failed"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":43,"photo":[{"file_id":"small"},{"file_id":"usable"}]}}`))
+		case strings.HasSuffix(r.URL.Path, "/sendMessage"):
+			*reply = r.FormValue("text")
+			_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":43}}`))
+		case strings.HasSuffix(r.URL.Path, "/answerCallbackQuery"):
+			*callback = r.FormValue("text")
+			_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+		case strings.HasSuffix(r.URL.Path, "/answerInlineQuery"):
+			if err := json.Unmarshal([]byte(r.FormValue("results")), answers); err != nil {
+				t.Error(err)
+			}
+			_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+		default:
+			t.Errorf("unexpected request %s", r.URL.Path)
+		}
+	}))
 }

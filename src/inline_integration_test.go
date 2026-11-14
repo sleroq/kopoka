@@ -297,6 +297,15 @@ func TestInlineHistoryPagination(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	for i := range 55 {
+		a := artwork{ID: fmt.Sprintf("chat:%d", i), Photos: []string{"photo"}}
+		if err := saveArtwork(db, 1, a, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO history_chat_hidden(user_id) VALUES (1)`); err != nil {
+		t.Fatal(err)
+	}
 	query := &tgbotapi.InlineQuery{ID: "id", From: &tgbotapi.User{ID: 1}}
 	handleInlineQuery(bot, db, query)
 	if len(results) != 50 || next != "50" {
