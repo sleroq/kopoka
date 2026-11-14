@@ -35,6 +35,7 @@ func setupTelegramBot() (*tgbotapi.BotAPI, *tgbotapi.UpdateConfig, error) {
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
+	u.AllowedUpdates = []string{"message", "channel_post", "inline_query", "chosen_inline_result"}
 
 	return bot, &u, nil
 }
@@ -295,13 +296,16 @@ func main() {
 
 	for update := range updates {
 		if update.InlineQuery != nil {
-			go handleInlineQuery(bot, pApp, update.InlineQuery, os.Getenv("INLINE_CACHE_CHAT_ID"))
+			go handleInlineQuery(bot, update.InlineQuery)
+		}
+		if update.ChosenInlineResult != nil {
+			go handleChosenInlineResult(bot, pApp, update.ChosenInlineResult, os.Getenv("INLINE_CACHE_CHAT_ID"))
 		}
 		if update.Message != nil {
-			handleMessage(bot, pApp, update.Message)
+			go handleMessage(bot, pApp, update.Message)
 		}
 		if update.ChannelPost != nil {
-			handleMessage(bot, pApp, update.ChannelPost)
+			go handleMessage(bot, pApp, update.ChannelPost)
 		}
 	}
 }
