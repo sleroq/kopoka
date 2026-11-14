@@ -11,6 +11,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -420,30 +421,17 @@ func (t *thumbnails) generate(link *url.URL, count int) ([]byte, int, error) {
 	}
 
 	b := img.Bounds()
-	size := min(b.Dx(), b.Dy())
-	if size <= 0 {
+	longest := max(b.Dx(), b.Dy())
+	if min(b.Dx(), b.Dy()) <= 0 {
 		return nil, 0, fmt.Errorf("empty preview image")
 	}
-	origin := image.Pt(b.Min.X+(b.Dx()-size)/2, b.Min.Y+(b.Dy()-size)/2)
-	crop := image.Rectangle{Min: origin, Max: origin.Add(image.Pt(size, size))}
-	canvas := image.NewRGBA(image.Rect(0, 0, 384, 384))
+	width := max(1, int(math.Round(float64(b.Dx())*384/float64(longest))))
+	height := max(1, int(math.Round(float64(b.Dy())*384/float64(longest))))
+	canvas := image.NewRGBA(image.Rect(0, 0, width, height))
 	draw.Draw(canvas, canvas.Bounds(), image.NewUniform(color.White), image.Point{}, draw.Src)
-	draw.CatmullRom.Scale(canvas, canvas.Bounds(), img, crop, draw.Over, nil)
-	// Offset shadows and a faint border keep overlays distinct against any artwork.
-	rounded(canvas, image.Rect(298, 298, 372, 372), 15, color.NRGBA{0, 0, 0, 70})
-	rounded(canvas, image.Rect(296, 296, 370, 370), 15, color.NRGBA{255, 255, 255, 100})
-	background := color.NRGBA{0, 0, 0, 255}
-	if pix {
-		background = color.NRGBA{0, 150, 250, 255}
-	}
-	rounded(canvas, image.Rect(297, 297, 369, 369), 14, background)
-	logo := t.logos[pix]
-	at := image.Pt(333-logo.Bounds().Dx()/2, 333-logo.Bounds().Dy()/2)
-	draw.Draw(canvas, image.Rectangle{Min: at, Max: at.Add(logo.Bounds().Size())}, logo, logo.Bounds().Min, draw.Over)
-	if count > 1 {
-		if err := t.badge(canvas, count); err != nil {
-			return nil, 0, err
-		}
+	draw.CatmullRom.Scale(canvas, canvas.Bounds(), img, b, draw.Over, nil)
+	if err := t.decorate(canvas, pix, count); err != nil {
+		return nil, 0, err
 	}
 
 	var out bytes.Buffer
@@ -451,6 +439,37 @@ func (t *thumbnails) generate(link *url.URL, count int) ([]byte, int, error) {
 		return nil, 0, err
 	}
 	return out.Bytes(), actual, nil
+}
+
+func (t *thumbnails) decorate(canvas *image.RGBA, pix bool, count int) error {
+	width, height := canvas.Bounds().Dx(), canvas.Bounds().Dy()
+	// Offset shadows and a faint border keep overlays distinct against any artwork.
+	tile := image.NewRGBA(image.Rect(0, 0, 76, 76))
+	rounded(tile, image.Rect(2, 2, 76, 76), 15, color.NRGBA{0, 0, 0, 70})
+	rounded(tile, image.Rect(0, 0, 74, 74), 15, color.NRGBA{255, 255, 255, 100})
+	background := color.NRGBA{0, 0, 0, 255}
+	if pix {
+		background = color.NRGBA{0, 150, 250, 255}
+	}
+	rounded(tile, image.Rect(1, 1, 73, 73), 14, background)
+	logo := t.logos[pix]
+	at := image.Pt(37-logo.Bounds().Dx()/2, 37-logo.Bounds().Dy()/2)
+	draw.Draw(tile, image.Rectangle{Min: at, Max: at.Add(logo.Bounds().Size())}, logo, logo.Bounds().Min, draw.Over)
+	shorter := min(width, height)
+	tileSize := max(1, int(math.Round(float64(shorter)*76/384)))
+	margin := int(math.Round(float64(shorter) * 12 / 384))
+	tileBounds := image.Rect(width-margin-tileSize, height-margin-tileSize, width-margin, height-margin)
+	draw.CatmullRom.Scale(canvas, tileBounds, tile, tile.Bounds(), draw.Over, nil)
+	if count > 1 {
+		badge := image.NewRGBA(image.Rect(0, 0, 384, 56))
+		if err := t.badge(badge, count); err != nil {
+			return err
+		}
+		badgeHeight := max(1, int(math.Round(float64(shorter)*56/384)))
+		draw.CatmullRom.Scale(canvas, image.Rect(width-shorter, 0, width, badgeHeight), badge, badge.Bounds(), draw.Over, nil)
+	}
+
+	return nil
 }
 
 func rounded(dst *image.RGBA, r image.Rectangle, radius float32, c color.NRGBA) {

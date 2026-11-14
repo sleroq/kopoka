@@ -11,6 +11,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+const thumbnailRenderVersion = 1
+
 type artwork struct {
 	ID, URL, Author, Text, Caption string
 	Photos, Types                  []string
@@ -38,7 +40,7 @@ func openArtworkDB(path string) (*sql.DB, error) {
  CREATE TABLE IF NOT EXISTS history_opt_out (user_id INTEGER PRIMARY KEY);
  CREATE TABLE IF NOT EXISTS history_chat_hidden (user_id INTEGER PRIMARY KEY);
  CREATE TABLE IF NOT EXISTS history_first_saved (user_id INTEGER PRIMARY KEY);
- CREATE TABLE IF NOT EXISTS thumbnail_cache (artwork_id TEXT NOT NULL, media_count INTEGER NOT NULL, file_id TEXT NOT NULL, PRIMARY KEY (artwork_id, media_count));
+ CREATE TABLE IF NOT EXISTS thumbnail_cache (artwork_id TEXT NOT NULL, media_count INTEGER NOT NULL, file_id TEXT NOT NULL, render_version INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (artwork_id, media_count));
  CREATE TABLE IF NOT EXISTS instant_inline_settings (user_id INTEGER PRIMARY KEY, x INTEGER NOT NULL DEFAULT 0, pixiv INTEGER NOT NULL DEFAULT 0);`)
 	if err != nil {
 		_ = db.Close()
@@ -81,6 +83,18 @@ func openArtworkDB(path string) (*sql.DB, error) {
 			return nil, err
 		}
 	}
+	var hasThumbnailVersion int
+	row = db.QueryRow(`SELECT count(*) FROM pragma_table_info('thumbnail_cache') WHERE name='render_version'`)
+	if err := row.Scan(&hasThumbnailVersion); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if hasThumbnailVersion == 0 {
+		if _, err := db.Exec(`ALTER TABLE thumbnail_cache ADD COLUMN render_version INTEGER NOT NULL DEFAULT 0`); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+	}
 	return db, nil
 }
 
@@ -119,7 +133,9 @@ func toggleInstantInline(db *sql.DB, user int64, action string) error {
 
 func findThumbnail(db *sql.DB, id string, count int) (string, error) {
 	var fileID string
-	err := db.QueryRow(`SELECT file_id FROM thumbnail_cache WHERE artwork_id=? AND media_count=?`, id, count).Scan(&fileID)
+	row := db.QueryRow(`SELECT file_id FROM thumbnail_cache WHERE artwork_id=? AND media_count=? AND render_version=?`,
+		id, count, thumbnailRenderVersion)
+	err := row.Scan(&fileID)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
@@ -127,10 +143,10 @@ func findThumbnail(db *sql.DB, id string, count int) (string, error) {
 }
 
 func saveThumbnail(db *sql.DB, id string, count, actual int, fileID string) error {
-	_, err := db.Exec(`INSERT INTO thumbnail_cache(artwork_id, media_count, file_id)
-		SELECT ?, ?, ? UNION ALL SELECT ?, ?, ? WHERE ? = 0
-		ON CONFLICT(artwork_id, media_count) DO UPDATE SET file_id=excluded.file_id`,
-		id, count, fileID, id, actual, fileID, count)
+	_, err := db.Exec(`INSERT INTO thumbnail_cache(artwork_id, media_count, file_id, render_version)
+		SELECT ?, ?, ?, ? UNION ALL SELECT ?, ?, ?, ? WHERE ? = 0
+		ON CONFLICT(artwork_id, media_count) DO UPDATE SET file_id=excluded.file_id, render_version=excluded.render_version`,
+		id, count, fileID, thumbnailRenderVersion, id, actual, fileID, thumbnailRenderVersion, count)
 	return err
 }
 

@@ -51,7 +51,6 @@ func inlinePhoto(fileID, photoURL string) map[string]any {
 		result["photo_file_id"] = fileID
 	} else {
 		result["photo_url"], result["thumbnail_url"] = photoURL, photoURL
-		result["photo_width"], result["photo_height"] = 384, 384
 	}
 	return result
 }

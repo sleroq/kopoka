@@ -40,10 +40,22 @@ func testPreviews(t *testing.T, db *sql.DB, bot *tgbotapi.BotAPI) *thumbnails {
 	return previews
 }
 
-func thumbnailFixture(t *testing.T) []byte {
+func thumbnailFixture(t *testing.T, width, height int) []byte {
 	t.Helper()
-	img := image.NewRGBA(image.Rect(0, 0, 480, 300))
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
 	draw.Draw(img, img.Bounds(), &image.Uniform{C: color.RGBA{80, 170, 160, 255}}, image.Point{}, draw.Src)
+	edges := []struct {
+		bounds image.Rectangle
+		color  color.RGBA
+	}{
+		{image.Rect(0, 0, width/12, height), color.RGBA{220, 40, 40, 255}},
+		{image.Rect(width-width/12, 0, width, height), color.RGBA{40, 70, 220, 255}},
+		{image.Rect(0, 0, width, height/12), color.RGBA{240, 180, 30, 255}},
+		{image.Rect(0, height-height/12, width, height), color.RGBA{120, 40, 180, 255}},
+	}
+	for _, edge := range edges {
+		draw.Draw(img, edge.bounds, &image.Uniform{C: edge.color}, image.Point{}, draw.Src)
+	}
 	var data bytes.Buffer
 	if err := png.Encode(&data, img); err != nil {
 		t.Fatal(err)
@@ -64,7 +76,7 @@ type thumbnailTestServer struct {
 func newThumbnailTestServer(t *testing.T) *thumbnailTestServer {
 	t.Helper()
 	s := &thumbnailTestServer{
-		t: t, fixture: thumbnailFixture(t), answers: make(chan []map[string]any, 10),
+		t: t, fixture: thumbnailFixture(t, 480, 300), answers: make(chan []map[string]any, 10),
 		started: make(chan struct{}), release: make(chan struct{}),
 		uploadStarted: make(chan struct{}), uploadRelease: make(chan struct{}),
 	}
@@ -144,7 +156,7 @@ func TestInlineThumbnailFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(t.TempDir(), "thumbnails.db")
+	path := legacyThumbnailDB(t)
 	db, err := openArtworkDB(path)
 	if err != nil {
 		t.Fatal(err)
@@ -172,11 +184,7 @@ func TestInlineThumbnailFlow(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("inline query waited for the source")
 	}
-	result := (<-s.answers)[0]
-	thumbnailURL, ok := result["thumbnail_url"].(string)
-	if !ok || result["type"] != "photo" || result["photo_url"] != thumbnailURL || !strings.HasPrefix(thumbnailURL, "https://preview.example.com/thumbnail?") {
-		t.Fatalf("inline result: %#v", result)
-	}
+	thumbnailURL := uncachedThumbnailURL(t, (<-s.answers)[0])
 	select {
 	case <-s.started:
 	case <-time.After(2 * time.Second):
@@ -184,6 +192,10 @@ func TestInlineThumbnailFlow(t *testing.T) {
 	}
 	localURL := previewServer.URL + strings.TrimPrefix(thumbnailURL, "https://preview.example.com")
 	multi := awaitThumbnail(t, localURL, func() { s.releaseOnce.Do(func() { close(s.release) }) })
+	if multi.Bounds().Size() != image.Pt(384, 240) {
+		t.Fatalf("landscape thumbnail size: %v", multi.Bounds().Size())
+	}
+	checkThumbnailEdges(t, multi)
 	select {
 	case <-s.uploadStarted:
 	case <-time.After(2 * time.Second):
@@ -234,17 +246,50 @@ func TestInlineThumbnailFlow(t *testing.T) {
 	checkThumbnailFailures(t, db, previewServer.URL, "https://x.com/user/status/2", &s.uploads)
 }
 
+func legacyThumbnailDB(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "thumbnails.db")
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = legacy.Exec(`CREATE TABLE thumbnail_cache (artwork_id TEXT NOT NULL, media_count INTEGER NOT NULL,
+		file_id TEXT NOT NULL, PRIMARY KEY (artwork_id, media_count));
+		INSERT INTO thumbnail_cache VALUES ('x:1', 0, 'old-square-thumbnail')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func uncachedThumbnailURL(t *testing.T, result map[string]any) string {
+	t.Helper()
+	thumbnailURL, ok := result["thumbnail_url"].(string)
+	if !ok || result["type"] != "photo" || result["photo_url"] != thumbnailURL || !strings.HasPrefix(thumbnailURL, "https://preview.example.com/thumbnail?") {
+		t.Fatalf("inline result: %#v", result)
+	}
+	if _, width := result["photo_width"]; width {
+		t.Fatalf("inline result fixes an unknown aspect ratio: %#v", result)
+	}
+	if _, height := result["photo_height"]; height {
+		t.Fatalf("inline result fixes an unknown aspect ratio: %#v", result)
+	}
+	return thumbnailURL
+}
+
 func awaitCachedThumbnail(t *testing.T, db *sql.DB, id string, count int) string {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		var fileID string
-		err := db.QueryRow(`SELECT file_id FROM thumbnail_cache WHERE artwork_id=? AND media_count=?`, id, count).Scan(&fileID)
-		if err == nil {
-			return fileID
-		}
-		if err != sql.ErrNoRows {
+		fileID, err := findThumbnail(db, id, count)
+		if err != nil {
 			t.Fatal(err)
+		}
+		if fileID != "" {
+			return fileID
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -405,17 +450,20 @@ func checkCachedThumbnails(t *testing.T, db *sql.DB, bot *tgbotapi.BotAPI, previ
 	}
 	single := readThumbnail(t, res)
 	// The count badge must appear only on the multi-image preview.
-	mr, mg, mb, _ := multi.At(338, 20).RGBA()
-	sr, sg, sb, _ := single.At(338, 20).RGBA()
+	size := single.Bounds().Size()
+	side := min(size.X, size.Y)
+	badgeX, badgeY := size.X-46*side/384, 20*side/384
+	mr, mg, mb, _ := multi.At(badgeX, badgeY).RGBA()
+	sr, sg, sb, _ := single.At(badgeX, badgeY).RGBA()
 	if mr+mg+mb >= sr+sg+sb {
 		t.Fatal("multi-image preview is missing the count badge")
 	}
 	// The black X tile sits inside rounded corners over the artwork.
-	r, g, b, _ := single.At(310, 330).RGBA()
+	r, g, b, _ := single.At(size.X-74*side/384, size.Y-54*side/384).RGBA()
 	if r+g+b > 10000 {
 		t.Fatal("X logo tile is missing")
 	}
-	r, g, b, _ = single.At(297, 297).RGBA()
+	r, g, b, _ = single.At(size.X-87*side/384, size.Y-87*side/384).RGBA()
 	if r+g+b < 10000 {
 		t.Fatal("X logo tile corners are not rounded")
 	}
@@ -453,14 +501,31 @@ func readThumbnail(t *testing.T, res *http.Response) image.Image {
 		t.Fatalf("thumbnail: %s, type %s", res.Status, res.Header.Get("Content-Type"))
 	}
 	img, format, err := image.Decode(res.Body)
-	if err != nil || format != "jpeg" || img.Bounds().Size() != image.Pt(384, 384) {
-		t.Fatalf("thumbnail dimensions or format: %v, %s, %v", img, format, err)
+	if err != nil || format != "jpeg" {
+		t.Fatalf("thumbnail format: %s, %v", format, err)
+	}
+	size := img.Bounds().Size()
+	if max(size.X, size.Y) != 384 {
+		t.Fatalf("thumbnail size: %v", size)
 	}
 	return img
 }
 
+func checkThumbnailEdges(t *testing.T, img image.Image) {
+	t.Helper()
+	size := img.Bounds().Size()
+	leftR, leftG, leftB, _ := img.At(5, size.Y/2).RGBA()
+	rightR, rightG, rightB, _ := img.At(size.X-6, size.Y/2).RGBA()
+	topR, topG, topB, _ := img.At(size.X/2, 5).RGBA()
+	bottomR, bottomG, bottomB, _ := img.At(size.X/2, size.Y-6).RGBA()
+	if leftR <= leftG || leftR <= leftB || rightB <= rightR || rightB <= rightG ||
+		topR <= topB || topG <= topB || bottomB <= bottomR || bottomB <= bottomG {
+		t.Fatal("thumbnail cropped an artwork edge")
+	}
+}
+
 func TestPixivThumbnailFlow(t *testing.T) {
-	fixture := thumbnailFixture(t)
+	fixture := thumbnailFixture(t, 300, 480)
 	var previews *thumbnails
 	var downloads atomic.Int32
 
@@ -529,16 +594,22 @@ func TestPixivThumbnailFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	img := readThumbnail(t, res)
+	if img.Bounds().Size() != image.Pt(240, 384) {
+		t.Fatalf("portrait thumbnail size: %v", img.Bounds().Size())
+	}
+	checkThumbnailEdges(t, img)
 	awaitCachedThumbnail(t, db, "pixiv:123", 0)
 	awaitCachedThumbnail(t, db, "pixiv:123", 12)
 	if downloads.Load() != 1 {
 		t.Fatalf("Pixiv image downloads: %d", downloads.Load())
 	}
-	r, g, b, _ := img.At(310, 330).RGBA()
+	size := img.Bounds().Size()
+	side := min(size.X, size.Y)
+	r, g, b, _ := img.At(size.X-74*side/384, size.Y-54*side/384).RGBA()
 	if b <= r || g <= r {
 		t.Fatal("Pixiv blue logo tile is missing")
 	}
-	r, g, b, _ = img.At(338, 20).RGBA()
+	r, g, b, _ = img.At(size.X-46*side/384, 20*side/384).RGBA()
 	if r+g+b > 30000 {
 		t.Fatal("Pixiv multi-page count badge is missing")
 	}
