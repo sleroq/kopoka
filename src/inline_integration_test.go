@@ -732,11 +732,19 @@ func TestHistoryPreferenceTelegramFlow(t *testing.T) {
 	}
 	checkHistory(1, "x:1")
 	callback(1, "history:confirm:1")
-	if callbackAnswer != "" || !strings.Contains(reply, "deleted") || !strings.Contains(reply, "/historyon") || !strings.Contains(markup, "Delete my history") {
+	if callbackAnswer != "" || !strings.Contains(reply, "deleted") || !strings.Contains(reply, "/historyon") || strings.Contains(markup, "Delete my history") {
 		t.Fatalf("deleted: answer %q reply %q markup %s", callbackAnswer, reply, markup)
 	}
 	checkHistory(1)
 	checkHistory(2, "x:2", "x:1")
+	command("/historyoff")
+	if reply != historyOffText || strings.Contains(markup, "Delete my history") {
+		t.Fatalf("empty history reply: %q markup: %s", reply, markup)
+	}
+	callback(1, "history:delete:1")
+	if !strings.Contains(reply, "empty") || strings.Contains(markup, "Confirm") {
+		t.Fatalf("empty history callback: %q markup: %s", reply, markup)
+	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}

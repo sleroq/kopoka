@@ -313,7 +313,12 @@ func handleMessage(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, mes
 			reply := tgbotapi.NewMessage(message.Chat.ID, text)
 			reply.ReplyToMessageID = message.MessageID
 			if !enabled && text == historyOffText {
-				reply.ReplyMarkup = historyDeleteKeyboard(message.From.ID)
+				count, err := historyCount(db, message.From.ID)
+				if err != nil {
+					log.Printf("counting history: %v", err)
+				} else if count > 0 {
+					reply.ReplyMarkup = historyDeleteKeyboard(message.From.ID)
+				}
 			}
 			if _, err := bot.Send(reply); err != nil {
 				log.Printf("sending history preference reply: %v", err)
