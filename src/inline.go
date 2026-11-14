@@ -21,6 +21,10 @@ func inlineLink(text string) *url.URL {
 		return nil
 	}
 	if link.Host == "pixiv.net" || link.Host == "www.pixiv.net" {
+		if strings.HasPrefix(link.Path, "/en/artworks/") {
+			link.Path = strings.TrimPrefix(link.Path, "/en")
+			link.RawPath = ""
+		}
 		id, ok := strings.CutPrefix(link.Path, "/artworks/")
 		n, err := strconv.ParseUint(id, 10, 64)
 		if !ok || err != nil || n == 0 {

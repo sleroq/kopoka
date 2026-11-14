@@ -28,8 +28,11 @@
             "-s"
             "-w"
           ];
+          nativeBuildInputs = [ pkgs.makeWrapper ];
+          nativeCheckInputs = [ pkgs.ffmpeg ];
           postInstall = ''
             mv $out/bin/src $out/bin/kopoka
+            wrapProgram $out/bin/kopoka --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.ffmpeg ]}
           '';
           meta = with pkgs.lib; {
             description = "A Telegram bot for handling Pixiv and X (Twitter) links";

@@ -72,6 +72,22 @@ func handlePixivLink(app *pixiv.AppPixivAPI, link *url.URL, metadata *artwork) (
 
 	metadata.Author, metadata.Text = illust.User.Name, illust.Title
 	client := &http.Client{Timeout: 30 * time.Second}
+	if illust.Type == "ugoira" {
+		pixivRequestMu.Lock()
+		ugoira, err := app.UgoiraMetadata(uint64(id))
+		pixivRequestMu.Unlock()
+		if err != nil {
+			return nil, fmt.Errorf("fetching Pixiv ugoira metadata: %w", err)
+		}
+		file, err := downloadPixivUgoira(client, &ugoira.UgoiraMetadataUgoiraMetadata)
+		if err != nil {
+			return nil, err
+		}
+		video := tgbotapi.NewInputMediaVideo(file)
+		video.Caption = pixivCaption(illust)
+		video.ParseMode = "HTML"
+		return []any{video}, nil
+	}
 	var photos []any
 	for i, page := range illust.MetaPages {
 		file, err := downloadPixivPhoto(client, page.Images.Original, page.Images.Large)
@@ -242,6 +258,7 @@ func processLink(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, messa
 	valid := inlineLink(link.String())
 	a := artwork{}
 	if valid != nil {
+		link = valid
 		a.ID, a.URL = artworkID(valid), valid.String()
 	}
 	photos, err := fetchArtPhotos(app, link, &a)
