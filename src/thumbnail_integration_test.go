@@ -14,7 +14,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -69,14 +71,14 @@ type thumbnailTestServer struct {
 	fixture                                               []byte
 	started, release, uploadStarted, uploadRelease        chan struct{}
 	startOnce, releaseOnce, uploadOnce, uploadReleaseOnce sync.Once
-	upstream, failures, uploads                           atomic.Int32
+	upstream, failures, uploads, downloads                atomic.Int32
 	answers                                               chan []map[string]any
 }
 
 func newThumbnailTestServer(t *testing.T) *thumbnailTestServer {
 	t.Helper()
 	s := &thumbnailTestServer{
-		t: t, fixture: thumbnailFixture(t, 480, 300), answers: make(chan []map[string]any, 10),
+		t: t, fixture: thumbnailFixture(t, 1600, 1000), answers: make(chan []map[string]any, 10),
 		started: make(chan struct{}), release: make(chan struct{}),
 		uploadStarted: make(chan struct{}), uploadRelease: make(chan struct{}),
 	}
@@ -103,6 +105,18 @@ func (s *thumbnailTestServer) serveHTTP(w http.ResponseWriter, r *http.Request) 
 		}
 		if r.FormValue("chat_id") != "@cache" {
 			s.t.Errorf("cache chat = %q", r.FormValue("chat_id"))
+		}
+		file, _, err := r.FormFile("photo")
+		if err != nil {
+			s.t.Error(err)
+		} else {
+			img, format, err := image.Decode(file)
+			_ = file.Close()
+			if err != nil || format != "jpeg" {
+				s.t.Errorf("uploaded image: format %s, error %v", format, err)
+			} else if img.Bounds().Size() != image.Pt(1280, 800) {
+				s.t.Errorf("uploaded dimensions: %v", img.Bounds().Size())
+			}
 		}
 		n := s.uploads.Add(1)
 		if n == 1 {
@@ -136,10 +150,13 @@ func (s *thumbnailTestServer) serveHTTP(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "tweet": map[string]any{"media": map[string]any{
-			"photos": []any{map[string]any{"type": "photo", "url": s.server.URL + "/cover.png"}},
+			"photos": []any{map[string]any{"type": "photo", "url": s.server.URL + "/small.png"}},
 		}}})
 	case r.URL.Path == "/cover.png":
+		s.downloads.Add(1)
 		_, _ = w.Write(s.fixture)
+	case r.URL.Path == "/small.png":
+		_, _ = w.Write(thumbnailFixture(s.t, 480, 300))
 	default:
 		http.NotFound(w, r)
 	}
@@ -162,6 +179,9 @@ func TestInlineThumbnailFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
+	if _, err := db.Exec(`UPDATE thumbnail_cache SET render_version=1 WHERE artwork_id='x:1'`); err != nil {
+		t.Fatal(err)
+	}
 	previews, err := newThumbnails("https://preview.example.com", nil, bot, db, "@cache")
 	if err != nil {
 		t.Fatal(err)
@@ -184,29 +204,60 @@ func TestInlineThumbnailFlow(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("inline query waited for the source")
 	}
-	thumbnailURL := uncachedThumbnailURL(t, (<-s.answers)[0])
+	photoURL, thumbnailURL := uncachedThumbnailURLs(t, (<-s.answers)[0])
 	select {
 	case <-s.started:
 	case <-time.After(2 * time.Second):
 		t.Fatal("thumbnail generation did not start")
 	}
 	localURL := previewServer.URL + strings.TrimPrefix(thumbnailURL, "https://preview.example.com")
-	multi := awaitThumbnail(t, localURL, func() { s.releaseOnce.Do(func() { close(s.release) }) })
+	largeURL := previewServer.URL + strings.TrimPrefix(photoURL, "https://preview.example.com")
+	images := awaitThumbnails(t, []string{localURL, largeURL}, func() { s.releaseOnce.Do(func() { close(s.release) }) })
+	multi, large := images[0], images[1]
+	if large.Bounds().Size() != image.Pt(1280, 800) {
+		t.Fatalf("landscape photo size: %v", large.Bounds().Size())
+	}
+	checkThumbnailEdges(t, large)
+	checkXDecorations(t, large)
 	if multi.Bounds().Size() != image.Pt(384, 240) {
 		t.Fatalf("landscape thumbnail size: %v", multi.Bounds().Size())
 	}
 	checkThumbnailEdges(t, multi)
+	checkXDecorations(t, multi)
 	select {
 	case <-s.uploadStarted:
 	case <-time.After(2 * time.Second):
 		t.Fatal("thumbnail upload did not start")
 	}
 	s.uploadReleaseOnce.Do(func() { close(s.uploadRelease) })
+	db = reopenCachedThumbnail(t, s, bot, db, path, previews, query)
+
+	checkCachedThumbnails(t, db, bot, previews, s.answers, previewServer, multi)
+	awaitCachedThumbnail(t, db, "x:1", 1)
+	checkInstantThumbnail(t, db, bot, previews, s.answers, previewServer, &s.upstream)
+	handleInlineQuery(bot, db, query, previews)
+	if result := (<-s.answers)[0]; result["photo_file_id"] != "thumbnail-2" {
+		t.Fatalf("instant cached thumbnail: %#v", result)
+	}
+	checkInvalidArtworkThumbnails(t, db, bot, previews, s.answers)
+	checkCachedSourceFailure(t, db, bot, previews, s.answers, previewServer)
+	checkThumbnailFailures(t, db, previewServer.URL, "https://x.com/user/status/2", &s.uploads)
+}
+
+func reopenCachedThumbnail(t *testing.T, s *thumbnailTestServer, bot *tgbotapi.BotAPI, db *sql.DB, path string, previews *thumbnails, query *tgbotapi.InlineQuery) *sql.DB {
+	t.Helper()
+
 	awaitCachedThumbnail(t, db, "x:1", 0)
 	awaitCachedThumbnail(t, db, "x:1", 2)
+	var version int
+	row := db.QueryRow(`SELECT render_version FROM thumbnail_cache WHERE artwork_id='x:1' AND media_count=0`)
+	err := row.Scan(&version)
+	if err != nil || version != 2 {
+		t.Fatalf("cached render version: %d, %v", version, err)
+	}
 	before := s.upstream.Load()
 	handleInlineQuery(bot, db, query, previews)
-	if cached := (<-s.answers)[0]; cached["photo_file_id"] != "thumbnail-2" {
+	if cached := (<-s.answers)[0]; cached["photo_file_id"] != "thumbnail-2" || cached["photo_url"] != nil || cached["thumbnail_url"] != nil {
 		t.Fatalf("cached thumbnail: %#v", cached)
 	}
 	if s.upstream.Load() != before {
@@ -221,7 +272,7 @@ func TestInlineThumbnailFlow(t *testing.T) {
 	}
 	previews.db = db
 	handleInlineQuery(bot, db, query, previews)
-	if cached := (<-s.answers)[0]; cached["photo_file_id"] != "thumbnail-2" {
+	if cached := (<-s.answers)[0]; cached["photo_file_id"] != "thumbnail-2" || cached["photo_url"] != nil || cached["thumbnail_url"] != nil {
 		t.Fatalf("reopened thumbnail: %#v", cached)
 	}
 	query.Query = "https://vxtwitter.com/other/status/1"
@@ -230,20 +281,10 @@ func TestInlineThumbnailFlow(t *testing.T) {
 		t.Fatalf("thumbnail via alternate host: %#v", cached)
 	}
 	query.Query = "https://x.com/user/status/1"
-	if s.upstream.Load() != 1 {
-		t.Fatalf("source requests = %d, want shared generation", s.upstream.Load())
+	if s.upstream.Load() != 1 || s.downloads.Load() != 1 {
+		t.Fatalf("metadata requests = %d, image downloads = %d, want one each", s.upstream.Load(), s.downloads.Load())
 	}
-
-	checkCachedThumbnails(t, db, bot, previews, s.answers, previewServer, multi)
-	awaitCachedThumbnail(t, db, "x:1", 1)
-	checkInstantThumbnail(t, db, bot, previews, s.answers, previewServer, &s.upstream)
-	handleInlineQuery(bot, db, query, previews)
-	if result := (<-s.answers)[0]; result["photo_file_id"] != "thumbnail-2" {
-		t.Fatalf("instant cached thumbnail: %#v", result)
-	}
-	checkInvalidArtworkThumbnails(t, db, bot, previews, s.answers)
-	checkCachedSourceFailure(t, db, bot, previews, s.answers, previewServer)
-	checkThumbnailFailures(t, db, previewServer.URL, "https://x.com/user/status/2", &s.uploads)
+	return db
 }
 
 func legacyThumbnailDB(t *testing.T) string {
@@ -265,11 +306,22 @@ func legacyThumbnailDB(t *testing.T) string {
 	return path
 }
 
-func uncachedThumbnailURL(t *testing.T, result map[string]any) string {
+func uncachedThumbnailURLs(t *testing.T, result map[string]any) (string, string) {
 	t.Helper()
-	thumbnailURL, ok := result["thumbnail_url"].(string)
-	if !ok || result["type"] != "photo" || result["photo_url"] != thumbnailURL || !strings.HasPrefix(thumbnailURL, "https://preview.example.com/thumbnail?") {
+	photo, pok := result["photo_url"].(string)
+	thumbnail, tok := result["thumbnail_url"].(string)
+	p, pe := url.Parse(photo)
+	thumb, te := url.Parse(thumbnail)
+	if !pok || !tok || pe != nil || te != nil || result["type"] != "photo" || p.Scheme != "https" || p.Host != "preview.example.com" || p.Path != "/thumbnail" || thumb.Scheme != p.Scheme || thumb.Host != p.Host || thumb.Path != p.Path {
 		t.Fatalf("inline result: %#v", result)
+	}
+	pq, tq := p.Query(), thumb.Query()
+	if pq.Get("size") != "large" || tq.Has("size") || tq.Get("url") == "" {
+		t.Fatalf("preview queries: %v, %v", pq, tq)
+	}
+	pq.Del("size")
+	if !reflect.DeepEqual(pq, tq) {
+		t.Fatalf("preview queries differ: %v, %v", pq, tq)
 	}
 	if _, width := result["photo_width"]; width {
 		t.Fatalf("inline result fixes an unknown aspect ratio: %#v", result)
@@ -277,7 +329,7 @@ func uncachedThumbnailURL(t *testing.T, result map[string]any) string {
 	if _, height := result["photo_height"]; height {
 		t.Fatalf("inline result fixes an unknown aspect ratio: %#v", result)
 	}
-	return thumbnailURL
+	return photo, thumbnail
 }
 
 func awaitCachedThumbnail(t *testing.T, db *sql.DB, id string, count int) string {
@@ -305,7 +357,7 @@ func checkInstantThumbnail(t *testing.T, db *sql.DB, bot *tgbotapi.BotAPI, previ
 	before := upstream.Load()
 	query := &tgbotapi.InlineQuery{ID: "query", From: &tgbotapi.User{ID: 1}, Query: "https://x.com/user/status/2"}
 	handleInlineQuery(bot, db, query, previews)
-	if result := (<-answers)[0]; result["photo_url"] != "https://preview.example.com/thumbnail-placeholder-x.jpg" || upstream.Load() != before {
+	if result := (<-answers)[0]; result["photo_url"] != "https://preview.example.com/thumbnail-placeholder-x.jpg" || result["thumbnail_url"] != result["photo_url"] || upstream.Load() != before {
 		t.Fatal("instant inline mode started a preview")
 	}
 	for _, source := range []string{"x", "pixiv"} {
@@ -369,6 +421,7 @@ func checkThumbnailFailures(t *testing.T, db *sql.DB, baseURL, sourceURL string,
 	if res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("invalid source status = %d", res.StatusCode)
 	}
+
 	before := uploads.Load()
 	retryURL := baseURL + "/thumbnail?url=" + url.QueryEscape(sourceURL) + "&count=5"
 	res, err = http.Get(retryURL)
@@ -379,11 +432,33 @@ func checkThumbnailFailures(t *testing.T, db *sql.DB, baseURL, sourceURL string,
 	if res.StatusCode != http.StatusBadGateway {
 		t.Fatalf("failed source status = %d", res.StatusCode)
 	}
+
 	res, err = http.Get(retryURL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = readThumbnail(t, res)
+	small := readThumbnail(t, res)
+	if small.Bounds().Size() != image.Pt(384, 240) {
+		t.Fatalf("small source thumbnail: %v", small.Bounds().Size())
+	}
+	res, err = http.Get(retryURL + "&size=large")
+	if err != nil {
+		t.Fatal(err)
+	}
+	large := readThumbnail(t, res)
+	if large.Bounds().Size() != image.Pt(480, 300) {
+		t.Fatalf("small source photo: %v", large.Bounds().Size())
+	}
+
+	res, err = http.Get(retryURL + "&size=invalid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid size status: %d", res.StatusCode)
+	}
+
 	time.Sleep(100 * time.Millisecond)
 	id, err := findThumbnail(db, "x:2", 5)
 	if err != nil || id != "" || uploads.Load() != before {
@@ -391,36 +466,39 @@ func checkThumbnailFailures(t *testing.T, db *sql.DB, baseURL, sourceURL string,
 	}
 }
 
-func awaitThumbnail(t *testing.T, endpoint string, release func()) image.Image {
+func awaitThumbnails(t *testing.T, endpoints []string, release func()) []image.Image {
 	t.Helper()
-	response := make(chan *http.Response, 1)
-	requestErr := make(chan error, 1)
-	go func() {
-		res, err := http.Get(endpoint)
-		if err != nil {
-			requestErr <- err
-			return
-		}
-		response <- res
-	}()
+	type response struct {
+		index int
+		res   *http.Response
+		err   error
+	}
+	results := make(chan response, len(endpoints))
+	for i, endpoint := range endpoints {
+		go func() { res, err := http.Get(endpoint); results <- response{i, res, err} }()
+	}
 	select {
-	case res := <-response:
-		_ = res.Body.Close()
-		t.Fatal("thumbnail returned before source was ready")
-	case err := <-requestErr:
-		t.Fatal(err)
-	case <-time.After(50 * time.Millisecond):
+	case result := <-results:
+		if result.res != nil {
+			_ = result.res.Body.Close()
+		}
+		t.Fatalf("preview returned before source was ready: %v", result.err)
+	case <-time.After(100 * time.Millisecond):
 	}
 	release()
-	select {
-	case res := <-response:
-		return readThumbnail(t, res)
-	case err := <-requestErr:
-		t.Fatal(err)
-	case <-time.After(2 * time.Second):
-		t.Fatal("thumbnail did not finish")
+	images := make([]image.Image, len(endpoints))
+	for range endpoints {
+		select {
+		case result := <-results:
+			if result.err != nil {
+				t.Fatal(result.err)
+			}
+			images[result.index] = readThumbnail(t, result.res)
+		case <-time.After(5 * time.Second):
+			t.Fatal("preview did not finish")
+		}
 	}
-	return nil
+	return images
 }
 
 func checkCachedThumbnails(t *testing.T, db *sql.DB, bot *tgbotapi.BotAPI, previews *thumbnails, answers <-chan []map[string]any, previewServer *httptest.Server, multi image.Image) {
@@ -504,10 +582,6 @@ func readThumbnail(t *testing.T, res *http.Response) image.Image {
 	if err != nil || format != "jpeg" {
 		t.Fatalf("thumbnail format: %s, %v", format, err)
 	}
-	size := img.Bounds().Size()
-	if max(size.X, size.Y) != 384 {
-		t.Fatalf("thumbnail size: %v", size)
-	}
 	return img
 }
 
@@ -524,10 +598,27 @@ func checkThumbnailEdges(t *testing.T, img image.Image) {
 	}
 }
 
+func checkXDecorations(t *testing.T, img image.Image) {
+	t.Helper()
+	size := img.Bounds().Size()
+	side := min(size.X, size.Y)
+	r, g, b, _ := img.At(size.X-74*side/384, size.Y-54*side/384).RGBA()
+	if r+g+b > 10000 {
+		t.Fatal("X logo tile is missing")
+	}
+	r, g, b, _ = img.At(size.X-46*side/384, 20*side/384).RGBA()
+	if r+g+b > 30000 {
+		t.Fatal("count badge is missing")
+	}
+}
+
 func TestPixivThumbnailFlow(t *testing.T) {
-	fixture := thumbnailFixture(t, 300, 480)
+	fixture, err := os.ReadFile("testdata/thumbnail-portrait.webp")
+	if err != nil {
+		t.Fatal(err)
+	}
 	var previews *thumbnails
-	var downloads atomic.Int32
+	var downloads, metadata atomic.Int32
 
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -537,6 +628,18 @@ func TestPixivThumbnailFlow(t *testing.T) {
 			_, _ = fmt.Fprint(w, `{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`)
 		case "/bottoken/sendPhoto":
 			_ = r.ParseMultipartForm(8 << 20)
+			file, _, err := r.FormFile("photo")
+			if err != nil {
+				t.Error(err)
+			} else {
+				img, format, err := image.Decode(file)
+				_ = file.Close()
+				if err != nil || format != "jpeg" {
+					t.Errorf("Pixiv upload format %s, error %v", format, err)
+				} else if img.Bounds().Size() != image.Pt(800, 1280) {
+					t.Errorf("Pixiv upload dimensions: %v", img.Bounds().Size())
+				}
+			}
 			if r.FormValue("chat_id") != "@cache" {
 				t.Errorf("cache chat: %q", r.FormValue("chat_id"))
 			}
@@ -546,9 +649,10 @@ func TestPixivThumbnailFlow(t *testing.T) {
 		case "/auth/token":
 			_, _ = fmt.Fprint(w, `{"response":{"access_token":"access","refresh_token":"refresh","expires_in":3600,"user":{}}}`)
 		case "/v1/illust/detail":
+			metadata.Add(1)
 			_, _ = fmt.Fprint(w, `{"illust":{"id":123,"type":"illust","page_count":12,
-                "image_urls":{"medium":"https://i.pximg.net/cover.png"}}}`)
-		case "/cover.png":
+                "image_urls":{"medium":"https://i.pximg.net/medium.png","large":"https://i.pximg.net/cover.jpg"}}}`)
+		case "/cover.jpg":
 			if r.Referer() != "https://www.pixiv.net/" {
 				t.Error("missing Pixiv image referer")
 			}
@@ -588,29 +692,45 @@ func TestPixivThumbnailFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	link := inlineLink("https://www.pixiv.net/en/artworks/123")
-	_, photoURL := previews.photo(link, 0)
-	res, err := server.Client().Get(photoURL)
+	_, photoURL, thumbnailURL := previews.photo(link, 0)
+	checkPixivPreviews(t, server.Client(), photoURL, thumbnailURL)
+	awaitCachedThumbnail(t, db, "pixiv:123", 0)
+	awaitCachedThumbnail(t, db, "pixiv:123", 12)
+	if downloads.Load() != 1 || metadata.Load() != 1 {
+		t.Fatalf("Pixiv metadata requests: %d, image downloads: %d", metadata.Load(), downloads.Load())
+	}
+}
+
+func checkPixivPreviews(t *testing.T, client *http.Client, photoURL, thumbnailURL string) {
+	t.Helper()
+	res, err := client.Get(photoURL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	img := readThumbnail(t, res)
-	if img.Bounds().Size() != image.Pt(240, 384) {
-		t.Fatalf("portrait thumbnail size: %v", img.Bounds().Size())
+	large := readThumbnail(t, res)
+	if large.Bounds().Size() != image.Pt(800, 1280) {
+		t.Fatalf("portrait photo size: %v", large.Bounds().Size())
 	}
-	checkThumbnailEdges(t, img)
-	awaitCachedThumbnail(t, db, "pixiv:123", 0)
-	awaitCachedThumbnail(t, db, "pixiv:123", 12)
-	if downloads.Load() != 1 {
-		t.Fatalf("Pixiv image downloads: %d", downloads.Load())
+	checkThumbnailEdges(t, large)
+	res, err = client.Get(thumbnailURL)
+	if err != nil {
+		t.Fatal(err)
 	}
-	size := img.Bounds().Size()
-	side := min(size.X, size.Y)
-	r, g, b, _ := img.At(size.X-74*side/384, size.Y-54*side/384).RGBA()
-	if b <= r || g <= r {
-		t.Fatal("Pixiv blue logo tile is missing")
+	small := readThumbnail(t, res)
+	if small.Bounds().Size() != image.Pt(240, 384) {
+		t.Fatalf("portrait thumbnail size: %v", small.Bounds().Size())
 	}
-	r, g, b, _ = img.At(size.X-46*side/384, 20*side/384).RGBA()
-	if r+g+b > 30000 {
-		t.Fatal("Pixiv multi-page count badge is missing")
+	checkThumbnailEdges(t, small)
+	for _, img := range []image.Image{small, large} {
+		size := img.Bounds().Size()
+		side := min(size.X, size.Y)
+		r, g, b, _ := img.At(size.X-74*side/384, size.Y-54*side/384).RGBA()
+		if b <= r || g <= r {
+			t.Fatal("Pixiv blue logo tile is missing")
+		}
+		r, g, b, _ = img.At(size.X-46*side/384, 20*side/384).RGBA()
+		if r+g+b > 30000 {
+			t.Fatal("Pixiv multi-page count badge is missing")
+		}
 	}
 }

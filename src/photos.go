@@ -12,6 +12,7 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"golang.org/x/image/draw"
+	_ "golang.org/x/image/webp"
 )
 
 func downloadArtPhoto(client *http.Client, file tgbotapi.RequestFileData) (image.Image, error) {

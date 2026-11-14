@@ -40,6 +40,7 @@ var pixivLogo []byte
 type thumbnailWork struct {
 	done     chan struct{}
 	data     []byte
+	large    []byte
 	actual   int
 	err      error
 	finished time.Time
@@ -151,11 +152,12 @@ func (t *thumbnails) cached(link *url.URL, count int) string {
 	return id
 }
 
-func (t *thumbnails) photo(link *url.URL, count int) (fileID, photoURL string) {
+func (t *thumbnails) photo(link *url.URL, count int) (fileID, photoURL, thumbnailURL string) {
 	if id := t.cached(link, count); id != "" {
-		return id, ""
+		return id, "", ""
 	}
-	return "", t.url(link, count)
+	thumbnailURL = t.url(link, count)
+	return "", thumbnailURL + "&size=large", thumbnailURL
 }
 
 func (t *thumbnails) placeholderURL(pixiv bool) string {
@@ -215,9 +217,9 @@ func (t *thumbnails) start(link *url.URL, count int) *thumbnailWork {
 	t.work[key] = w
 	go func() {
 		t.workers <- struct{}{}
-		data, actual, err := t.generate(link, count)
+		data, large, actual, err := t.generate(link, count)
 		t.mu.Lock()
-		w.data, w.actual, w.err, w.finished = data, actual, err, time.Now()
+		w.data, w.large, w.actual, w.err, w.finished = data, large, actual, err, time.Now()
 		if err != nil {
 			delete(t.work, key)
 		}
@@ -243,7 +245,7 @@ func (t *thumbnails) cacheWork(link *url.URL, count int, work *thumbnailWork) {
 		}
 		t.workers <- struct{}{}
 		if t.cached(link, count) == "" {
-			t.cachePhoto(link, count, work.actual, work.data)
+			t.cachePhoto(link, count, work.actual, work.large)
 		}
 		<-t.workers
 	}()
@@ -286,6 +288,13 @@ func (t *thumbnails) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (t *thumbnails) serveThumbnail(w http.ResponseWriter, r *http.Request) {
+	for _, size := range r.URL.Query()["size"] {
+		if size != "large" {
+			http.Error(w, "invalid size", http.StatusBadRequest)
+			return
+		}
+	}
+
 	link := inlineLink(r.URL.Query().Get("url"))
 	if link == nil {
 		http.Error(w, "invalid URL", http.StatusBadRequest)
@@ -306,6 +315,9 @@ func (t *thumbnails) serveThumbnail(w http.ResponseWriter, r *http.Request) {
 		return
 	case <-work.done:
 		data := work.data
+		if r.URL.Query().Get("size") == "large" {
+			data = work.large
+		}
 		if work.err != nil {
 			log.Printf("generating thumbnail for %s: %v", link, work.err)
 			art, err := findArtwork(t.db, artworkID(link))
@@ -353,9 +365,9 @@ func (t *thumbnails) pixivSource(link *url.URL) (string, int, error) {
 	if illust == nil || illust.Images == nil {
 		return "", 0, fmt.Errorf("missing Pixiv preview")
 	}
-	preview := illust.Images.Medium
+	preview := illust.Images.Large
 	if preview == "" {
-		preview = illust.Images.Large
+		preview = illust.Images.Medium
 	}
 	if preview == "" {
 		return "", 0, fmt.Errorf("missing Pixiv preview")
@@ -406,15 +418,15 @@ func (t *thumbnails) xSource(link *url.URL) (string, int, error) {
 	return "", 0, fmt.Errorf("FxTwitter preview missing")
 }
 
-func (t *thumbnails) generate(link *url.URL, count int) ([]byte, int, error) {
+func (t *thumbnails) generate(link *url.URL, count int) ([]byte, []byte, int, error) {
 	source, actual, pix, err := t.source(link)
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, 0, err
 	}
 
 	img, err := downloadArtPhoto(t.client, tgbotapi.FileURL(source))
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, 0, err
 	}
 	if count == 0 {
 		count = actual
@@ -423,37 +435,46 @@ func (t *thumbnails) generate(link *url.URL, count int) ([]byte, int, error) {
 	b := img.Bounds()
 	longest := max(b.Dx(), b.Dy())
 	if min(b.Dx(), b.Dy()) <= 0 {
-		return nil, 0, fmt.Errorf("empty preview image")
+		return nil, nil, 0, fmt.Errorf("empty preview image")
 	}
-	width := max(1, int(math.Round(float64(b.Dx())*384/float64(longest))))
-	height := max(1, int(math.Round(float64(b.Dy())*384/float64(longest))))
+	size := min(1280, max(384, longest))
+	width := max(1, int(math.Round(float64(b.Dx())*float64(size)/float64(longest))))
+	height := max(1, int(math.Round(float64(b.Dy())*float64(size)/float64(longest))))
 	canvas := image.NewRGBA(image.Rect(0, 0, width, height))
 	draw.Draw(canvas, canvas.Bounds(), image.NewUniform(color.White), image.Point{}, draw.Src)
 	draw.CatmullRom.Scale(canvas, canvas.Bounds(), img, b, draw.Over, nil)
 	if err := t.decorate(canvas, pix, count); err != nil {
-		return nil, 0, err
+		return nil, nil, 0, err
 	}
 
-	var out bytes.Buffer
-	if err := jpeg.Encode(&out, canvas, &jpeg.Options{Quality: 90}); err != nil {
-		return nil, 0, err
+	var large bytes.Buffer
+	if err := jpeg.Encode(&large, canvas, &jpeg.Options{Quality: 90}); err != nil {
+		return nil, nil, 0, err
 	}
-	return out.Bytes(), actual, nil
+	small := image.NewRGBA(image.Rect(0, 0,
+		max(1, int(math.Round(float64(b.Dx())*384/float64(longest)))),
+		max(1, int(math.Round(float64(b.Dy())*384/float64(longest))))))
+	draw.CatmullRom.Scale(small, small.Bounds(), canvas, canvas.Bounds(), draw.Src, nil)
+	var out bytes.Buffer
+	if err := jpeg.Encode(&out, small, &jpeg.Options{Quality: 90}); err != nil {
+		return nil, nil, 0, err
+	}
+	return out.Bytes(), large.Bytes(), actual, nil
 }
 
 func (t *thumbnails) decorate(canvas *image.RGBA, pix bool, count int) error {
 	width, height := canvas.Bounds().Dx(), canvas.Bounds().Dy()
 	// Offset shadows and a faint border keep overlays distinct against any artwork.
-	tile := image.NewRGBA(image.Rect(0, 0, 76, 76))
-	rounded(tile, image.Rect(2, 2, 76, 76), 15, color.NRGBA{0, 0, 0, 70})
-	rounded(tile, image.Rect(0, 0, 74, 74), 15, color.NRGBA{255, 255, 255, 100})
+	tile := image.NewRGBA(image.Rect(0, 0, 76*4, 76*4))
+	rounded(tile, image.Rect(2*4, 2*4, 76*4, 76*4), 15*4, color.NRGBA{0, 0, 0, 70})
+	rounded(tile, image.Rect(0, 0, 74*4, 74*4), 15*4, color.NRGBA{255, 255, 255, 100})
 	background := color.NRGBA{0, 0, 0, 255}
 	if pix {
 		background = color.NRGBA{0, 150, 250, 255}
 	}
-	rounded(tile, image.Rect(1, 1, 73, 73), 14, background)
+	rounded(tile, image.Rect(1*4, 1*4, 73*4, 73*4), 14*4, background)
 	logo := t.logos[pix]
-	at := image.Pt(37-logo.Bounds().Dx()/2, 37-logo.Bounds().Dy()/2)
+	at := image.Pt(37*4-logo.Bounds().Dx()/2, 37*4-logo.Bounds().Dy()/2)
 	draw.Draw(tile, image.Rectangle{Min: at, Max: at.Add(logo.Bounds().Size())}, logo, logo.Bounds().Min, draw.Over)
 	shorter := min(width, height)
 	tileSize := max(1, int(math.Round(float64(shorter)*76/384)))
@@ -461,7 +482,7 @@ func (t *thumbnails) decorate(canvas *image.RGBA, pix bool, count int) error {
 	tileBounds := image.Rect(width-margin-tileSize, height-margin-tileSize, width-margin, height-margin)
 	draw.CatmullRom.Scale(canvas, tileBounds, tile, tile.Bounds(), draw.Over, nil)
 	if count > 1 {
-		badge := image.NewRGBA(image.Rect(0, 0, 384, 56))
+		badge := image.NewRGBA(image.Rect(0, 0, 384*4, 56*4))
 		if err := t.badge(badge, count); err != nil {
 			return err
 		}
@@ -489,20 +510,20 @@ func rounded(dst *image.RGBA, r image.Rectangle, radius float32, c color.NRGBA) 
 }
 
 func (t *thumbnails) badge(dst *image.RGBA, count int) error {
-	face, err := opentype.NewFace(t.font, &opentype.FaceOptions{Size: 22, DPI: 72, Hinting: font.HintingFull})
+	face, err := opentype.NewFace(t.font, &opentype.FaceOptions{Size: 22 * 4, DPI: 72, Hinting: font.HintingFull})
 	if err != nil {
 		return err
 	}
 	defer func() { _ = face.Close() }()
 	label := strconv.Itoa(count)
 	width := font.MeasureString(face, label).Ceil()
-	left := 370 - (width + 47)
-	rounded(dst, image.Rect(left+2, 17, 372, 55), 12, color.NRGBA{0, 0, 0, 70})
-	rounded(dst, image.Rect(left, 15, 370, 53), 12, color.NRGBA{255, 255, 255, 100})
-	rounded(dst, image.Rect(left+1, 16, 369, 52), 11, color.NRGBA{20, 22, 27, 235})
-	rounded(dst, image.Rect(left+12, 26, left+25, 37), 2, color.NRGBA{255, 255, 255, 150})
-	rounded(dst, image.Rect(left+15, 29, left+28, 40), 2, color.NRGBA{255, 255, 255, 255})
-	d := font.Drawer{Dst: dst, Src: image.NewUniform(color.White), Face: face, Dot: fixed.P(left+35, 42)}
+	left := 370*4 - (width + 47*4)
+	rounded(dst, image.Rect(left+2*4, 17*4, 372*4, 55*4), 12*4, color.NRGBA{0, 0, 0, 70})
+	rounded(dst, image.Rect(left, 15*4, 370*4, 53*4), 12*4, color.NRGBA{255, 255, 255, 100})
+	rounded(dst, image.Rect(left+1*4, 16*4, 369*4, 52*4), 11*4, color.NRGBA{20, 22, 27, 235})
+	rounded(dst, image.Rect(left+12*4, 26*4, left+25*4, 37*4), 2*4, color.NRGBA{255, 255, 255, 150})
+	rounded(dst, image.Rect(left+15*4, 29*4, left+28*4, 40*4), 2*4, color.NRGBA{255, 255, 255, 255})
+	d := font.Drawer{Dst: dst, Src: image.NewUniform(color.White), Face: face, Dot: fixed.P(left+35*4, 42*4)}
 	d.DrawString(label)
 	return nil
 }

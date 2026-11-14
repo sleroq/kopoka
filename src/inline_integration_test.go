@@ -239,10 +239,11 @@ func checkCachedInlineFlow(t *testing.T, bot *tgbotapi.BotAPI, db *sql.DB, query
 
 func checkInlineAnswer(t *testing.T, result map[string]any) {
 	t.Helper()
+	uncachedThumbnailURLs(t, result)
 	content := result["input_message_content"].(map[string]any)
 	keyboard := result["reply_markup"].(map[string]any)["inline_keyboard"].([]any)
 	button := keyboard[0].([]any)[0].(map[string]any)
-	if result["type"] != "photo" || result["id"] != inlineResultID || !strings.HasPrefix(result["photo_url"].(string), "https://preview.example.com/thumbnail?") || result["photo_url"] != result["thumbnail_url"] || content["message_text"] != "Loading artwork…" || content["disable_web_page_preview"] != true || button["text"] != "Please wait…" || button["disabled"] == nil {
+	if result["type"] != "photo" || result["id"] != inlineResultID || !strings.HasPrefix(result["photo_url"].(string), "https://preview.example.com/thumbnail?") || content["message_text"] != "Loading artwork…" || content["disable_web_page_preview"] != true || button["text"] != "Please wait…" || button["disabled"] == nil {
 		t.Fatalf("answer: %#v", result)
 	}
 }
@@ -337,8 +338,10 @@ func TestInlinePixivThumbnail(t *testing.T) {
 		if err := json.Unmarshal([]byte(r.FormValue("results")), &results); err != nil {
 			t.Fatal(err)
 		}
-		if len(results) != 1 || !strings.HasPrefix(results[0]["photo_url"].(string), "https://preview.example.com/thumbnail?") || results[0]["photo_url"] != results[0]["thumbnail_url"] {
+		if len(results) != 1 {
 			t.Errorf("results: %#v", results)
+		} else {
+			uncachedThumbnailURLs(t, results[0])
 		}
 		_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
 	}))

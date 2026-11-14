@@ -45,26 +45,27 @@ func inlineLink(text string) *url.URL {
 	return link
 }
 
-func inlinePhoto(fileID, photoURL string) map[string]any {
+func inlinePhoto(fileID, photoURL, thumbnailURL string) map[string]any {
 	result := map[string]any{"type": "photo"}
 	if fileID != "" {
 		result["photo_file_id"] = fileID
 	} else {
-		result["photo_url"], result["thumbnail_url"] = photoURL, photoURL
+		result["photo_url"], result["thumbnail_url"] = photoURL, thumbnailURL
 	}
 	return result
 }
 
 func cachedInlineResult(a artwork, previews *thumbnails) map[string]any {
-	var fileID, photoURL string
+	var fileID, photoURL, thumbnailURL string
 	if link := inlineLink(a.URL); link != nil {
-		fileID, photoURL = previews.photo(link, len(a.Photos))
+		fileID, photoURL, thumbnailURL = previews.photo(link, len(a.Photos))
 	} else if mediaType(a, 0) == "photo" {
 		fileID = a.Photos[0]
 	} else {
 		photoURL = previews.placeholderURL(strings.HasPrefix(a.ID, "pixiv:"))
+		thumbnailURL = photoURL
 	}
-	result := inlinePhoto(fileID, photoURL)
+	result := inlinePhoto(fileID, photoURL, thumbnailURL)
 	result["id"], result["title"], result["description"] = a.ID, a.Author, a.Text
 	result["input_message_content"] = map[string]any{"rich_message": richArtwork(a)}
 	return result
@@ -145,7 +146,7 @@ func inlineArtworkResult(db *sql.DB, user int64, link *url.URL, previews *thumbn
 	if pixiv {
 		instant = settings.Pixiv
 	}
-	var fileID, photoURL string
+	var fileID, photoURL, thumbnailURL string
 	if err != nil || instant {
 		if err != nil {
 			log.Printf("loading instant inline settings: %v", err)
@@ -153,11 +154,12 @@ func inlineArtworkResult(db *sql.DB, user int64, link *url.URL, previews *thumbn
 		fileID = previews.cached(link, 0)
 		if fileID == "" {
 			photoURL = previews.placeholderURL(pixiv)
+			thumbnailURL = photoURL
 		}
 	} else {
-		fileID, photoURL = previews.photo(link, 0)
+		fileID, photoURL, thumbnailURL = previews.photo(link, 0)
 	}
-	result := inlinePhoto(fileID, photoURL)
+	result := inlinePhoto(fileID, photoURL, thumbnailURL)
 	result["id"], result["title"] = inlineResultID, "Artwork"
 	result["input_message_content"] = map[string]any{"message_text": "Loading artwork…", "disable_web_page_preview": true}
 	wait := map[string]any{"text": "Please wait…", "disabled": map[string]any{}}

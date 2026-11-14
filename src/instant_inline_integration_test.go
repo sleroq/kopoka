@@ -167,19 +167,20 @@ func (s *instantSettingsScenario) inline(user int64, link string) map[string]any
 func (s *instantSettingsScenario) expectThumbnail(user int64, link string, withPreview bool) {
 	s.t.Helper()
 	result := s.inline(user, link)
-	photo, ok := result["photo_url"].(string)
-	if !ok || result["type"] != "photo" || result["thumbnail_url"] != photo {
-		s.t.Fatalf("photo result for %s: %#v", link, result)
+	if withPreview {
+		_, thumbnail := uncachedThumbnailURLs(s.t, result)
+		parsed, err := url.Parse(thumbnail)
+		if err != nil || parsed.Query().Get("url") != inlineLink(link).String() {
+			s.t.Fatalf("thumbnail for %s: %q, %v", link, thumbnail, err)
+		}
+		return
 	}
 	want := "https://preview.example.com/thumbnail-placeholder-x.jpg"
 	if strings.Contains(link, "pixiv.net") {
 		want = "https://preview.example.com/thumbnail-placeholder-pixiv.jpg"
 	}
-	if withPreview {
-		want = "https://preview.example.com/thumbnail?url=" + url.QueryEscape(inlineLink(link).String())
-	}
-	if photo != want {
-		s.t.Fatalf("thumbnail for %s = %q, want %q", link, photo, want)
+	if result["type"] != "photo" || result["photo_url"] != want || result["thumbnail_url"] != want {
+		s.t.Fatalf("placeholder for %s: %#v", link, result)
 	}
 }
 
