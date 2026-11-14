@@ -44,6 +44,12 @@ func TestHandleXLink(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			original := http.DefaultTransport
 			http.DefaultTransport = xPostTransport(func(r *http.Request) (*http.Response, error) {
+				if r.URL.String() == "https://api.vxtwitter.com/user/status/123" && tt.wantErr {
+					return &http.Response{
+						StatusCode: http.StatusBadGateway, Status: "502 Bad Gateway",
+						Header: make(http.Header), Body: io.NopCloser(strings.NewReader("")), Request: r,
+					}, nil
+				}
 				if r.URL.String() != "https://api.fxtwitter.com/user/status/123" {
 					t.Errorf("unexpected request: %s", r.URL)
 				}

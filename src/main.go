@@ -2,7 +2,6 @@ package main
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"html"
 	"log"
@@ -119,59 +118,15 @@ func handlePixivLink(app *pixiv.AppPixivAPI, link *url.URL, metadata *artwork) (
 }
 
 func handleXLink(link *url.URL, metadata *artwork) ([]any, error) {
-	client := &http.Client{Timeout: 10 * time.Second}
-	apiLink := *link
-	apiLink.Host = "api.fxtwitter.com"
-	res, err := client.Get(apiLink.String())
+	post, err := fetchXPost(link)
 	if err != nil {
-		return nil, fmt.Errorf("fetching X link: %w", err)
-	}
-	defer func() { _ = res.Body.Close() }()
-	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetching X link: HTTP %s", res.Status)
+		return nil, err
 	}
 
-	var response struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-		Tweet   *struct {
-			Text   string `json:"text"`
-			Author struct {
-				Name string `json:"name"`
-			} `json:"author"`
-			Media struct {
-				All []struct {
-					Type string `json:"type"`
-					URL  string `json:"url"`
-				} `json:"all"`
-				Photos []struct {
-					Type string `json:"type"`
-					URL  string `json:"url"`
-				} `json:"photos"`
-			} `json:"media"`
-		} `json:"tweet"`
-	}
-	if err := json.NewDecoder(res.Body).Decode(&response); err != nil {
-		return nil, fmt.Errorf("decoding X link response: %w", err)
-	}
-	if response.Code != http.StatusOK || response.Tweet == nil {
-		return nil, fmt.Errorf("FxTwitter API error %d: %s", response.Code, response.Message)
-	}
-	if response.Tweet.Author.Name == "" {
-		return nil, fmt.Errorf("FxTwitter response missing author name")
-	}
-
-	metadata.Author, metadata.Text = response.Tweet.Author.Name, response.Tweet.Text
+	metadata.Author, metadata.Text = post.Author, post.Text
 	link.Host = "fxtwitter.com"
 	var photos []any
-	items := response.Tweet.Media.All
-	if items == nil {
-		items = response.Tweet.Media.Photos
-	}
-	for i, image := range items {
-		if image.URL == "" {
-			return nil, fmt.Errorf("FxTwitter response missing photo URL at index %d", i)
-		}
+	for i, image := range post.Media {
 		var base tgbotapi.BaseInputMedia
 		switch image.Type {
 		case "", "photo":
@@ -185,7 +140,7 @@ func handleXLink(link *url.URL, metadata *artwork) ([]any, error) {
 			base.Caption = fmt.Sprintf(
 				"<a href=\"%s\">%s</a>\n",
 				html.EscapeString(link.String()),
-				html.EscapeString(response.Tweet.Author.Name),
+				html.EscapeString(post.Author),
 			)
 			base.ParseMode = "HTML"
 		}
