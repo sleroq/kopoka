@@ -23,28 +23,22 @@ func TestDownloadPixivPhotoUsesLargeVariant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Trailing padding makes a small, valid image exceed Telegram's upload limit.
-	data := append(original.Bytes(), make([]byte, 10*1024*1024)...)
 	var requests []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests = append(requests, r.URL.Path)
-		if r.URL.Path == "/original.png" {
-			_, _ = w.Write(data)
-		} else {
-			_, _ = w.Write(original.Bytes())
-		}
+		_, _ = w.Write(original.Bytes())
 	}))
 	t.Cleanup(server.Close)
 
-	file, err := downloadPixivPhoto(server.Client(), server.URL+"/original.png", server.URL+"/large.png")
+	file, err := downloadPixivPhoto(server.Client(), server.URL+"/large.png", server.URL+"/original.png")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if file.Name != "large.png" || !bytes.Equal(file.Bytes, original.Bytes()) {
 		t.Fatalf("Pixiv large variant was not used unchanged: %s, %d bytes", file.Name, len(file.Bytes))
 	}
-	if strings.Join(requests, ",") != "/original.png,/large.png" {
-		t.Fatalf("requests = %v, want original then large", requests)
+	if strings.Join(requests, ",") != "/large.png" {
+		t.Fatalf("requests = %v, want large only", requests)
 	}
 }
 

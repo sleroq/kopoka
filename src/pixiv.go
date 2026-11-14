@@ -17,10 +17,10 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-func downloadPixivPhoto(client *http.Client, originalURL, largeURL string) (tgbotapi.FileBytes, error) {
+func downloadPixivPhoto(client *http.Client, preferredURL, fallbackURL string) (tgbotapi.FileBytes, error) {
 	// Upload locally: Telegram cannot fetch Pixiv's hotlink-protected URLs.
 	const maxPhotoSize = 10 * 1024 * 1024
-	for _, imageURL := range []string{originalURL, largeURL} {
+	for _, imageURL := range []string{preferredURL, fallbackURL} {
 		if imageURL == "" {
 			continue
 		}

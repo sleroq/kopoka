@@ -21,7 +21,7 @@ func TestXProviderFallback(t *testing.T) {
 		body := `{"code":200,"tweet":{"author":{"name":"Fx"},"media":{"all":[{"type":"photo"}]}}}`
 		if r.URL.Host == "api.vxtwitter.com" {
 			body = `{"text":"Post text","user_name":"A & B","media_extended":[
-				{"type":"image","url":"https://media/image"},
+				{"type":"image","url":"https://pbs.twimg.com/media/image.jpg?name=orig"},
 				{"type":"video","url":"https://media/video"},
 				{"type":"gif","url":"https://media/gif"}]}`
 		}
@@ -42,7 +42,7 @@ func TestXProviderFallback(t *testing.T) {
 		t.Fatalf("media = %v, error = %v", media, err)
 	}
 	photo, ok := media[0].(tgbotapi.InputMediaPhoto)
-	if !ok || photo.Media != tgbotapi.FileURL("https://media/image") || photo.Caption != "<a href=\"https://fxtwitter.com/user/status/123?view=1\">A &amp; B</a>\n" || photo.ParseMode != "HTML" {
+	if !ok || photo.Media != tgbotapi.FileURL("https://pbs.twimg.com/media/image.jpg?name=large") || photo.Caption != "<a href=\"https://fxtwitter.com/user/status/123?view=1\">A &amp; B</a>\n" || photo.ParseMode != "HTML" {
 		t.Fatalf("photo = %+v", media[0])
 	}
 	for i, want := range []string{"https://media/video", "https://media/gif"} {

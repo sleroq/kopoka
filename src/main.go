@@ -89,7 +89,7 @@ func handlePixivLink(app *pixiv.AppPixivAPI, link *url.URL, metadata *artwork) (
 	}
 	var photos []any
 	for i, page := range illust.MetaPages {
-		file, err := downloadPixivPhoto(client, page.Images.Original, page.Images.Large)
+		file, err := downloadPixivPhoto(client, page.Images.Large, page.Images.Original)
 		if err != nil {
 			return nil, err
 		}
@@ -104,7 +104,7 @@ func handlePixivLink(app *pixiv.AppPixivAPI, link *url.URL, metadata *artwork) (
 	}
 
 	if len(photos) == 0 {
-		file, err := downloadPixivPhoto(client, illust.MetaSinglePage.OriginalImageURL, illust.Images.Large)
+		file, err := downloadPixivPhoto(client, illust.Images.Large, illust.MetaSinglePage.OriginalImageURL)
 		if err != nil {
 			return nil, err
 		}
@@ -130,7 +130,7 @@ func handleXLink(link *url.URL, metadata *artwork) ([]any, error) {
 		var base tgbotapi.BaseInputMedia
 		switch image.Type {
 		case "", "photo":
-			base = tgbotapi.NewInputMediaPhoto(tgbotapi.FileURL(image.URL)).BaseInputMedia
+			base = tgbotapi.NewInputMediaPhoto(tgbotapi.FileURL(xPhotoURL(image.URL))).BaseInputMedia
 		case "video", "gif":
 			base = tgbotapi.NewInputMediaVideo(tgbotapi.FileURL(image.URL)).BaseInputMedia
 		default:

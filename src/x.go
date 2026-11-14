@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -104,6 +105,17 @@ func fetchVxPost(client *http.Client, link *url.URL) (xPost, error) {
 		return xPost{}, err
 	}
 	return post, nil
+}
+
+func xPhotoURL(rawURL string) string {
+	photoURL, err := url.Parse(rawURL)
+	if err != nil || photoURL.Hostname() != "pbs.twimg.com" || !strings.HasPrefix(photoURL.Path, "/media/") {
+		return rawURL
+	}
+	query := photoURL.Query()
+	query.Set("name", "large")
+	photoURL.RawQuery = query.Encode()
+	return photoURL.String()
 }
 
 func validateXPost(post xPost, provider string) error {
