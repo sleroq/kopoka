@@ -55,7 +55,7 @@ func TestChatJSONCommand(t *testing.T) {
 }
 
 func TestChatFormattedLinks(t *testing.T) {
-	var fetched, sent []string
+	var fetched, sent, actions []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/user/status/"):
@@ -66,6 +66,8 @@ func TestChatFormattedLinks(t *testing.T) {
 		case strings.HasSuffix(r.URL.Path, "/getMe"):
 			_, _ = w.Write([]byte(`{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`))
 		case strings.HasSuffix(r.URL.Path, "/sendChatAction"):
+			_ = r.ParseForm()
+			actions = append(actions, r.FormValue("action"))
 			_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
 		case strings.HasSuffix(r.URL.Path, "/sendPhoto"):
 			_ = r.ParseForm()
@@ -112,6 +114,9 @@ func TestChatFormattedLinks(t *testing.T) {
 	handleMessage(bot, nil, nil, message)
 	if strings.Join(fetched, ",") != "/user/status/1,/user/status/2,/user/status/3,/user/status/4" {
 		t.Fatalf("fetched: %v", fetched)
+	}
+	if strings.Join(actions, ",") != "typing,upload_photo,typing,upload_photo,typing,upload_photo,typing,upload_photo" {
+		t.Fatalf("chat actions: %v", actions)
 	}
 	if len(sent) != 4 {
 		t.Fatalf("sent: %v", sent)

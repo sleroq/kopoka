@@ -182,15 +182,17 @@ func handleXLink(link *url.URL, metadata *artwork) ([]any, error) {
 	return photos, nil
 }
 
-func showProcessing(bot *tgbotapi.BotAPI, chatID int64) func() {
+func showProcessing(bot *tgbotapi.BotAPI, chatID int64, action string) func() {
 	sendAction := func() {
-		if _, err := bot.Request(tgbotapi.NewChatAction(chatID, tgbotapi.ChatUploadPhoto)); err != nil {
+		if _, err := bot.Request(tgbotapi.NewChatAction(chatID, action)); err != nil {
 			log.Printf("sending chat action: %v", err)
 		}
 	}
 	sendAction()
 	stop := make(chan struct{})
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(4 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -202,7 +204,10 @@ func showProcessing(bot *tgbotapi.BotAPI, chatID int64) func() {
 			}
 		}
 	}()
-	return func() { close(stop) }
+	return func() {
+		close(stop)
+		<-done
+	}
 }
 
 func supportedLink(link *url.URL) bool {
@@ -232,21 +237,36 @@ func processLink(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, messa
 	if !supportedLink(link) {
 		return nil
 	}
-	stop := showProcessing(bot, message.Chat.ID)
-	defer stop()
+
+	stop := showProcessing(bot, message.Chat.ID, tgbotapi.ChatTyping)
 	valid := inlineLink(link.String())
 	a := artwork{}
 	if valid != nil {
 		a.ID, a.URL = artworkID(valid), valid.String()
 	}
 	photos, err := fetchArtPhotos(app, link, &a)
+	stop()
 	if err != nil {
 		return err
 	}
+	if len(photos) == 0 {
+		return nil
+	}
+
+	action := tgbotapi.ChatUploadPhoto
+	for _, item := range photos {
+		if mediaBase(item).Type == "video" {
+			action = tgbotapi.ChatUploadVideo
+			break
+		}
+	}
+	stop = showProcessing(bot, message.Chat.ID, action)
+	defer stop()
 	ids, err := sendPhotosWithIDs(bot, message.Chat.ID, message.MessageID, photos)
 	if err != nil {
 		return err
 	}
+
 	if valid != nil && len(photos) > 0 && len(ids) == len(photos) {
 		a.Photos = ids
 		a.Caption = mediaBase(photos[0]).Caption

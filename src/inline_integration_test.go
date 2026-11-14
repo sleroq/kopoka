@@ -806,6 +806,7 @@ func TestXVideoChatAndInline(t *testing.T) {
 		kinds     []string
 	}{
 		{"video", `[{"type":"video","url":"https://example.com/v.mp4"}]`, []string{"video"}},
+		{"gif", `[{"type":"gif","url":"https://example.com/g.mp4"}]`, []string{"video"}},
 		{"mixed", `[{"type":"video","url":"https://example.com/v.mp4"},{"type":"photo","url":"https://example.com/p.jpg"},{"type":"gif","url":"https://example.com/g.mp4"}]`, []string{"video", "photo", "video"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -814,7 +815,7 @@ func TestXVideoChatAndInline(t *testing.T) {
 			var album []map[string]any
 			var edit url.Values
 			var answer []map[string]any
-			var sent []string
+			var sent, actions []string
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				_ = r.ParseForm()
 				switch {
@@ -823,7 +824,10 @@ func TestXVideoChatAndInline(t *testing.T) {
 						`"media":{"all":%s,"photos":[{"url":"wrong"}]}}}`, tc.all)
 				case strings.HasSuffix(r.URL.Path, "/getMe"):
 					_, _ = fmt.Fprint(w, `{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`)
-				case strings.HasSuffix(r.URL.Path, "/sendChatAction"), strings.HasSuffix(r.URL.Path, "/deleteMessage"):
+				case strings.HasSuffix(r.URL.Path, "/sendChatAction"):
+					actions = append(actions, r.FormValue("action"))
+					_, _ = fmt.Fprint(w, `{"ok":true,"result":true}`)
+				case strings.HasSuffix(r.URL.Path, "/deleteMessage"):
 					_, _ = fmt.Fprint(w, `{"ok":true,"result":true}`)
 				case strings.HasSuffix(r.URL.Path, "/sendVideo"), strings.HasSuffix(r.URL.Path, "/sendPhoto"):
 					kind := "photo"
@@ -875,6 +879,9 @@ func TestXVideoChatAndInline(t *testing.T) {
 				MessageID: 42, Chat: &tgbotapi.Chat{ID: 123}, From: &tgbotapi.User{ID: 1}, Text: link,
 				Entities: []tgbotapi.MessageEntity{{Type: "url", Length: len(link)}},
 			})
+			if !reflect.DeepEqual(actions, []string{"typing", "upload_video"}) {
+				t.Fatalf("chat actions: %v", actions)
+			}
 			a, err := findArtwork(db, "x:1")
 			if err != nil || a == nil || !reflect.DeepEqual(a.Types, tc.kinds) {
 				t.Fatalf("saved: %#v %v", a, err)
