@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf16"
 
 	"github.com/everpcpc/pixiv"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -213,6 +215,52 @@ func processLink(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, message *tgbotapi
 	return sendPhotos(bot, message.Chat.ID, message.MessageID, photos)
 }
 
+var codeURLPattern = regexp.MustCompile(`https?://[^\s<>"\x60]+`)
+
+func entityText(text []uint16, entity tgbotapi.MessageEntity) string {
+	start, length := entity.Offset, entity.Length
+	if start < 0 || length <= 0 || start > len(text) || length > len(text)-start {
+		return ""
+	}
+	end := start + length
+	if start > 0 && start < len(text) && text[start] >= 0xDC00 && text[start] <= 0xDFFF ||
+		end < len(text) && text[end] >= 0xDC00 && text[end] <= 0xDFFF {
+		return ""
+	}
+	return string(utf16.Decode(text[start:end]))
+}
+
+func messageLinks(message *tgbotapi.Message) []*url.URL {
+	text := utf16.Encode([]rune(message.Text))
+	seen := make(map[string]bool)
+	var links []*url.URL
+	for _, entity := range message.Entities {
+		var candidates []string
+		switch entity.Type {
+		case "text_link":
+			candidates = []string{entity.URL}
+		case "url":
+			candidates = []string{entityText(text, entity)}
+		case "code", "pre":
+			for _, link := range codeURLPattern.FindAllString(entityText(text, entity), -1) {
+				candidates = append(candidates, strings.TrimRight(link, ".,;:!?)]}"))
+			}
+		}
+		for _, candidate := range candidates {
+			link, err := url.Parse(candidate)
+			if err != nil || !supportedLink(link) {
+				continue
+			}
+			link.RawQuery = ""
+			if !seen[link.String()] {
+				seen[link.String()] = true
+				links = append(links, link)
+			}
+		}
+	}
+	return links
+}
+
 func handleMessage(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, message *tgbotapi.Message) {
 	command := message.CommandWithAt()
 	if command == "json" || strings.EqualFold(command, "json@"+bot.Self.UserName) {
@@ -225,18 +273,8 @@ func handleMessage(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, message *tgbota
 		return
 	}
 	log.Printf("[%s] %s", message.From.UserName, message.Text)
-	for _, entity := range message.Entities {
-		if entity.Type != "url" {
-			continue
-		}
-		link := message.Text[entity.Offset : entity.Offset+entity.Length]
-		parsed, err := url.Parse(link)
-		if err != nil {
-			log.Println(err)
-			continue
-		}
-		parsed.RawQuery = ""
-		if err := processLink(bot, app, message, parsed); err != nil {
+	for _, link := range messageLinks(message) {
+		if err := processLink(bot, app, message, link); err != nil {
 			log.Println(err)
 		}
 	}
