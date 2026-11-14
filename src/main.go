@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html"
 	"log"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"os"
@@ -356,10 +357,27 @@ func handleMessage(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, mes
 	processMessageLinks(bot, app, db, message, queue)
 }
 
+func reactToMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message) {
+	reactions := []string{"❤", "🥰", "🍓"}
+	params := tgbotapi.Params{
+		"chat_id":    strconv.FormatInt(message.Chat.ID, 10),
+		"message_id": strconv.Itoa(message.MessageID),
+		"reaction":   fmt.Sprintf(`[{"type":"emoji","emoji":%q}]`, reactions[rand.IntN(len(reactions))]),
+	}
+	if _, err := bot.MakeRequest("setMessageReaction", params); err != nil {
+		log.Printf("reacting to message: %v", err)
+	}
+}
+
 func processMessageLinks(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, message *tgbotapi.Message, queue *mediaQueue) {
+	links := messageLinks(message)
+	if len(links) > 0 {
+		reactToMessage(bot, message)
+	}
+
 	var results []<-chan error
 	rejected := make(map[error]int)
-	for _, link := range messageLinks(message) {
+	for _, link := range links {
 		result, err := queue.submit(message.From.ID, func() error {
 			return processLink(bot, app, db, message, link)
 		})

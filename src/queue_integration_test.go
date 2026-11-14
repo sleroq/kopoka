@@ -111,7 +111,7 @@ func (api *queueTestAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		api.fetch(w, r)
 	case strings.HasSuffix(r.URL.Path, "/getMe"):
 		_, _ = w.Write([]byte(`{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`))
-	case strings.HasSuffix(r.URL.Path, "/sendChatAction"), strings.HasSuffix(r.URL.Path, "/deleteMessage"), strings.HasSuffix(r.URL.Path, "/editMessageMedia"):
+	case strings.HasSuffix(r.URL.Path, "/setMessageReaction"), strings.HasSuffix(r.URL.Path, "/sendChatAction"), strings.HasSuffix(r.URL.Path, "/deleteMessage"), strings.HasSuffix(r.URL.Path, "/editMessageMedia"):
 		_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
 	case strings.HasSuffix(r.URL.Path, "/sendPhoto"):
 		_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":43,"photo":[{"file_id":"file"}]}}`))

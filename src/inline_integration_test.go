@@ -906,7 +906,7 @@ func TestXVideoChatAndInline(t *testing.T) {
 				case strings.HasSuffix(r.URL.Path, "/sendChatAction"):
 					actions = append(actions, r.FormValue("action"))
 					_, _ = fmt.Fprint(w, `{"ok":true,"result":true}`)
-				case strings.HasSuffix(r.URL.Path, "/deleteMessage"):
+				case strings.HasSuffix(r.URL.Path, "/setMessageReaction"), strings.HasSuffix(r.URL.Path, "/deleteMessage"):
 					_, _ = fmt.Fprint(w, `{"ok":true,"result":true}`)
 				case strings.HasSuffix(r.URL.Path, "/sendVideo"), strings.HasSuffix(r.URL.Path, "/sendPhoto"):
 					kind := "photo"

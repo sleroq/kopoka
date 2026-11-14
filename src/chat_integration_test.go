@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf16"
@@ -60,6 +61,7 @@ func TestChatFormattedLinks(t *testing.T) {
 	queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})
 
 	var fetched, sent, actions []string
+	var reactions int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/user/status/"):
@@ -69,6 +71,20 @@ func TestChatFormattedLinks(t *testing.T) {
 			_, _ = w.Write([]byte(response))
 		case strings.HasSuffix(r.URL.Path, "/getMe"):
 			_, _ = w.Write([]byte(`{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`))
+		case strings.HasSuffix(r.URL.Path, "/setMessageReaction"):
+			_ = r.ParseForm()
+			var reaction []struct {
+				Type  string `json:"type"`
+				Emoji string `json:"emoji"`
+			}
+			if err := json.Unmarshal([]byte(r.FormValue("reaction")), &reaction); err != nil || len(reaction) != 1 || reaction[0].Type != "emoji" || !slices.Contains([]string{"❤", "🥰", "🍓"}, reaction[0].Emoji) {
+				t.Errorf("reaction: %s", r.FormValue("reaction"))
+			}
+			if r.FormValue("chat_id") != "123" || r.FormValue("message_id") != "42" || len(fetched) != 0 {
+				t.Errorf("reaction request: %v, fetched: %v", r.Form, fetched)
+			}
+			reactions++
+			_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
 		case strings.HasSuffix(r.URL.Path, "/sendChatAction"):
 			_ = r.ParseForm()
 			actions = append(actions, r.FormValue("action"))
@@ -116,6 +132,9 @@ func TestChatFormattedLinks(t *testing.T) {
 			{Type: "url", Offset: 999, Length: 10},
 		}}
 	handleMessage(bot, nil, nil, message, queue)
+	if reactions != 1 {
+		t.Fatalf("reactions: %d", reactions)
+	}
 	if strings.Join(fetched, ",") != "/user/status/1,/user/status/2,/user/status/3,/user/status/4" {
 		t.Fatalf("fetched: %v", fetched)
 	}
@@ -265,7 +284,7 @@ func chatHistoryServer(t *testing.T, answers *[]map[string]any, reply, markup, c
 			_, _ = w.Write([]byte(response))
 		case strings.HasSuffix(r.URL.Path, "/getMe"):
 			_, _ = w.Write([]byte(`{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`))
-		case strings.HasSuffix(r.URL.Path, "/sendChatAction"), strings.HasSuffix(r.URL.Path, "/editMessageText"):
+		case strings.HasSuffix(r.URL.Path, "/setMessageReaction"), strings.HasSuffix(r.URL.Path, "/sendChatAction"), strings.HasSuffix(r.URL.Path, "/editMessageText"):
 			_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
 		case strings.HasSuffix(r.URL.Path, "/sendPhoto"):
 			if strings.Contains(r.FormValue("caption"), "/status/3") {
