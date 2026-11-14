@@ -460,11 +460,16 @@ func main() {
 		log.Panic(err)
 	}
 
+	previews, err := startThumbnails(pApp, bot, db, os.Getenv("INLINE_CACHE_CHAT_ID"))
+	if err != nil {
+		log.Panicf("starting thumbnails: %v", err)
+	}
+
 	updates := bot.GetUpdatesChan(*u)
 
 	for update := range updates {
 		if update.InlineQuery != nil {
-			go handleInlineQuery(bot, db, update.InlineQuery)
+			go handleInlineQuery(bot, db, update.InlineQuery, previews)
 		}
 		if update.ChosenInlineResult != nil {
 			go handleChosenInlineResult(bot, pApp, db, update.ChosenInlineResult, os.Getenv("INLINE_CACHE_CHAT_ID"), queue)

@@ -45,24 +45,29 @@ func inlineLink(text string) *url.URL {
 	return link
 }
 
-func inlineThumbnail(link *url.URL) string {
-	if link.Host == "pixiv.net" || link.Host == "www.pixiv.net" {
-		return "https://pixiv.cat/" + strings.TrimPrefix(link.Path, "/artworks/") + ".jpg"
+func inlinePhoto(fileID, photoURL string) map[string]any {
+	result := map[string]any{"type": "photo"}
+	if fileID != "" {
+		result["photo_file_id"] = fileID
+	} else {
+		result["photo_url"], result["thumbnail_url"] = photoURL, photoURL
+		result["photo_width"], result["photo_height"] = 384, 384
 	}
-	return "https://d.fxtwitter.com" + link.Path
+	return result
 }
 
-func cachedInlineResult(a artwork) map[string]any {
-	result := map[string]any{
-		"type": mediaType(a, 0), "id": a.ID, mediaType(a, 0) + "_file_id": a.Photos[0],
-		"title": a.Author, "description": a.Text,
-	}
-	if len(a.Photos) == 1 {
-		result["caption"] = a.Caption
-		result["parse_mode"] = "HTML"
+func cachedInlineResult(a artwork, previews *thumbnails) map[string]any {
+	var fileID, photoURL string
+	if link := inlineLink(a.URL); link != nil {
+		fileID, photoURL = previews.photo(link, len(a.Photos))
+	} else if mediaType(a, 0) == "photo" {
+		fileID = a.Photos[0]
 	} else {
-		result["input_message_content"] = map[string]any{"rich_message": slideshow(a)}
+		photoURL = previews.placeholderURL(strings.HasPrefix(a.ID, "pixiv:"))
 	}
+	result := inlinePhoto(fileID, photoURL)
+	result["id"], result["title"], result["description"] = a.ID, a.Author, a.Text
+	result["input_message_content"] = map[string]any{"rich_message": richArtwork(a)}
 	return result
 }
 
@@ -71,6 +76,20 @@ func mediaType(a artwork, i int) string {
 		return "photo"
 	}
 	return a.Types[i]
+}
+
+func richArtwork(a artwork) map[string]any {
+	if len(a.Photos) > 1 {
+		return slideshow(a)
+	}
+	kind := mediaType(a, 0)
+	media := []any{map[string]any{"id": "0", "media": map[string]any{"type": kind, "media": a.Photos[0]}}}
+	markup := `<img src="tg://photo?id=0"/>`
+	if kind == "video" {
+		markup = `<video src="tg://video?id=0"></video>`
+	}
+	html := fmt.Sprintf("<figure>%s<figcaption>%s</figcaption></figure>", markup, a.Caption)
+	return map[string]any{"html": html, "media": media}
 }
 
 func slideshow(a artwork) map[string]any {
@@ -91,7 +110,7 @@ func slideshow(a artwork) map[string]any {
 	return map[string]any{"html": markup.String(), "media": media}
 }
 
-func inlineHistory(db *sql.DB, query *tgbotapi.InlineQuery) ([]any, string) {
+func inlineHistory(db *sql.DB, query *tgbotapi.InlineQuery, previews *thumbnails) ([]any, string) {
 	offset, err := strconv.Atoi(query.Offset)
 	if err != nil || offset < 0 {
 		offset = 0
@@ -107,48 +126,54 @@ func inlineHistory(db *sql.DB, query *tgbotapi.InlineQuery) ([]any, string) {
 	}
 	results := []any{}
 	for _, a := range history {
-		results = append(results, cachedInlineResult(a))
+		results = append(results, cachedInlineResult(a, previews))
 	}
 	return results, nextOffset
 }
 
-func inlineArtworkResult(db *sql.DB, user int64, link *url.URL) map[string]any {
+func inlineArtworkResult(db *sql.DB, user int64, link *url.URL, previews *thumbnails) map[string]any {
 	a, err := findArtwork(db, artworkID(link))
 	if err != nil {
 		log.Printf("loading cached artwork: %v", err)
 	}
 	if a != nil {
-		return cachedInlineResult(*a)
+		return cachedInlineResult(*a, previews)
 	}
 
-	result := map[string]any{
-		"type": "article", "id": inlineResultID, "title": "Artwork",
-		"input_message_content": map[string]any{"message_text": "Loading artwork…", "disable_web_page_preview": true},
-		"reply_markup":          map[string]any{"inline_keyboard": []any{[]any{map[string]any{"text": "Please wait…", "disabled": map[string]any{}}}}},
-	}
 	settings, err := loadInstantInlineSettings(db, user)
+	pixiv := link.Host == "pixiv.net" || link.Host == "www.pixiv.net"
 	instant := settings.X
-	if link.Host == "pixiv.net" || link.Host == "www.pixiv.net" {
+	if pixiv {
 		instant = settings.Pixiv
 	}
-	if err != nil {
-		log.Printf("loading instant inline settings: %v", err)
-	} else if !instant {
-		result["thumbnail_url"] = inlineThumbnail(link)
+	var fileID, photoURL string
+	if err != nil || instant {
+		if err != nil {
+			log.Printf("loading instant inline settings: %v", err)
+		}
+		fileID = previews.cached(link, 0)
+		if fileID == "" {
+			photoURL = previews.placeholderURL(pixiv)
+		}
+	} else {
+		fileID, photoURL = previews.photo(link, 0)
 	}
+	result := inlinePhoto(fileID, photoURL)
+	result["id"], result["title"] = inlineResultID, "Artwork"
+	result["input_message_content"] = map[string]any{"message_text": "Loading artwork…", "disable_web_page_preview": true}
+	wait := map[string]any{"text": "Please wait…", "disabled": map[string]any{}}
+	result["reply_markup"] = map[string]any{"inline_keyboard": []any{[]any{wait}}}
 	return result
 }
 
-// Inline queries must not contact media sources. Telegram may fetch optional
-// thumbnail URLs; the bot fetches artwork only after a result is selected.
-func handleInlineQuery(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.InlineQuery) {
+func handleInlineQuery(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.InlineQuery, previews *thumbnails) {
 	results := []any{}
 	nextOffset := ""
 
 	if strings.TrimSpace(query.Query) == "" {
-		results, nextOffset = inlineHistory(db, query)
+		results, nextOffset = inlineHistory(db, query, previews)
 	} else if link := inlineLink(query.Query); link != nil {
-		results = append(results, inlineArtworkResult(db, query.From.ID, link))
+		results = append(results, inlineArtworkResult(db, query.From.ID, link, previews))
 	}
 	encoded, err := json.Marshal(results)
 	if err != nil {

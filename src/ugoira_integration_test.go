@@ -146,7 +146,7 @@ func checkPixivInlineFlow(t *testing.T, server *httptest.Server, app *pixiv.AppP
 		ID: "query", From: &tgbotapi.User{ID: 1},
 		Query: "https://www.pixiv.net/en/artworks/152026329",
 	}
-	handleInlineQuery(bot, db, query)
+	handleInlineQuery(bot, db, query, testPreviews(t, db, bot))
 	if len(*answer) != 1 || (*answer)[0]["id"] != inlineResultID {
 		t.Fatalf("inline answer: %v", *answer)
 	}
@@ -159,9 +159,14 @@ func checkPixivInlineFlow(t *testing.T, server *httptest.Server, app *pixiv.AppP
 	if (*edit)["type"] != "video" || (*edit)["media"] != "video-id" {
 		t.Fatalf("inline edit: %v", *edit)
 	}
-	handleInlineQuery(bot, db, query)
-	if len(*answer) != 1 || (*answer)[0]["video_file_id"] != "video-id" {
+	handleInlineQuery(bot, db, query, testPreviews(t, db, bot))
+	if len(*answer) != 1 || (*answer)[0]["type"] != "photo" || !strings.HasPrefix((*answer)[0]["photo_url"].(string), "https://preview.example.com/thumbnail?") {
 		t.Fatalf("cached inline answer: %v", *answer)
+	}
+	rich := (*answer)[0]["input_message_content"].(map[string]any)["rich_message"].(map[string]any)
+	media := rich["media"].([]any)[0].(map[string]any)["media"].(map[string]any)
+	if media["type"] != "video" || media["media"] != "video-id" {
+		t.Fatalf("cached media: %#v", media)
 	}
 }
 

@@ -188,7 +188,7 @@ func TestChatHistorySettingsFlow(t *testing.T) {
 	}
 	check := func(ids ...string) {
 		t.Helper()
-		handleInlineQuery(bot, db, &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 1}})
+		handleInlineQuery(bot, db, &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 1}}, testPreviews(t, db, bot))
 		if len(answers) != len(ids) {
 			t.Fatalf("history: %v want %v", answers, ids)
 		}

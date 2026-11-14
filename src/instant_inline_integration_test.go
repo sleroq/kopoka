@@ -153,7 +153,7 @@ func (s *instantSettingsScenario) inline(user int64, link string) map[string]any
 	s.t.Helper()
 	before := s.network.attempts.Load()
 	query := &tgbotapi.InlineQuery{ID: "query", From: &tgbotapi.User{ID: user}, Query: link}
-	handleInlineQuery(s.bot, s.db, query)
+	handleInlineQuery(s.bot, s.db, query, testPreviews(s.t, s.db, s.bot))
 	if after := s.network.attempts.Load(); after != before {
 		s.t.Fatalf("inline query attempted %d upstream requests", after-before)
 	}
@@ -164,12 +164,22 @@ func (s *instantSettingsScenario) inline(user int64, link string) map[string]any
 	return results[0]
 }
 
-func (s *instantSettingsScenario) expectThumbnail(user int64, link, expected string) {
+func (s *instantSettingsScenario) expectThumbnail(user int64, link string, withPreview bool) {
 	s.t.Helper()
 	result := s.inline(user, link)
-	thumbnail, present := result["thumbnail_url"]
-	if expected == "" && present || expected != "" && thumbnail != expected {
-		s.t.Fatalf("thumbnail for %s = %#v (present %t), want %q", link, thumbnail, present, expected)
+	photo, ok := result["photo_url"].(string)
+	if !ok || result["type"] != "photo" || result["thumbnail_url"] != photo {
+		s.t.Fatalf("photo result for %s: %#v", link, result)
+	}
+	want := "https://preview.example.com/thumbnail-placeholder-x.jpg"
+	if strings.Contains(link, "pixiv.net") {
+		want = "https://preview.example.com/thumbnail-placeholder-pixiv.jpg"
+	}
+	if withPreview {
+		want = "https://preview.example.com/thumbnail?url=" + url.QueryEscape(inlineLink(link).String())
+	}
+	if photo != want {
+		s.t.Fatalf("thumbnail for %s = %q, want %q", link, photo, want)
 	}
 }
 
@@ -209,8 +219,8 @@ func TestInstantInlineSettingsFlow(t *testing.T) {
 	s.open()
 	s.tap("Instant inline query", 1)
 	s.expectButtons("Toggle all", "X: ✓", "Pixiv: ✓", "Back")
-	s.expectThumbnail(1, "https://x.com/u/status/1", "")
-	s.expectThumbnail(1, "https://pixiv.net/artworks/2", "")
+	s.expectThumbnail(1, "https://x.com/u/status/1", false)
+	s.expectThumbnail(1, "https://pixiv.net/artworks/2", false)
 	s.tap("Back", 1)
 	if view := api.snapshot(); view.text != "Settings" || !strings.Contains(view.markup, "History:") {
 		t.Fatalf("settings back: %#v", view)
@@ -218,7 +228,7 @@ func TestInstantInlineSettingsFlow(t *testing.T) {
 	if _, err := db.Exec(`DROP TABLE instant_inline_settings`); err != nil {
 		t.Fatal(err)
 	}
-	s.expectThumbnail(1, "https://x.com/u/status/999", "")
+	s.expectThumbnail(1, "https://x.com/u/status/999", false)
 }
 
 func verifyInstantSettingsMenu(t *testing.T, s *instantSettingsScenario) {
@@ -244,28 +254,28 @@ func verifyInstantInlineQueries(t *testing.T, s *instantSettingsScenario) {
 	t.Helper()
 	x := "https://x.com/u/status/1"
 	pixiv := "https://www.pixiv.net/artworks/2"
-	s.expectThumbnail(1, x, "https://d.fxtwitter.com/u/status/1")
-	s.expectThumbnail(1, pixiv, "https://pixiv.cat/2.jpg")
+	s.expectThumbnail(1, x, true)
+	s.expectThumbnail(1, pixiv, true)
 	s.tap("X: ✗", 1)
 	s.expectButtons("Toggle all", "X: ✓", "Pixiv: ✗", "Back")
 	for _, host := range []string{"x.com", "fixupx.com", "vxtwitter.com", "fixvx.com", "twitter.com", "fxtwitter.com"} {
-		s.expectThumbnail(1, "https://"+host+"/u/status/1", "")
+		s.expectThumbnail(1, "https://"+host+"/u/status/1", false)
 	}
-	s.expectThumbnail(1, pixiv, "https://pixiv.cat/2.jpg")
-	s.expectThumbnail(2, x, "https://d.fxtwitter.com/u/status/1")
+	s.expectThumbnail(1, pixiv, true)
+	s.expectThumbnail(2, x, true)
 
 	s.tap("Toggle all", 1)
 	s.expectButtons("Toggle all", "X: ✓", "Pixiv: ✓", "Back")
-	s.expectThumbnail(1, pixiv, "")
-	s.expectThumbnail(1, "https://pixiv.net/en/artworks/2", "")
+	s.expectThumbnail(1, pixiv, false)
+	s.expectThumbnail(1, "https://pixiv.net/en/artworks/2", false)
 	s.tap("X: ✓", 1)
 	s.tap("Toggle all", 1)
 	s.expectButtons("Toggle all", "X: ✓", "Pixiv: ✓", "Back")
 	s.tap("Toggle all", 1)
 	s.expectButtons("Toggle all", "X: ✗", "Pixiv: ✗", "Back")
 	s.tap("Pixiv: ✗", 1)
-	s.expectThumbnail(1, x, "https://d.fxtwitter.com/u/status/1")
-	s.expectThumbnail(1, pixiv, "")
+	s.expectThumbnail(1, x, true)
+	s.expectThumbnail(1, pixiv, false)
 	s.tap("X: ✗", 1)
 	s.expectButtons("Toggle all", "X: ✓", "Pixiv: ✓", "Back")
 }
@@ -273,7 +283,7 @@ func verifyInstantInlineQueries(t *testing.T, s *instantSettingsScenario) {
 func verifyInstantInlineSelection(t *testing.T, s *instantSettingsScenario) {
 	t.Helper()
 	link := "https://x.com/u/status/777"
-	s.expectThumbnail(1, link, "")
+	s.expectThumbnail(1, link, false)
 	s.network.selected.Store(true)
 	chosen := &tgbotapi.ChosenInlineResult{
 		From: &tgbotapi.User{ID: 1}, ResultID: inlineResultID, InlineMessageID: "inline", Query: link,
@@ -284,7 +294,7 @@ func verifyInstantInlineSelection(t *testing.T, s *instantSettingsScenario) {
 		t.Fatalf("selection: upstream requests %d, media edits %d", attempts, edits)
 	}
 	result := s.inline(1, link)
-	if result["type"] != "photo" || result["photo_file_id"] != "file" {
+	if result["type"] != "photo" || !strings.HasPrefix(result["photo_url"].(string), "https://preview.example.com/thumbnail?") {
 		t.Fatalf("cached result: %#v", result)
 	}
 }

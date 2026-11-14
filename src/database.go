@@ -38,6 +38,7 @@ func openArtworkDB(path string) (*sql.DB, error) {
  CREATE TABLE IF NOT EXISTS history_opt_out (user_id INTEGER PRIMARY KEY);
  CREATE TABLE IF NOT EXISTS history_chat_hidden (user_id INTEGER PRIMARY KEY);
  CREATE TABLE IF NOT EXISTS history_first_saved (user_id INTEGER PRIMARY KEY);
+ CREATE TABLE IF NOT EXISTS thumbnail_cache (artwork_id TEXT NOT NULL, media_count INTEGER NOT NULL, file_id TEXT NOT NULL, PRIMARY KEY (artwork_id, media_count));
  CREATE TABLE IF NOT EXISTS instant_inline_settings (user_id INTEGER PRIMARY KEY, x INTEGER NOT NULL DEFAULT 0, pixiv INTEGER NOT NULL DEFAULT 0);`)
 	if err != nil {
 		_ = db.Close()
@@ -113,6 +114,23 @@ func toggleInstantInline(db *sql.DB, user int64, action string) error {
 		return fmt.Errorf("invalid instant inline action: %s", action)
 	}
 	_, err := db.Exec(query, user)
+	return err
+}
+
+func findThumbnail(db *sql.DB, id string, count int) (string, error) {
+	var fileID string
+	err := db.QueryRow(`SELECT file_id FROM thumbnail_cache WHERE artwork_id=? AND media_count=?`, id, count).Scan(&fileID)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return fileID, err
+}
+
+func saveThumbnail(db *sql.DB, id string, count, actual int, fileID string) error {
+	_, err := db.Exec(`INSERT INTO thumbnail_cache(artwork_id, media_count, file_id)
+		SELECT ?, ?, ? UNION ALL SELECT ?, ?, ? WHERE ? = 0
+		ON CONFLICT(artwork_id, media_count) DO UPDATE SET file_id=excluded.file_id`,
+		id, count, fileID, id, actual, fileID, count)
 	return err
 }
 

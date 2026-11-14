@@ -127,7 +127,7 @@ func TestInlineTelegramFlow(t *testing.T) {
 			query := &tgbotapi.InlineQuery{
 				From: &tgbotapi.User{ID: 1}, ID: "query", Query: " https://x.com/user/status/1?tracking=1 ",
 			}
-			handleInlineQuery(bot, db, query)
+			handleInlineQuery(bot, db, query, testPreviews(t, db, bot))
 			if strings.Join(calls, ",") != "answer" || len(answer) != 1 {
 				t.Fatalf("calls: %v, answer: %#v", calls, answer)
 			}
@@ -160,17 +160,17 @@ func checkCachedInlineFlow(t *testing.T, bot *tgbotapi.BotAPI, db *sql.DB, query
 	t.Helper()
 	// The same status under another host and user resolves to the cached artwork.
 	query.Query = "https://vxtwitter.com/another/status/1?ref=2"
-	handleInlineQuery(bot, db, query)
+	handleInlineQuery(bot, db, query, testPreviews(t, db, bot))
 	cached := (*answer)[0]
-	if cached["type"] != "photo" || cached["id"] != "x:1" || cached["photo_file_id"] != "large1" || cached["title"] != "Artist" || cached["description"] != "A real post" {
+	if cached["type"] != "photo" || cached["id"] != "x:1" || !strings.HasPrefix(cached["photo_url"].(string), "https://preview.example.com/thumbnail?") || cached["title"] != "Artist" || cached["description"] != "A real post" {
 		t.Fatalf("cached result: %#v", cached)
 	}
-	if count == 1 {
-		if cached["parse_mode"] != "HTML" || !strings.Contains(cached["caption"].(string), "Artist") {
-			t.Fatalf("cached: %#v", cached)
-		}
-	} else {
-		rich := cached["input_message_content"].(map[string]any)["rich_message"].(map[string]any)
+	rich := cached["input_message_content"].(map[string]any)["rich_message"].(map[string]any)
+	media := rich["media"].([]any)
+	if len(media) != count || media[0].(map[string]any)["media"].(map[string]any)["media"] != "large1" {
+		t.Fatalf("cached artwork: %#v", rich)
+	}
+	if count == 2 {
 		var edited map[string]any
 		if err := json.Unmarshal([]byte(edit.Get("rich_message")), &edited); err != nil {
 			t.Fatal(err)
@@ -190,12 +190,12 @@ func checkCachedInlineFlow(t *testing.T, bot *tgbotapi.BotAPI, db *sql.DB, query
 
 	query.Query = ""
 	query.From.ID = 2
-	handleInlineQuery(bot, db, query)
+	handleInlineQuery(bot, db, query, testPreviews(t, db, bot))
 	if len(*answer) != 1 || (*answer)[0]["id"] != "x:1" {
 		t.Fatalf("history: %#v", *answer)
 	}
 	query.From.ID = 3
-	handleInlineQuery(bot, db, query)
+	handleInlineQuery(bot, db, query, testPreviews(t, db, bot))
 	if len(*answer) != 0 {
 		t.Fatalf("other user's history: %#v", *answer)
 	}
@@ -231,7 +231,7 @@ func checkCachedInlineFlow(t *testing.T, bot *tgbotapi.BotAPI, db *sql.DB, query
 	}
 	defer func() { _ = disk.Close() }()
 	query.From.ID = 1
-	handleInlineQuery(bot, disk, query)
+	handleInlineQuery(bot, disk, query, testPreviews(t, disk, bot))
 	if len(*answer) != 2 || (*answer)[0]["id"] != "x:1" || (*answer)[1]["id"] != "pixiv:2" {
 		t.Fatalf("reopened history: %#v", *answer)
 	}
@@ -242,7 +242,7 @@ func checkInlineAnswer(t *testing.T, result map[string]any) {
 	content := result["input_message_content"].(map[string]any)
 	keyboard := result["reply_markup"].(map[string]any)["inline_keyboard"].([]any)
 	button := keyboard[0].([]any)[0].(map[string]any)
-	if result["type"] != "article" || result["id"] != inlineResultID || result["thumbnail_url"] != "https://d.fxtwitter.com/user/status/1" || content["message_text"] != "Loading artwork…" || content["disable_web_page_preview"] != true || button["text"] != "Please wait…" || button["disabled"] == nil {
+	if result["type"] != "photo" || result["id"] != inlineResultID || !strings.HasPrefix(result["photo_url"].(string), "https://preview.example.com/thumbnail?") || result["photo_url"] != result["thumbnail_url"] || content["message_text"] != "Loading artwork…" || content["disable_web_page_preview"] != true || button["text"] != "Please wait…" || button["disabled"] == nil {
 		t.Fatalf("answer: %#v", result)
 	}
 }
@@ -311,12 +311,12 @@ func TestInlineHistoryPagination(t *testing.T) {
 		t.Fatal(err)
 	}
 	query := &tgbotapi.InlineQuery{ID: "id", From: &tgbotapi.User{ID: 1}}
-	handleInlineQuery(bot, db, query)
+	handleInlineQuery(bot, db, query, testPreviews(t, db, bot))
 	if len(results) != 50 || next != "50" {
 		t.Fatalf("first page: %d results, next %q", len(results), next)
 	}
 	query.Offset = next
-	handleInlineQuery(bot, db, query)
+	handleInlineQuery(bot, db, query, testPreviews(t, db, bot))
 	if len(results) != 1 || results[0]["id"] != "x:0" || next != "" {
 		t.Fatalf("last page: %#v, next %q", results, next)
 	}
@@ -337,7 +337,7 @@ func TestInlinePixivThumbnail(t *testing.T) {
 		if err := json.Unmarshal([]byte(r.FormValue("results")), &results); err != nil {
 			t.Fatal(err)
 		}
-		if len(results) != 1 || results[0]["thumbnail_url"] != "https://pixiv.cat/82775556.jpg" {
+		if len(results) != 1 || !strings.HasPrefix(results[0]["photo_url"].(string), "https://preview.example.com/thumbnail?") || results[0]["photo_url"] != results[0]["thumbnail_url"] {
 			t.Errorf("results: %#v", results)
 		}
 		_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
@@ -349,7 +349,7 @@ func TestInlinePixivThumbnail(t *testing.T) {
 	}
 	handleInlineQuery(bot, db, &tgbotapi.InlineQuery{
 		ID: "query", From: &tgbotapi.User{ID: 1}, Query: "https://www.pixiv.net/artworks/82775556?ref=1",
-	})
+	}, testPreviews(t, db, bot))
 }
 
 func TestInlineEmptyAnswers(t *testing.T) {
@@ -375,7 +375,8 @@ func TestInlineEmptyAnswers(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			handleInlineQuery(bot, db, &tgbotapi.InlineQuery{From: &tgbotapi.User{ID: 1}, ID: "id", Query: query})
+			inlineQuery := &tgbotapi.InlineQuery{From: &tgbotapi.User{ID: 1}, ID: "id", Query: query}
+			handleInlineQuery(bot, db, inlineQuery, testPreviews(t, db, bot))
 		})
 	}
 }
@@ -503,7 +504,7 @@ func TestInlineRetryTelegram(t *testing.T) {
 				<-limited
 				answered := make(chan struct{})
 				go func() {
-					handleInlineQuery(bot, db, &tgbotapi.InlineQuery{From: &tgbotapi.User{ID: 1}, ID: "other"})
+					handleInlineQuery(bot, db, &tgbotapi.InlineQuery{From: &tgbotapi.User{ID: 1}, ID: "other"}, testPreviews(t, db, bot))
 					close(answered)
 				}()
 				select {
@@ -715,7 +716,8 @@ func TestHistoryPreferenceTelegramFlow(t *testing.T) {
 	}
 	checkHistory := func(user int64, ids ...string) {
 		t.Helper()
-		handleInlineQuery(bot, db, &tgbotapi.InlineQuery{ID: "query", From: &tgbotapi.User{ID: user}})
+		inlineQuery := &tgbotapi.InlineQuery{ID: "query", From: &tgbotapi.User{ID: user}}
+		handleInlineQuery(bot, db, inlineQuery, testPreviews(t, db, bot))
 		if len(answers) != len(ids) {
 			t.Fatalf("user %d history: %#v, want %v", user, answers, ids)
 		}
@@ -973,9 +975,15 @@ func TestXVideoChatAndInline(t *testing.T) {
 					t.Fatalf("album caption: %#v", album)
 				}
 			}
-			handleInlineQuery(bot, db, &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 1}, Query: link})
-			if len(answer) != 1 || answer[0]["type"] != "video" || answer[0]["video_file_id"] != "vid" {
+			inlineQuery := &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 1}, Query: link}
+			handleInlineQuery(bot, db, inlineQuery, testPreviews(t, db, bot))
+			if len(answer) != 1 || answer[0]["type"] != "photo" || !strings.HasPrefix(answer[0]["photo_url"].(string), "https://preview.example.com/thumbnail?") {
 				t.Fatalf("cached: %#v", answer)
+			}
+			rich := answer[0]["input_message_content"].(map[string]any)["rich_message"].(map[string]any)
+			cachedMedia := rich["media"].([]any)
+			if len(cachedMedia) != len(tc.kinds) || cachedMedia[0].(map[string]any)["media"].(map[string]any)["media"] != "vid" {
+				t.Fatalf("cached media: %#v", cachedMedia)
 			}
 			// Exercise the uncached chosen-result path even though the chat already stored this artwork.
 			handleChosenInlineResult(bot, nil, db, &tgbotapi.ChosenInlineResult{
