@@ -127,7 +127,7 @@ func artSeamMatches(a, b image.Image, horizontal bool) bool {
 		}
 		// Nearly uniform textured seams have much smaller absolute differences.
 		if displaced-aligned >= 8 && aligned <= 0.4*displaced ||
-			!trimmed && aligned <= 3 && displaced-aligned >= 0.7 && aligned <= 0.8*displaced {
+			!trimmed && aligned <= 3 && displaced-aligned >= 0.4 && aligned <= 0.8*displaced {
 			return true
 		}
 	}
