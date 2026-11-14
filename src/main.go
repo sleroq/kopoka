@@ -326,7 +326,7 @@ func messageLinks(message *tgbotapi.Message) []*url.URL {
 	return links
 }
 
-func handleMessage(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, message *tgbotapi.Message) {
+func handleMessage(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, message *tgbotapi.Message, queue *mediaQueue) {
 	command := message.CommandWithAt()
 	if command == "help" || command == "start" || strings.EqualFold(command, "help@"+bot.Self.UserName) || strings.EqualFold(command, "start@"+bot.Self.UserName) {
 		reply := tgbotapi.NewMessage(message.Chat.ID, "Just send me x.com / pixiv.net link with media in it. Or use me inline")
@@ -381,14 +381,45 @@ func handleMessage(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, mes
 			return
 		}
 	}
+	processMessageLinks(bot, app, db, message, queue)
+}
+
+func processMessageLinks(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, message *tgbotapi.Message, queue *mediaQueue) {
+	var results []<-chan error
+	rejected := make(map[error]int)
 	for _, link := range messageLinks(message) {
-		if err := processLink(bot, app, db, message, link); err != nil {
+		result, err := queue.submit(message.From.ID, func() error {
+			return processLink(bot, app, db, message, link)
+		})
+		if err != nil {
+			rejected[err]++
+		} else {
+			results = append(results, result)
+		}
+	}
+	for _, reason := range []error{errMediaQueueFull, errMediaHourlyLimit, errMediaDailyLimit} {
+		if count := rejected[reason]; count > 0 {
+			text := fmt.Sprintf("Links not queued: %d (%s). Please retry later.", count, reason)
+			reply := tgbotapi.NewMessage(message.Chat.ID, text)
+			reply.ReplyToMessageID = message.MessageID
+			if _, err := bot.Send(reply); err != nil {
+				log.Printf("sending media rejection: %v", err)
+			}
+		}
+	}
+	for _, result := range results {
+		if err := <-result; err != nil {
 			log.Println(err)
 		}
 	}
 }
 
 func main() {
+	limits, err := mediaLimitsFromEnv()
+	if err != nil {
+		log.Fatalf("invalid media configuration: %v", err)
+	}
+	queue := newMediaQueue(limits)
 	path := os.Getenv("SQLITE_PATH")
 	if path == "" {
 		path = "kopoka.db"
@@ -419,16 +450,16 @@ func main() {
 			go handleInlineQuery(bot, db, update.InlineQuery)
 		}
 		if update.ChosenInlineResult != nil {
-			go handleChosenInlineResult(bot, pApp, db, update.ChosenInlineResult, os.Getenv("INLINE_CACHE_CHAT_ID"))
+			go handleChosenInlineResult(bot, pApp, db, update.ChosenInlineResult, os.Getenv("INLINE_CACHE_CHAT_ID"), queue)
 		}
 		if update.CallbackQuery != nil {
 			go handleCallback(bot, db, update.CallbackQuery)
 		}
 		if update.Message != nil {
-			go handleMessage(bot, pApp, db, update.Message)
+			go handleMessage(bot, pApp, db, update.Message, queue)
 		}
 		if update.ChannelPost != nil {
-			go handleMessage(bot, pApp, db, update.ChannelPost)
+			go handleMessage(bot, pApp, db, update.ChannelPost, queue)
 		}
 	}
 }

@@ -143,7 +143,7 @@ func handleInlineQuery(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.InlineQ
 	}
 }
 
-func handleChosenInlineResult(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, cacheChat string) {
+func handleChosenInlineResult(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, cacheChat string, queue *mediaQueue) {
 	if chosen.ResultID != inlineResultID {
 		if err := selectArtwork(db, chosen.From.ID, chosen.ResultID); err != nil {
 			log.Printf("recording inline selection: %v", err)
@@ -154,10 +154,19 @@ func handleChosenInlineResult(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *
 		log.Print("missing inline message ID")
 		return
 	}
-	if err := editInlineArtwork(bot, app, db, chosen, cacheChat); err != nil {
+	result, err := queue.submit(chosen.From.ID, func() error {
+		return editInlineArtwork(bot, app, db, chosen, cacheChat)
+	})
+	failure := ""
+	if err != nil {
+		failure = fmt.Sprintf("Could not load artwork: %s. Please retry later.", err)
+	} else if err := <-result; err != nil {
 		log.Printf("processing chosen inline result: %v", err)
+		failure = "Could not load artwork. Please try again."
+	}
+	if failure != "" {
 		params := tgbotapi.Params{
-			"inline_message_id": chosen.InlineMessageID, "text": "Could not load artwork. Please try again.",
+			"inline_message_id": chosen.InlineMessageID, "text": failure,
 			"reply_markup": `{"inline_keyboard":[]}`,
 		}
 		if _, editErr := retryTelegram(func() (*tgbotapi.APIResponse, error) {

@@ -45,6 +45,8 @@ func testArtworkDB(t *testing.T) *sql.DB {
 }
 
 func TestInlineTelegramFlow(t *testing.T) {
+	queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})
+
 	for _, count := range []int{1, 2} {
 		t.Run(fmt.Sprint(count), func(t *testing.T) {
 			db := testArtworkDB(t)
@@ -133,7 +135,7 @@ func TestInlineTelegramFlow(t *testing.T) {
 			chosen := &tgbotapi.ChosenInlineResult{
 				From: &tgbotapi.User{ID: 1}, ResultID: inlineResultID, InlineMessageID: "inline", Query: query.Query,
 			}
-			handleChosenInlineResult(bot, nil, db, chosen, cacheChat)
+			handleChosenInlineResult(bot, nil, db, chosen, cacheChat, queue)
 			method := "editMessageMedia"
 			if count == 2 {
 				method = "editMessageText"
@@ -153,6 +155,8 @@ func TestInlineTelegramFlow(t *testing.T) {
 }
 
 func checkCachedInlineFlow(t *testing.T, bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.InlineQuery, answer *[]map[string]any, calls *[]string, edit url.Values, count int, cacheChat string) {
+	queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})
+
 	t.Helper()
 	// The same status under another host and user resolves to the cached artwork.
 	query.Query = "https://vxtwitter.com/another/status/1?ref=2"
@@ -179,7 +183,7 @@ func checkCachedInlineFlow(t *testing.T, bot *tgbotapi.BotAPI, db *sql.DB, query
 	before := len(*calls)
 	handleChosenInlineResult(bot, nil, db, &tgbotapi.ChosenInlineResult{
 		From: &tgbotapi.User{ID: 2}, ResultID: cached["id"].(string),
-	}, cacheChat)
+	}, cacheChat, queue)
 	if len(*calls) != before {
 		t.Fatalf("cached selection made requests: %v", (*calls)[before:])
 	}
@@ -375,6 +379,8 @@ func TestInlineEmptyAnswers(t *testing.T) {
 }
 
 func TestInlineChosenFailures(t *testing.T) {
+	queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})
+
 	for _, query := range []string{"invalid", "https://x.com/user/status/1"} {
 		t.Run(query, func(t *testing.T) {
 			db := testArtworkDB(t)
@@ -409,16 +415,16 @@ func TestInlineChosenFailures(t *testing.T) {
 			chosen := &tgbotapi.ChosenInlineResult{
 				From: &tgbotapi.User{ID: 1}, ResultID: inlineResultID, InlineMessageID: "inline", Query: query,
 			}
-			handleChosenInlineResult(bot, nil, db, chosen, "@cache")
+			handleChosenInlineResult(bot, nil, db, chosen, "@cache", queue)
 			if edits != 1 {
 				t.Fatalf("edits: %d", edits)
 			}
 
 			chosen.ResultID = "other"
-			handleChosenInlineResult(bot, nil, db, chosen, "@cache")
+			handleChosenInlineResult(bot, nil, db, chosen, "@cache", queue)
 			handleChosenInlineResult(bot, nil, db, &tgbotapi.ChosenInlineResult{
 				From: &tgbotapi.User{ID: 1}, ResultID: inlineResultID, Query: query,
-			}, "@cache")
+			}, "@cache", queue)
 			if edits != 1 {
 				t.Fatalf("unexpected edits: %d", edits)
 			}
@@ -427,6 +433,8 @@ func TestInlineChosenFailures(t *testing.T) {
 }
 
 func TestInlineRetryTelegram(t *testing.T) {
+	queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})
+
 	for _, failUpload := range []bool{false, true} {
 		t.Run(fmt.Sprintf("failUpload=%v", failUpload), func(t *testing.T) {
 			db := testArtworkDB(t)
@@ -486,7 +494,7 @@ func TestInlineRetryTelegram(t *testing.T) {
 				chosen := &tgbotapi.ChosenInlineResult{From: &tgbotapi.User{ID: 1},
 					ResultID: inlineResultID, InlineMessageID: "inline", Query: "https://x.com/user/status/1",
 				}
-				handleChosenInlineResult(bot, nil, db, chosen, "@cache")
+				handleChosenInlineResult(bot, nil, db, chosen, "@cache", queue)
 				close(done)
 			}()
 			if !failUpload {
@@ -659,6 +667,8 @@ func historyPreferenceServer(t *testing.T, answers *[]map[string]any, reply, mar
 }
 
 func TestHistoryPreferenceTelegramFlow(t *testing.T) {
+	queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})
+
 	path := filepath.Join(t.TempDir(), "history.db")
 	db, err := openArtworkDB(path)
 	if err != nil {
@@ -682,7 +692,7 @@ func TestHistoryPreferenceTelegramFlow(t *testing.T) {
 		t.Helper()
 		message := &tgbotapi.Message{MessageID: 42, Chat: &tgbotapi.Chat{ID: 123}, From: &tgbotapi.User{ID: 1}, Text: text,
 			Entities: []tgbotapi.MessageEntity{{Type: "bot_command", Length: len(text)}}}
-		handleMessage(bot, nil, db, message)
+		handleMessage(bot, nil, db, message, queue)
 	}
 	callback := func(user int64, data string) {
 		t.Helper()
@@ -692,14 +702,14 @@ func TestHistoryPreferenceTelegramFlow(t *testing.T) {
 	}
 	selectCached := func(user int64, id string) {
 		chosen := &tgbotapi.ChosenInlineResult{From: &tgbotapi.User{ID: user}, ResultID: id}
-		handleChosenInlineResult(bot, nil, db, chosen, "@cache")
+		handleChosenInlineResult(bot, nil, db, chosen, "@cache", queue)
 	}
 	selectNew := func(id string) {
 		chosen := &tgbotapi.ChosenInlineResult{
 			From: &tgbotapi.User{ID: 1}, ResultID: inlineResultID,
 			InlineMessageID: "inline", Query: "https://x.com/user/status/" + id,
 		}
-		handleChosenInlineResult(bot, nil, db, chosen, "@cache")
+		handleChosenInlineResult(bot, nil, db, chosen, "@cache", queue)
 	}
 	checkHistory := func(user int64, ids ...string) {
 		t.Helper()
@@ -801,6 +811,8 @@ func TestHistoryPreferenceTelegramFlow(t *testing.T) {
 }
 
 func TestXVideoChatAndInline(t *testing.T) {
+	queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})
+
 	for _, tc := range []struct {
 		name, all string
 		kinds     []string
@@ -878,7 +890,7 @@ func TestXVideoChatAndInline(t *testing.T) {
 			handleMessage(bot, nil, db, &tgbotapi.Message{
 				MessageID: 42, Chat: &tgbotapi.Chat{ID: 123}, From: &tgbotapi.User{ID: 1}, Text: link,
 				Entities: []tgbotapi.MessageEntity{{Type: "url", Length: len(link)}},
-			})
+			}, queue)
 			if !reflect.DeepEqual(actions, []string{"typing", "upload_video"}) {
 				t.Fatalf("chat actions: %v", actions)
 			}
@@ -906,7 +918,7 @@ func TestXVideoChatAndInline(t *testing.T) {
 			// Exercise the uncached chosen-result path even though the chat already stored this artwork.
 			handleChosenInlineResult(bot, nil, db, &tgbotapi.ChosenInlineResult{
 				From: &tgbotapi.User{ID: 2}, ResultID: inlineResultID, InlineMessageID: "inline", Query: link,
-			}, "@cache")
+			}, "@cache", queue)
 			var payload map[string]any
 			field := "media"
 			if len(tc.kinds) > 1 {
