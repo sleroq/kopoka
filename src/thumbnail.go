@@ -172,7 +172,7 @@ func (t *thumbnails) placeholderURL(pixiv bool) string {
 func (t *thumbnails) url(link *url.URL, count int) string {
 	result := *t.base
 	result.Path += "/thumbnail"
-	q := url.Values{"url": {link.String()}}
+	q := url.Values{"url": {link.String()}, "v": {strconv.Itoa(thumbnailRenderVersion)}}
 	if count > 0 {
 		q.Set("count", strconv.Itoa(count))
 	}
@@ -339,51 +339,68 @@ type thumbnailMedia struct {
 	ThumbnailURL string `json:"thumbnail_url"`
 }
 
-func (t *thumbnails) source(link *url.URL) (string, int, bool, error) {
-	if link.Host == "pixiv.net" || link.Host == "www.pixiv.net" {
-		preview, count, err := t.pixivSource(link)
-		return preview, count, true, err
-	}
-	preview, count, err := t.xSource(link)
-	return preview, count, false, err
+type thumbnailSource struct {
+	media      []thumbnailMedia
+	count      int
+	pixiv      bool
+	pixivPages bool
 }
 
-func (t *thumbnails) pixivSource(link *url.URL) (string, int, error) {
+func (t *thumbnails) source(link *url.URL) (thumbnailSource, error) {
+	if link.Host == "pixiv.net" || link.Host == "www.pixiv.net" {
+		return t.pixivSource(link)
+	}
+	return t.xSource(link)
+}
+
+func (t *thumbnails) pixivSource(link *url.URL) (thumbnailSource, error) {
 	id, err := strconv.ParseUint(strings.TrimPrefix(link.Path, "/artworks/"), 10, 64)
 	if err != nil {
-		return "", 0, err
+		return thumbnailSource{}, err
 	}
 	if t.app == nil {
-		return "", 0, fmt.Errorf("missing Pixiv client")
+		return thumbnailSource{}, fmt.Errorf("missing Pixiv client")
 	}
 	pixivRequestMu.Lock()
 	illust, err := t.app.IllustDetail(id)
 	pixivRequestMu.Unlock()
 	if err != nil {
-		return "", 0, err
+		return thumbnailSource{}, err
 	}
-	if illust == nil || illust.Images == nil {
-		return "", 0, fmt.Errorf("missing Pixiv preview")
+	if illust == nil {
+		return thumbnailSource{}, fmt.Errorf("missing Pixiv preview")
+	}
+	source := thumbnailSource{pixiv: true, count: max(1, illust.PageCount)}
+	if illust.Type != "ugoira" && len(illust.MetaPages) > 1 {
+		source.pixivPages = true
+		for _, page := range illust.MetaPages {
+			source.media = append(source.media, thumbnailMedia{URL: page.Images.Original, ThumbnailURL: page.Images.Large})
+		}
+		return source, nil
+	}
+	if illust.Images == nil {
+		return thumbnailSource{}, fmt.Errorf("missing Pixiv preview")
 	}
 	preview := illust.Images.Large
 	if preview == "" {
 		preview = illust.Images.Medium
 	}
 	if preview == "" {
-		return "", 0, fmt.Errorf("missing Pixiv preview")
+		return thumbnailSource{}, fmt.Errorf("missing Pixiv preview")
 	}
-	return preview, max(1, illust.PageCount, len(illust.MetaPages)), nil
+	source.media = []thumbnailMedia{{URL: preview}}
+	return source, nil
 }
 
-func (t *thumbnails) xSource(link *url.URL) (string, int, error) {
+func (t *thumbnails) xSource(link *url.URL) (thumbnailSource, error) {
 	api := url.URL{Scheme: "https", Host: "api.fxtwitter.com", Path: link.Path}
 	res, err := t.client.Get(api.String())
 	if err != nil {
-		return "", 0, err
+		return thumbnailSource{}, err
 	}
 	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusOK {
-		return "", 0, fmt.Errorf("FxTwitter HTTP %s", res.Status)
+		return thumbnailSource{}, fmt.Errorf("FxTwitter HTTP %s", res.Status)
 	}
 
 	var response struct {
@@ -396,35 +413,70 @@ func (t *thumbnails) xSource(link *url.URL) (string, int, error) {
 		} `json:"tweet"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&response); err != nil {
-		return "", 0, err
+		return thumbnailSource{}, err
 	}
 	if response.Code != http.StatusOK || response.Tweet == nil {
-		return "", 0, fmt.Errorf("FxTwitter API error %d", response.Code)
+		return thumbnailSource{}, fmt.Errorf("FxTwitter API error %d", response.Code)
 	}
 
 	items := response.Tweet.Media.All
 	if items == nil {
 		items = response.Tweet.Media.Photos
 	}
-	for _, item := range items {
-		preview := item.URL
-		if item.Type == "video" || item.Type == "gif" {
-			preview = item.ThumbnailURL
-		}
-		if (item.Type == "" || item.Type == "photo" || item.Type == "video" || item.Type == "gif") && preview != "" {
-			return preview, len(items), nil
+	if len(items) == 0 {
+		return thumbnailSource{}, fmt.Errorf("FxTwitter preview missing")
+	}
+	for i, item := range items {
+		switch item.Type {
+		case "video", "gif":
+			if i == 0 && item.ThumbnailURL == "" {
+				return thumbnailSource{}, fmt.Errorf("FxTwitter preview missing")
+			}
+		case "", "photo":
+			if item.URL == "" {
+				return thumbnailSource{}, fmt.Errorf("FxTwitter preview missing")
+			}
+		default:
+			return thumbnailSource{}, fmt.Errorf("unsupported FxTwitter media type %q", item.Type)
 		}
 	}
-	return "", 0, fmt.Errorf("FxTwitter preview missing")
+	return thumbnailSource{media: items, count: len(items)}, nil
+}
+
+func (t *thumbnails) mergeSource(source thumbnailSource) (image.Image, int, error) {
+	media := make([]any, 0, len(source.media))
+	for _, item := range source.media {
+		if item.Type == "video" || item.Type == "gif" {
+			media = append(media, tgbotapi.NewInputMediaVideo(tgbotapi.FileURL(item.ThumbnailURL)))
+			continue
+		}
+		var file tgbotapi.FileBytes
+		var err error
+		if source.pixivPages {
+			file, err = downloadPixivPhoto(t.client, item.URL, item.ThumbnailURL)
+		} else {
+			file, err = downloadArtFile(t.client, tgbotapi.FileURL(item.URL))
+		}
+		if err != nil {
+			return nil, 0, err
+		}
+		media = append(media, tgbotapi.NewInputMediaPhoto(file))
+	}
+	media = mergeArtPhotos(media)
+	actual := source.count
+	if len(source.media) > 1 {
+		actual = len(media)
+	}
+	img, err := downloadArtPhoto(t.client, mediaBase(media[0]).Media)
+	return img, actual, err
 }
 
 func (t *thumbnails) generate(link *url.URL, count int) ([]byte, []byte, int, error) {
-	source, actual, pix, err := t.source(link)
+	source, err := t.source(link)
 	if err != nil {
 		return nil, nil, 0, err
 	}
-
-	img, err := downloadArtPhoto(t.client, tgbotapi.FileURL(source))
+	img, actual, err := t.mergeSource(source)
 	if err != nil {
 		return nil, nil, 0, err
 	}
@@ -443,7 +495,7 @@ func (t *thumbnails) generate(link *url.URL, count int) ([]byte, []byte, int, er
 	canvas := image.NewRGBA(image.Rect(0, 0, width, height))
 	draw.Draw(canvas, canvas.Bounds(), image.NewUniform(color.White), image.Point{}, draw.Src)
 	draw.CatmullRom.Scale(canvas, canvas.Bounds(), img, b, draw.Over, nil)
-	if err := t.decorate(canvas, pix, count); err != nil {
+	if err := t.decorate(canvas, source.pixiv, count); err != nil {
 		return nil, nil, 0, err
 	}
 

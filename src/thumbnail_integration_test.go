@@ -179,7 +179,7 @@ func TestInlineThumbnailFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
-	if _, err := db.Exec(`UPDATE thumbnail_cache SET render_version=1 WHERE artwork_id='x:1'`); err != nil {
+	if _, err := db.Exec(`UPDATE thumbnail_cache SET render_version=2 WHERE artwork_id='x:1'`); err != nil {
 		t.Fatal(err)
 	}
 	previews, err := newThumbnails("https://preview.example.com", nil, bot, db, "@cache")
@@ -252,7 +252,7 @@ func reopenCachedThumbnail(t *testing.T, s *thumbnailTestServer, bot *tgbotapi.B
 	var version int
 	row := db.QueryRow(`SELECT render_version FROM thumbnail_cache WHERE artwork_id='x:1' AND media_count=0`)
 	err := row.Scan(&version)
-	if err != nil || version != 2 {
+	if err != nil || version != 3 {
 		t.Fatalf("cached render version: %d, %v", version, err)
 	}
 	before := s.upstream.Load()
@@ -281,8 +281,9 @@ func reopenCachedThumbnail(t *testing.T, s *thumbnailTestServer, bot *tgbotapi.B
 		t.Fatalf("thumbnail via alternate host: %#v", cached)
 	}
 	query.Query = "https://x.com/user/status/1"
-	if s.upstream.Load() != 1 || s.downloads.Load() != 1 {
-		t.Fatalf("metadata requests = %d, image downloads = %d, want one each", s.upstream.Load(), s.downloads.Load())
+	if s.upstream.Load() != 1 || s.downloads.Load() != 2 {
+		t.Fatalf("metadata requests = %d, image downloads = %d; want 1 and 2",
+			s.upstream.Load(), s.downloads.Load())
 	}
 	return db
 }
@@ -316,7 +317,7 @@ func uncachedThumbnailURLs(t *testing.T, result map[string]any) (string, string)
 		t.Fatalf("inline result: %#v", result)
 	}
 	pq, tq := p.Query(), thumb.Query()
-	if pq.Get("size") != "large" || tq.Has("size") || tq.Get("url") == "" {
+	if pq.Get("size") != "large" || tq.Has("size") || tq.Get("url") == "" || tq.Get("v") != "3" {
 		t.Fatalf("preview queries: %v, %v", pq, tq)
 	}
 	pq.Del("size")
@@ -650,8 +651,12 @@ func TestPixivThumbnailFlow(t *testing.T) {
 			_, _ = fmt.Fprint(w, `{"response":{"access_token":"access","refresh_token":"refresh","expires_in":3600,"user":{}}}`)
 		case "/v1/illust/detail":
 			metadata.Add(1)
-			_, _ = fmt.Fprint(w, `{"illust":{"id":123,"type":"illust","page_count":12,
-                "image_urls":{"medium":"https://i.pximg.net/medium.png","large":"https://i.pximg.net/cover.jpg"}}}`)
+			servePixivThumbnailDetail(w, r)
+		case "/p0", "/p1":
+			downloads.Add(1)
+			scene := artScene(image.Rect(0, 0, 400, 320), 0)
+			x := int(r.URL.Path[2]-'0') * 200
+			_ = png.Encode(w, scene.SubImage(image.Rect(x, 0, x+200, 320)))
 		case "/cover.jpg":
 			if r.Referer() != "https://www.pixiv.net/" {
 				t.Error("missing Pixiv image referer")
@@ -699,6 +704,34 @@ func TestPixivThumbnailFlow(t *testing.T) {
 	if downloads.Load() != 1 || metadata.Load() != 1 {
 		t.Fatalf("Pixiv metadata requests: %d, image downloads: %d", metadata.Load(), downloads.Load())
 	}
+	checkPixivMergedPreview(t, previews, &downloads)
+}
+
+func servePixivThumbnailDetail(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("illust_id") == "124" {
+		_, _ = fmt.Fprint(w, `{"illust":{"id":124,"type":"illust","page_count":2,
+            "image_urls":{"large":"https://i.pximg.net/cover.jpg"},
+            "meta_pages":[{"image_urls":{"original":"https://i.pximg.net/p0","large":"https://i.pximg.net/cover.jpg"}},
+            {"image_urls":{"original":"https://i.pximg.net/p1","large":"https://i.pximg.net/cover.jpg"}}]}}`)
+		return
+	}
+	_, _ = fmt.Fprint(w, `{"illust":{"id":123,"type":"illust","page_count":12,
+        "image_urls":{"medium":"https://i.pximg.net/medium.png","large":"https://i.pximg.net/cover.jpg"}}}`)
+}
+
+func checkPixivMergedPreview(t *testing.T, previews *thumbnails, downloads *atomic.Int32) {
+	t.Helper()
+	_, large, actual, err := previews.generate(inlineLink("https://www.pixiv.net/artworks/124"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, _, err := image.Decode(bytes.NewReader(large))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if img.Bounds().Size() != image.Pt(400, 320) || actual != 1 || downloads.Load() != 3 {
+		t.Fatalf("Pixiv merged preview: size %v, count %d, downloads %d", img.Bounds().Size(), actual, downloads.Load())
+	}
 }
 
 func checkPixivPreviews(t *testing.T, client *http.Client, photoURL, thumbnailURL string) {
@@ -733,4 +766,134 @@ func checkPixivPreviews(t *testing.T, client *http.Client, photoURL, thumbnailUR
 			t.Fatal("Pixiv multi-page count badge is missing")
 		}
 	}
+}
+
+func TestMergedThumbnailSources(t *testing.T) {
+	server, downloads, uploads := mergedThumbnailServer(t)
+	defer server.Close()
+
+	bot, err := tgbotapi.NewBotAPIWithAPIEndpoint("token", server.URL+"/bot%s/%s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := testArtworkDB(t)
+	previews := testPreviews(t, db, bot)
+	target, _ := url.Parse(server.URL)
+	previews.client = &http.Client{Transport: redirectTransport{target, http.DefaultTransport}}
+
+	link := inlineLink("https://x.com/user/status/10")
+	_, _, _ = previews.photo(link, 0)
+	work := previews.start(link, 0)
+	<-work.done
+	if work.err != nil {
+		t.Fatal(work.err)
+	}
+	img, _, err := image.Decode(bytes.NewReader(work.large))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if img.Bounds().Size() != image.Pt(400, 320) || work.actual != 2 {
+		t.Fatalf("joined preview: dimensions %v, count %d", img.Bounds().Size(), work.actual)
+	}
+
+	awaitCachedThumbnail(t, db, "x:10", 2)
+	before := downloads.Load()
+	id, _, _ := previews.photo(link, 2)
+	if id != "joined-preview" || downloads.Load() != before || uploads.Load() != 1 {
+		t.Fatal("merged count did not reuse cached preview")
+	}
+
+	for _, tc := range []struct {
+		id    string
+		count int
+		size  image.Point
+	}{
+		{"11", 3, image.Pt(240, 384)}, {"12", 2, image.Pt(240, 384)},
+	} {
+		link := inlineLink("https://x.com/user/status/" + tc.id)
+		_, large, actual, err := previews.generate(link, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		img, _, err := image.Decode(bytes.NewReader(large))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if img.Bounds().Size() != tc.size || actual != tc.count {
+			t.Fatalf("%s: size %v count %d", tc.id, img.Bounds().Size(), actual)
+		}
+	}
+
+	if _, _, _, err := previews.generate(inlineLink("https://x.com/user/status/13"), 0); err == nil {
+		t.Fatal("later failed download was ignored")
+	}
+}
+
+func mergedThumbnailServer(t *testing.T) (*httptest.Server, *atomic.Int32, *atomic.Int32) {
+	t.Helper()
+	scene := artScene(image.Rect(0, 0, 400, 320), 0)
+	encode := func(img image.Image) []byte {
+		var data bytes.Buffer
+		if err := png.Encode(&data, img); err != nil {
+			t.Fatal(err)
+		}
+		return data.Bytes()
+	}
+	panels := [][]byte{
+		encode(scene.SubImage(image.Rect(0, 0, 200, 320))),
+		encode(scene.SubImage(image.Rect(200, 0, 400, 320))),
+		encode(artScene(image.Rect(0, 0, 200, 320), 2)),
+	}
+
+	var server *httptest.Server
+	downloads, uploads := &atomic.Int32{}, &atomic.Int32{}
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/bottoken/getMe":
+			_, _ = fmt.Fprint(w, `{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`)
+		case "/bottoken/sendPhoto":
+			file, _, err := r.FormFile("photo")
+			if err != nil {
+				t.Error(err)
+			} else {
+				img, _, err := image.Decode(file)
+				_ = file.Close()
+				if err != nil {
+					t.Error(err)
+				} else if img.Bounds().Size() != image.Pt(400, 320) {
+					t.Errorf("uploaded merged preview: %v", img.Bounds().Size())
+				}
+			}
+			uploads.Add(1)
+			_, _ = fmt.Fprint(w, `{"ok":true,"result":{"message_id":1,"photo":[{"file_id":"joined-preview"}]}}`)
+		case "/bottoken/deleteMessage":
+			_, _ = fmt.Fprint(w, `{"ok":true,"result":true}`)
+		case "/p0", "/p1", "/p2":
+			downloads.Add(1)
+			_, _ = w.Write(panels[int(r.URL.Path[2]-'0')])
+		case "/user/status/10", "/user/status/11", "/user/status/12", "/user/status/13":
+			photo := func(n int) map[string]string {
+				return map[string]string{"type": "photo", "url": fmt.Sprintf("%s/p%d", server.URL, n)}
+			}
+			video := map[string]string{"type": "video", "thumbnail_url": server.URL + "/p2"}
+			var items []map[string]string
+			switch r.URL.Path {
+			case "/user/status/10":
+				items = []map[string]string{photo(0), photo(1), photo(2)}
+			case "/user/status/11":
+				items = []map[string]string{photo(0), {"type": "video"}, photo(1)}
+			case "/user/status/12":
+				items = []map[string]string{video, photo(0), photo(1)}
+			case "/user/status/13":
+				items = []map[string]string{photo(0), {"type": "photo", "url": server.URL + "/missing"}}
+			}
+			response := map[string]any{
+				"code": 200, "tweet": map[string]any{"media": map[string]any{"all": items}},
+			}
+			_ = json.NewEncoder(w).Encode(response)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	return server, downloads, uploads
 }
