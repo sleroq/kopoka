@@ -80,18 +80,19 @@ func setHistoryEnabled(db *sql.DB, user int64, enabled bool) error {
 		_, err := db.Exec(`DELETE FROM history_opt_out WHERE user_id = ?`, user)
 		return err
 	}
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(`INSERT OR IGNORE INTO history_opt_out(user_id) VALUES (?)`, user); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`DELETE FROM history WHERE user_id = ?`, user); err != nil {
-		return err
-	}
-	return tx.Commit()
+	_, err := db.Exec(`INSERT OR IGNORE INTO history_opt_out(user_id) VALUES (?)`, user)
+	return err
+}
+
+func historyCount(db *sql.DB, user int64) (int, error) {
+	var count int
+	err := db.QueryRow(`SELECT count(*) FROM history WHERE user_id = ?`, user).Scan(&count)
+	return count, err
+}
+
+func deleteHistory(db *sql.DB, user int64) error {
+	_, err := db.Exec(`DELETE FROM history WHERE user_id = ?`, user)
+	return err
 }
 
 func scanArtwork(rows *sql.Rows) (artwork, error) {

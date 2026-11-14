@@ -36,7 +36,7 @@ func setupTelegramBot() (*tgbotapi.BotAPI, *tgbotapi.UpdateConfig, error) {
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
-	u.AllowedUpdates = []string{"message", "channel_post", "inline_query", "chosen_inline_result"}
+	u.AllowedUpdates = []string{"message", "channel_post", "inline_query", "chosen_inline_result", "callback_query"}
 
 	return bot, &u, nil
 }
@@ -274,6 +274,7 @@ func handleMessage(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, mes
 		}
 		return
 	}
+
 	if message.From == nil {
 		return
 	}
@@ -281,9 +282,9 @@ func handleMessage(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, mes
 	for _, name := range []string{"historyoff", "historyon"} {
 		if command == name || strings.EqualFold(command, name+"@"+bot.Self.UserName) {
 			enabled := name == "historyon"
-			text := "History is off and your existing history has been deleted."
+			text := historyOffText
 			if enabled {
-				text = "History is on. Only future selections will be saved."
+				text = "History is on. New selections will be saved."
 			}
 			if err := setHistoryEnabled(db, message.From.ID, enabled); err != nil {
 				log.Printf("changing history preference: %v", err)
@@ -291,6 +292,9 @@ func handleMessage(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, mes
 			}
 			reply := tgbotapi.NewMessage(message.Chat.ID, text)
 			reply.ReplyToMessageID = message.MessageID
+			if !enabled && text == historyOffText {
+				reply.ReplyMarkup = historyDeleteKeyboard(message.From.ID)
+			}
 			if _, err := bot.Send(reply); err != nil {
 				log.Printf("sending history preference reply: %v", err)
 			}
@@ -337,11 +341,20 @@ func main() {
 		if update.ChosenInlineResult != nil {
 			go handleChosenInlineResult(bot, pApp, db, update.ChosenInlineResult, os.Getenv("INLINE_CACHE_CHAT_ID"))
 		}
+		if update.CallbackQuery != nil {
+			go handleCallback(bot, db, update.CallbackQuery)
+		}
 		if update.Message != nil {
 			go handleMessage(bot, pApp, db, update.Message)
 		}
 		if update.ChannelPost != nil {
 			go handleMessage(bot, pApp, db, update.ChannelPost)
 		}
+	}
+}
+
+func handleCallback(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.CallbackQuery) {
+	if strings.HasPrefix(query.Data, "history:") {
+		handleHistoryCallback(bot, db, query)
 	}
 }

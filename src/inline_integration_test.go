@@ -578,9 +578,10 @@ func TestSendPhotosRetry(t *testing.T) {
 	}
 }
 
-func historyPreferenceServer(t *testing.T, answers *[]map[string]any, reply *string) *httptest.Server {
+func historyPreferenceServer(t *testing.T, answers *[]map[string]any, reply, markup, callbackAnswer *string) *httptest.Server {
 	t.Helper()
 	var server *httptest.Server
+
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/user/status/"):
@@ -591,10 +592,18 @@ func historyPreferenceServer(t *testing.T, answers *[]map[string]any, reply *str
 			_, _ = w.Write([]byte("image"))
 		case strings.HasSuffix(r.URL.Path, "/getMe"):
 			_, _ = w.Write([]byte(`{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot","username":"kopoka_bot"}}`))
-		case strings.HasSuffix(r.URL.Path, "/sendMessage"):
+		case strings.HasSuffix(r.URL.Path, "/sendMessage"), strings.HasSuffix(r.URL.Path, "/editMessageText"):
 			_ = r.ParseForm()
 			*reply = r.FormValue("text")
+			*markup = r.FormValue("reply_markup")
+			if strings.HasSuffix(r.URL.Path, "/editMessageText") && (r.FormValue("chat_id") != "123" || r.FormValue("message_id") != "43") {
+				t.Errorf("wrong edited message: %v", r.Form)
+			}
 			_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":43}}`))
+		case strings.HasSuffix(r.URL.Path, "/answerCallbackQuery"):
+			_ = r.ParseForm()
+			*callbackAnswer = r.FormValue("text")
+			_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
 		case strings.HasSuffix(r.URL.Path, "/sendPhoto"):
 			_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":43,"photo":[{"file_id":"photo"}]}}`))
 		case strings.HasSuffix(r.URL.Path, "/answerInlineQuery"):
@@ -621,8 +630,8 @@ func TestHistoryPreferenceTelegramFlow(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	var answers []map[string]any
-	var reply string
-	server := historyPreferenceServer(t, &answers, &reply)
+	var reply, markup, callbackAnswer string
+	server := historyPreferenceServer(t, &answers, &reply, &markup, &callbackAnswer)
 	defer server.Close()
 	target, _ := url.Parse(server.URL)
 	original := http.DefaultTransport
@@ -637,6 +646,12 @@ func TestHistoryPreferenceTelegramFlow(t *testing.T) {
 		message := &tgbotapi.Message{MessageID: 42, Chat: &tgbotapi.Chat{ID: 123}, From: &tgbotapi.User{ID: 1}, Text: text,
 			Entities: []tgbotapi.MessageEntity{{Type: "bot_command", Length: len(text)}}}
 		handleMessage(bot, nil, db, message)
+	}
+	callback := func(user int64, data string) {
+		t.Helper()
+		callbackAnswer = "not answered"
+		handleCallback(bot, db, &tgbotapi.CallbackQuery{ID: "callback", From: &tgbotapi.User{ID: user}, Data: data,
+			Message: &tgbotapi.Message{MessageID: 43, Chat: &tgbotapi.Chat{ID: 123}}})
 	}
 	selectCached := func(user int64, id string) {
 		chosen := &tgbotapi.ChosenInlineResult{From: &tgbotapi.User{ID: user}, ResultID: id}
@@ -667,14 +682,27 @@ func TestHistoryPreferenceTelegramFlow(t *testing.T) {
 	checkHistory(1, "x:1")
 
 	command("/historyoff@kopoka_bot")
-	if !strings.Contains(reply, "deleted") {
-		t.Fatalf("reply: %q", reply)
+	if reply != historyOffText || !strings.Contains(markup, "Delete my history") || !strings.Contains(markup, "history:delete:1") {
+		t.Fatalf("reply: %q markup: %s", reply, markup)
 	}
-	checkHistory(1)
+	checkHistory(1, "x:1")
 	checkHistory(2, "x:1")
+	callback(2, "history:delete:1")
+	if callbackAnswer == "" || callbackAnswer == "not answered" || reply != historyOffText {
+		t.Fatalf("unauthorized callback: answer %q reply %q", callbackAnswer, reply)
+	}
+	callback(1, "history:delete:1")
+	if callbackAnswer != "" || !strings.Contains(reply, "Are you sure") || !strings.Contains(reply, "1 saved links") || !strings.Contains(markup, "Confirm") || !strings.Contains(markup, "Cancel") {
+		t.Fatalf("confirmation: answer %q reply %q markup %s", callbackAnswer, reply, markup)
+	}
+	callback(1, "history:cancel:1")
+	if callbackAnswer != "" || reply != historyOffText || !strings.Contains(markup, "Delete my history") {
+		t.Fatalf("cancel: answer %q reply %q markup %s", callbackAnswer, reply, markup)
+	}
+	checkHistory(1, "x:1")
 	selectCached(1, "x:1")
 	selectNew("2")
-	checkHistory(1)
+	checkHistory(1, "x:1")
 	selectCached(2, "x:2")
 	checkHistory(2, "x:2", "x:1")
 
@@ -687,9 +715,31 @@ func TestHistoryPreferenceTelegramFlow(t *testing.T) {
 	}
 	selectCached(1, "x:2")
 	selectNew("3")
+	checkHistory(1, "x:1")
+	callback(1, "history:delete:1")
+	callback(2, "history:confirm:1")
+	if callbackAnswer == "" || callbackAnswer == "not answered" {
+		t.Fatalf("unauthorized confirmation: %q", callbackAnswer)
+	}
+	checkHistory(1, "x:1")
+	callback(1, "history:confirm:1")
+	if callbackAnswer != "" || !strings.Contains(reply, "deleted") || !strings.Contains(reply, "/historyon") || !strings.Contains(markup, "Delete my history") {
+		t.Fatalf("deleted: answer %q reply %q markup %s", callbackAnswer, reply, markup)
+	}
+	checkHistory(1)
+	checkHistory(2, "x:2", "x:1")
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = openArtworkDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkHistory(1)
+	selectCached(1, "x:1") // The artwork survives deletion, and opt-out remains enabled.
 	checkHistory(1)
 	command("/historyon")
-	if !strings.Contains(reply, "future") {
+	if !strings.Contains(reply, "New selections") {
 		t.Fatalf("reply: %q", reply)
 	}
 	checkHistory(1)
