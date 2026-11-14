@@ -254,7 +254,7 @@ func reopenCachedThumbnail(t *testing.T, s *thumbnailTestServer, bot *tgbotapi.B
 	var version int
 	row := db.QueryRow(`SELECT render_version FROM thumbnail_cache WHERE artwork_id='x:1' AND media_count=0`)
 	err := row.Scan(&version)
-	if err != nil || version != 6 {
+	if err != nil || version != 7 {
 		t.Fatalf("cached render version: %d, %v", version, err)
 	}
 	before := s.upstream.Load()
@@ -319,7 +319,7 @@ func uncachedThumbnailURLs(t *testing.T, result map[string]any) (string, string)
 		t.Fatalf("inline result: %#v", result)
 	}
 	pq, tq := p.Query(), thumb.Query()
-	if pq.Get("size") != "large" || tq.Has("size") || tq.Get("url") == "" || tq.Get("v") != "6" {
+	if pq.Get("size") != "large" || tq.Has("size") || tq.Get("url") == "" || tq.Get("v") != "7" {
 		t.Fatalf("preview queries: %v, %v", pq, tq)
 	}
 	pq.Del("size")
@@ -921,19 +921,19 @@ func checkMergeBadge(t *testing.T, previews *thumbnails, data []byte, count int,
 	if count > 1 {
 		right -= float64(font.MeasureString(face, fmt.Sprint(count)).Ceil())/4 + 47 + 8
 	}
-	left := right - 44
+	left := right - 38
 	size := img.Bounds().Size()
 	scale := float64(min(size.X, size.Y)) / 384
 	pixel := func(x, y float64) uint32 {
 		r, g, b, _ := img.At(size.X-int((384-x)*scale), int(y*scale)).RGBA()
 		return (r + g + b) / 3
 	}
-	dark := pixel(left+8, 34) < 18000
+	dark := pixel(left+5, 34) < 18000
 	strokes := 0
 	for i := range 4 {
 		bright := false
 		for dx := -1.0; dx <= 1; dx++ {
-			if pixel(left+14+float64(i*6)+dx/scale, 34) > 27000 {
+			if pixel(left+10+float64(i*6)+dx/scale, 34) > 27000 {
 				bright = true
 			}
 		}

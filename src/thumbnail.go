@@ -547,10 +547,10 @@ func (t *thumbnails) decorate(canvas *image.RGBA, pix bool, count int, merged bo
 			right = left - 8*4
 		}
 		if merged {
-			left := right - 44*4
+			left := right - 38*4
 			badgeBackground(badge, left, right)
 			for i := range 4 {
-				x := left + (13+i*6)*4
+				x := left + (9+i*6)*4
 				rounded(badge, image.Rect(x, 26*4, x+2*4, 42*4), 1*4, color.NRGBA{255, 255, 255, 255})
 			}
 		}

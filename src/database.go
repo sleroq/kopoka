@@ -11,7 +11,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const thumbnailRenderVersion = 6
+const thumbnailRenderVersion = 7
 
 type artwork struct {
 	ID, URL, Author, Text, Caption string
