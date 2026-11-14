@@ -577,3 +577,130 @@ func TestSendPhotosRetry(t *testing.T) {
 		})
 	}
 }
+
+func historyPreferenceServer(t *testing.T, answers *[]map[string]any, reply *string) *httptest.Server {
+	t.Helper()
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/user/status/"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "tweet": map[string]any{
+				"author": map[string]string{"name": "Artist"}, "media": map[string]any{"photos": []map[string]string{{"url": server.URL + "/image"}}},
+			}})
+		case r.URL.Path == "/image":
+			_, _ = w.Write([]byte("image"))
+		case strings.HasSuffix(r.URL.Path, "/getMe"):
+			_, _ = w.Write([]byte(`{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot","username":"kopoka_bot"}}`))
+		case strings.HasSuffix(r.URL.Path, "/sendMessage"):
+			_ = r.ParseForm()
+			*reply = r.FormValue("text")
+			_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":43}}`))
+		case strings.HasSuffix(r.URL.Path, "/sendPhoto"):
+			_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":43,"photo":[{"file_id":"photo"}]}}`))
+		case strings.HasSuffix(r.URL.Path, "/answerInlineQuery"):
+			_ = r.ParseForm()
+			if err := json.Unmarshal([]byte(r.FormValue("results")), answers); err != nil {
+				t.Error(err)
+			}
+			_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+		case strings.HasSuffix(r.URL.Path, "/deleteMessage"), strings.HasSuffix(r.URL.Path, "/editMessageMedia"):
+			_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+		default:
+			t.Errorf("unexpected request: %s", r.URL.Path)
+		}
+	}))
+	return server
+}
+
+func TestHistoryPreferenceTelegramFlow(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.db")
+	db, err := openArtworkDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	var answers []map[string]any
+	var reply string
+	server := historyPreferenceServer(t, &answers, &reply)
+	defer server.Close()
+	target, _ := url.Parse(server.URL)
+	original := http.DefaultTransport
+	http.DefaultTransport = redirectTransport{target, original}
+	defer func() { http.DefaultTransport = original }()
+	bot, err := tgbotapi.NewBotAPIWithAPIEndpoint("token", server.URL+"/bot%s/%s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := func(text string) {
+		t.Helper()
+		message := &tgbotapi.Message{MessageID: 42, Chat: &tgbotapi.Chat{ID: 123}, From: &tgbotapi.User{ID: 1}, Text: text,
+			Entities: []tgbotapi.MessageEntity{{Type: "bot_command", Length: len(text)}}}
+		handleMessage(bot, nil, db, message)
+	}
+	selectCached := func(user int64, id string) {
+		chosen := &tgbotapi.ChosenInlineResult{From: &tgbotapi.User{ID: user}, ResultID: id}
+		handleChosenInlineResult(bot, nil, db, chosen, "@cache")
+	}
+	selectNew := func(id string) {
+		chosen := &tgbotapi.ChosenInlineResult{
+			From: &tgbotapi.User{ID: 1}, ResultID: inlineResultID,
+			InlineMessageID: "inline", Query: "https://x.com/user/status/" + id,
+		}
+		handleChosenInlineResult(bot, nil, db, chosen, "@cache")
+	}
+	checkHistory := func(user int64, ids ...string) {
+		t.Helper()
+		handleInlineQuery(bot, db, &tgbotapi.InlineQuery{ID: "query", From: &tgbotapi.User{ID: user}})
+		if len(answers) != len(ids) {
+			t.Fatalf("user %d history: %#v, want %v", user, answers, ids)
+		}
+		for i, id := range ids {
+			if answers[i]["id"] != id {
+				t.Fatalf("user %d history: %#v, want %v", user, answers, ids)
+			}
+		}
+	}
+
+	selectNew("1")
+	selectCached(2, "x:1")
+	checkHistory(1, "x:1")
+
+	command("/historyoff@kopoka_bot")
+	if !strings.Contains(reply, "deleted") {
+		t.Fatalf("reply: %q", reply)
+	}
+	checkHistory(1)
+	checkHistory(2, "x:1")
+	selectCached(1, "x:1")
+	selectNew("2")
+	checkHistory(1)
+	selectCached(2, "x:2")
+	checkHistory(2, "x:2", "x:1")
+
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = openArtworkDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selectCached(1, "x:2")
+	selectNew("3")
+	checkHistory(1)
+	command("/historyon")
+	if !strings.Contains(reply, "future") {
+		t.Fatalf("reply: %q", reply)
+	}
+	checkHistory(1)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = openArtworkDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selectCached(1, "x:1")
+	selectNew("4")
+	checkHistory(1, "x:4", "x:1")
+}

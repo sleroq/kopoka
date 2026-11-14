@@ -154,7 +154,7 @@ func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB,
 		return fmt.Errorf("invalid artwork URL")
 	}
 
-	a := artwork{ID: artworkID(link), URL: strings.TrimSpace(chosen.Query)}
+	a := artwork{ID: artworkID(link), URL: link.String()}
 	photos, err := fetchArtPhotos(app, link, &a)
 	if err != nil {
 		return err

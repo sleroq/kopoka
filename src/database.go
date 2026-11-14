@@ -34,7 +34,8 @@ func openArtworkDB(path string) (*sql.DB, error) {
 	// One connection keeps in-memory databases shared and serializes SQLite writes.
 	db.SetMaxOpenConns(1)
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS artwork (id TEXT PRIMARY KEY, url TEXT NOT NULL, author TEXT NOT NULL, text TEXT NOT NULL, caption TEXT NOT NULL, photos TEXT NOT NULL);
- CREATE TABLE IF NOT EXISTS history (sequence INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, artwork_id TEXT NOT NULL, UNIQUE(user_id, artwork_id));`)
+ CREATE TABLE IF NOT EXISTS history (sequence INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, artwork_id TEXT NOT NULL, UNIQUE(user_id, artwork_id));
+ CREATE TABLE IF NOT EXISTS history_opt_out (user_id INTEGER PRIMARY KEY);`)
 	if err != nil {
 		_ = db.Close()
 		return nil, err
@@ -68,10 +69,29 @@ func saveSelection(db *sql.DB, user int64, a artwork) error {
 func selectArtwork(db interface {
 	Exec(string, ...any) (sql.Result, error)
 }, user int64, id string) error {
-	_, err := db.Exec(`INSERT INTO history(user_id, artwork_id) SELECT ?, id FROM artwork WHERE id = ?
+	_, err := db.Exec(`INSERT INTO history(user_id, artwork_id) SELECT ?, id FROM artwork WHERE id = ? AND NOT EXISTS (SELECT 1 FROM history_opt_out WHERE user_id = ?)
         ON CONFLICT(user_id, artwork_id) DO UPDATE SET
-        sequence = (SELECT coalesce(max(sequence),0)+1 FROM history)`, user, id)
+        sequence = (SELECT coalesce(max(sequence),0)+1 FROM history)`, user, id, user)
 	return err
+}
+
+func setHistoryEnabled(db *sql.DB, user int64, enabled bool) error {
+	if enabled {
+		_, err := db.Exec(`DELETE FROM history_opt_out WHERE user_id = ?`, user)
+		return err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO history_opt_out(user_id) VALUES (?)`, user); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM history WHERE user_id = ?`, user); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func scanArtwork(rows *sql.Rows) (artwork, error) {

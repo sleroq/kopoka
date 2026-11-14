@@ -46,7 +46,7 @@ func TestChatJSONCommand(t *testing.T) {
 	if err := json.Unmarshal([]byte(update), &message); err != nil {
 		t.Fatal(err)
 	}
-	handleMessage(bot, nil, &message)
+	handleMessage(bot, nil, nil, &message)
 	if strings.Join(requests, ",") != "getChat,sendMessage" {
 		t.Fatalf("requests: %v", requests)
 	}
@@ -107,7 +107,7 @@ func TestChatFormattedLinks(t *testing.T) {
 			entity("url", "https://x.com/user/status/2?tracking=1"),
 			{Type: "url", Offset: 999, Length: 10},
 		}}
-	handleMessage(bot, nil, message)
+	handleMessage(bot, nil, nil, message)
 	if strings.Join(fetched, ",") != "/user/status/1,/user/status/2,/user/status/3,/user/status/4" {
 		t.Fatalf("fetched: %v", fetched)
 	}

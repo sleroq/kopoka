@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -265,7 +266,7 @@ func messageLinks(message *tgbotapi.Message) []*url.URL {
 	return links
 }
 
-func handleMessage(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, message *tgbotapi.Message) {
+func handleMessage(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, message *tgbotapi.Message) {
 	command := message.CommandWithAt()
 	if command == "json" || strings.EqualFold(command, "json@"+bot.Self.UserName) {
 		if err := sendChatJSON(bot, message); err != nil {
@@ -277,6 +278,25 @@ func handleMessage(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, message *tgbota
 		return
 	}
 	log.Printf("[%s] %s", message.From.UserName, message.Text)
+	for _, name := range []string{"historyoff", "historyon"} {
+		if command == name || strings.EqualFold(command, name+"@"+bot.Self.UserName) {
+			enabled := name == "historyon"
+			text := "History is off and your existing history has been deleted."
+			if enabled {
+				text = "History is on. Only future selections will be saved."
+			}
+			if err := setHistoryEnabled(db, message.From.ID, enabled); err != nil {
+				log.Printf("changing history preference: %v", err)
+				text = "Could not change your history preference. Please try again."
+			}
+			reply := tgbotapi.NewMessage(message.Chat.ID, text)
+			reply.ReplyToMessageID = message.MessageID
+			if _, err := bot.Send(reply); err != nil {
+				log.Printf("sending history preference reply: %v", err)
+			}
+			return
+		}
+	}
 	for _, link := range messageLinks(message) {
 		if err := processLink(bot, app, message, link); err != nil {
 			log.Println(err)
@@ -318,10 +338,10 @@ func main() {
 			go handleChosenInlineResult(bot, pApp, db, update.ChosenInlineResult, os.Getenv("INLINE_CACHE_CHAT_ID"))
 		}
 		if update.Message != nil {
-			go handleMessage(bot, pApp, update.Message)
+			go handleMessage(bot, pApp, db, update.Message)
 		}
 		if update.ChannelPost != nil {
-			go handleMessage(bot, pApp, update.ChannelPost)
+			go handleMessage(bot, pApp, db, update.ChannelPost)
 		}
 	}
 }
