@@ -3,11 +3,13 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -231,6 +233,191 @@ func TestInlineChosenFailures(t *testing.T) {
 			handleChosenInlineResult(bot, nil, &tgbotapi.ChosenInlineResult{ResultID: inlineResultID, Query: query}, "@cache")
 			if edits != 1 {
 				t.Fatalf("unexpected edits: %d", edits)
+			}
+		})
+	}
+}
+
+func TestInlineRetryTelegram(t *testing.T) {
+	for _, failUpload := range []bool{false, true} {
+		t.Run(fmt.Sprintf("failUpload=%v", failUpload), func(t *testing.T) {
+			var server *httptest.Server
+			var sends, edits, failures int
+			limited := make(chan struct{})
+
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.URL.Path == "/user/status/1":
+					_, _ = fmt.Fprintf(w, `{"code":200,"tweet":{"author":{"name":"Artist"},"media":{"photos":[{"url":%q}]}}}`,
+						server.URL+"/image")
+				case strings.HasSuffix(r.URL.Path, "/getMe"):
+					_, _ = w.Write([]byte(`{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`))
+				case strings.HasSuffix(r.URL.Path, "/sendPhoto"):
+					sends++
+					switch {
+					case failUpload:
+						_, _ = w.Write([]byte(`{"ok":false,"error_code":400,"description":"bad photo"}`))
+					case sends == 1:
+						close(limited)
+						_, _ = w.Write([]byte(`{"ok":false,"error_code":429,"description":"slow down","parameters":{"retry_after":1}}`))
+					default:
+						_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":1,"photo":[{"file_id":"photo"}]}}`))
+					}
+				case strings.HasSuffix(r.URL.Path, "/deleteMessage"), strings.HasSuffix(r.URL.Path, "/answerInlineQuery"):
+					_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+				case strings.HasSuffix(r.URL.Path, "/editMessageMedia"):
+					edits++
+					if edits == 1 {
+						_, _ = w.Write([]byte(`{"ok":false,"error_code":429,"description":"slow down","parameters":{"retry_after":1}}`))
+					} else {
+						_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+					}
+				case strings.HasSuffix(r.URL.Path, "/editMessageText"):
+					failures++
+					_ = r.ParseForm()
+					if !strings.Contains(r.FormValue("text"), "Could not load artwork") {
+						t.Errorf("failure edit: %v", r.Form)
+					}
+					_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+				default:
+					t.Errorf("unexpected request %s", r.URL.Path)
+				}
+			}))
+			defer server.Close()
+			target, _ := url.Parse(server.URL)
+			original := http.DefaultTransport
+			http.DefaultTransport = redirectTransport{target, original}
+			defer func() { http.DefaultTransport = original }()
+			bot, err := tgbotapi.NewBotAPIWithAPIEndpoint("token", server.URL+"/bot%s/%s")
+			if err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan struct{})
+			go func() {
+				chosen := &tgbotapi.ChosenInlineResult{
+					ResultID: inlineResultID, InlineMessageID: "inline", Query: "https://x.com/user/status/1",
+				}
+				handleChosenInlineResult(bot, nil, chosen, "@cache")
+				close(done)
+			}()
+			if !failUpload {
+				<-limited
+				answered := make(chan struct{})
+				go func() { handleInlineQuery(bot, &tgbotapi.InlineQuery{ID: "other"}); close(answered) }()
+				select {
+				case <-answered:
+				case <-time.After(500 * time.Millisecond):
+					t.Error("inline answer blocked by retry")
+				}
+			}
+			<-done
+			if failUpload {
+				if sends != 1 || failures != 1 || edits != 0 {
+					t.Fatalf("sends=%d failures=%d edits=%d", sends, failures, edits)
+				}
+			} else if sends != 2 || edits != 2 || failures != 0 {
+				t.Fatalf("sends=%d edits=%d failures=%d", sends, edits, failures)
+			}
+		})
+	}
+}
+
+func TestInlineMultipartRetry(t *testing.T) {
+	var sends int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/getMe"):
+			_, _ = w.Write([]byte(`{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`))
+		case strings.HasSuffix(r.URL.Path, "/sendPhoto"):
+			sends++
+			file, _, err := r.FormFile("photo")
+			if err != nil {
+				t.Error(err)
+			} else {
+				data, err := io.ReadAll(file)
+				_ = file.Close()
+				if err != nil || string(data) != "image bytes" {
+					t.Errorf("file = %q, %v", data, err)
+				}
+			}
+			if sends <= 2 {
+				_, _ = w.Write([]byte(`{"ok":false,"error_code":429,"description":"slow down","parameters":{"retry_after":1}}`))
+			} else {
+				_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":1,"photo":[{"file_id":"photo"}]}}`))
+			}
+		case strings.HasSuffix(r.URL.Path, "/deleteMessage"):
+			_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+		default:
+			t.Errorf("unexpected request %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	bot, err := tgbotapi.NewBotAPIWithAPIEndpoint("token", server.URL+"/bot%s/%s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	photo := tgbotapi.NewInputMediaPhoto(tgbotapi.FileBytes{Name: "photo.jpg", Bytes: []byte("image bytes")})
+	id, err := cacheInlinePhoto(bot, "@cache", photo)
+	if err != nil || id != "photo" || sends != 3 {
+		t.Fatalf("id=%q sends=%d err=%v", id, sends, err)
+	}
+}
+
+func TestSendPhotosRetry(t *testing.T) {
+	for _, count := range []int{1, 2} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			var sends int
+			method := "/sendPhoto"
+			if count == 2 {
+				method = "/sendMediaGroup"
+			}
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/getMe"):
+					_, _ = w.Write([]byte(`{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`))
+				case strings.HasSuffix(r.URL.Path, method):
+					sends++
+					if err := r.ParseMultipartForm(1024 * 1024); err != nil {
+						t.Error(err)
+					}
+					if count == 1 {
+						file, _, err := r.FormFile("photo")
+						if err != nil {
+							t.Error(err)
+						} else {
+							data, _ := io.ReadAll(file)
+							_ = file.Close()
+							if string(data) != "bytes" {
+								t.Errorf("photo = %q", data)
+							}
+						}
+					} else if len(r.MultipartForm.File) != 2 {
+						t.Errorf("files: %v", r.MultipartForm.File)
+					}
+					switch {
+					case sends == 1:
+						_, _ = w.Write([]byte(`{"ok":false,"error_code":429,"description":"slow down","parameters":{"retry_after":1}}`))
+					case count == 1:
+						_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":1}}`))
+					default:
+						_, _ = w.Write([]byte(`{"ok":true,"result":[{"message_id":1},{"message_id":2}]}`))
+					}
+				default:
+					t.Errorf("unexpected request %s", r.URL.Path)
+				}
+			}))
+			defer server.Close()
+			bot, err := tgbotapi.NewBotAPIWithAPIEndpoint("token", server.URL+"/bot%s/%s")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var photos []any
+			for range count {
+				photos = append(photos, tgbotapi.NewInputMediaPhoto(tgbotapi.FileBytes{Name: "photo.jpg", Bytes: []byte("bytes")}))
+			}
+			if err := sendPhotos(bot, 1, 2, photos); err != nil || sends != 2 {
+				t.Fatalf("sends=%d err=%v", sends, err)
 			}
 		})
 	}

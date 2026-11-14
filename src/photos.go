@@ -81,6 +81,7 @@ func sendPhotos(bot *tgbotapi.BotAPI, chatID int64, replyID int, photos []any) e
 		return nil
 	}
 	original := photos[0].(tgbotapi.InputMediaPhoto)
+
 	for start := 0; start < len(photos); start += 10 {
 		end := min(start+10, len(photos))
 		batch := make([]any, 0, end-start)
@@ -103,13 +104,17 @@ func sendPhotos(bot *tgbotapi.BotAPI, chatID int64, replyID int, photos []any) e
 			photo.Caption = media.Caption
 			photo.ParseMode = media.ParseMode
 			photo.CaptionEntities = media.CaptionEntities
-			if _, err := bot.Send(photo); err != nil {
+			if _, err := retryTelegram(func() (tgbotapi.Message, error) {
+				return bot.Send(photo)
+			}); err != nil {
 				return err
 			}
 		} else {
 			group := tgbotapi.NewMediaGroup(chatID, batch)
 			group.ReplyToMessageID = replyID
-			if _, err := bot.SendMediaGroup(group); err != nil {
+			if _, err := retryTelegram(func() ([]tgbotapi.Message, error) {
+				return bot.SendMediaGroup(group)
+			}); err != nil {
 				return err
 			}
 		}

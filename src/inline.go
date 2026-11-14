@@ -75,7 +75,9 @@ func handleChosenInlineResult(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, chos
 			"inline_message_id": chosen.InlineMessageID, "text": "Could not load artwork. Please try again.",
 			"reply_markup": `{"inline_keyboard":[]}`,
 		}
-		if _, editErr := bot.MakeRequest("editMessageText", params); editErr != nil {
+		if _, editErr := retryTelegram(func() (*tgbotapi.APIResponse, error) {
+			return bot.MakeRequest("editMessageText", params)
+		}); editErr != nil {
 			log.Printf("editing inline failure message: %v", editErr)
 		}
 	}
@@ -136,7 +138,9 @@ func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, chosen *tgb
 	} else {
 		params["rich_message"] = string(encoded)
 	}
-	if _, err := bot.MakeRequest(method, params); err != nil {
+	if _, err := retryTelegram(func() (*tgbotapi.APIResponse, error) {
+		return bot.MakeRequest(method, params)
+	}); err != nil {
 		return fmt.Errorf("editing inline artwork: %w", err)
 	}
 	return nil
@@ -153,7 +157,11 @@ func cacheInlinePhoto(bot *tgbotapi.BotAPI, chat string, photo tgbotapi.InputMed
 		}
 		config.ChatID = id
 	}
-	message, err := bot.Send(config)
+	message, err := retryTelegram(func() (tgbotapi.Message, error) {
+		attempt := tgbotapi.NewPhoto(config.ChatID, photo.Media)
+		attempt.ChannelUsername = config.ChannelUsername
+		return bot.Send(attempt)
+	})
 	if err != nil {
 		return "", fmt.Errorf("uploading inline photo: %w", err)
 	}
@@ -161,7 +169,9 @@ func cacheInlinePhoto(bot *tgbotapi.BotAPI, chat string, photo tgbotapi.InputMed
 		ChatID: config.ChatID, ChannelUsername: config.ChannelUsername,
 		MessageID: message.MessageID,
 	}
-	if _, err := bot.Request(deletion); err != nil {
+	if _, err := retryTelegram(func() (*tgbotapi.APIResponse, error) {
+		return bot.Request(deletion)
+	}); err != nil {
 		log.Printf("deleting inline cache message: %v", err)
 	}
 	if len(message.Photo) == 0 {
