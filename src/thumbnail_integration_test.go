@@ -181,7 +181,7 @@ func TestInlineThumbnailFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
-	if _, err := db.Exec(`UPDATE thumbnail_cache SET render_version=3 WHERE artwork_id='x:1'`); err != nil {
+	if _, err := db.Exec(`UPDATE thumbnail_cache SET render_version=4 WHERE artwork_id='x:1'`); err != nil {
 		t.Fatal(err)
 	}
 	previews, err := newThumbnails("https://preview.example.com", nil, bot, db, "@cache")
@@ -254,7 +254,7 @@ func reopenCachedThumbnail(t *testing.T, s *thumbnailTestServer, bot *tgbotapi.B
 	var version int
 	row := db.QueryRow(`SELECT render_version FROM thumbnail_cache WHERE artwork_id='x:1' AND media_count=0`)
 	err := row.Scan(&version)
-	if err != nil || version != 4 {
+	if err != nil || version != 5 {
 		t.Fatalf("cached render version: %d, %v", version, err)
 	}
 	before := s.upstream.Load()
@@ -319,7 +319,7 @@ func uncachedThumbnailURLs(t *testing.T, result map[string]any) (string, string)
 		t.Fatalf("inline result: %#v", result)
 	}
 	pq, tq := p.Query(), thumb.Query()
-	if pq.Get("size") != "large" || tq.Has("size") || tq.Get("url") == "" || tq.Get("v") != "4" {
+	if pq.Get("size") != "large" || tq.Has("size") || tq.Get("url") == "" || tq.Get("v") != "5" {
 		t.Fatalf("preview queries: %v, %v", pq, tq)
 	}
 	pq.Del("size")
@@ -530,21 +530,12 @@ func checkCachedThumbnails(t *testing.T, db *sql.DB, bot *tgbotapi.BotAPI, previ
 		t.Fatal(err)
 	}
 	single := readThumbnail(t, res)
-	// The count badge must appear only on the multi-image preview.
+	if !reflect.DeepEqual(single, multi) {
+		t.Fatal("cache-key count changed the source-count preview")
+	}
 	size := single.Bounds().Size()
 	side := min(size.X, size.Y)
-	badgeX, badgeY := size.X-46*side/384, 20*side/384
-	mr, mg, mb, _ := multi.At(badgeX, badgeY).RGBA()
-	sr, sg, sb, _ := single.At(badgeX, badgeY).RGBA()
-	if mr+mg+mb >= sr+sg+sb {
-		t.Fatal("multi-image preview is missing the count badge")
-	}
-	// The black X tile sits inside rounded corners over the artwork.
-	r, g, b, _ := single.At(size.X-74*side/384, size.Y-54*side/384).RGBA()
-	if r+g+b > 10000 {
-		t.Fatal("X logo tile is missing")
-	}
-	r, g, b, _ = single.At(size.X-87*side/384, size.Y-87*side/384).RGBA()
+	r, g, b, _ := single.At(size.X-87*side/384, size.Y-87*side/384).RGBA()
 	if r+g+b < 10000 {
 		t.Fatal("X logo tile corners are not rounded")
 	}
@@ -711,7 +702,7 @@ func TestPixivThumbnailFlow(t *testing.T) {
 
 func servePixivThumbnailDetail(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("illust_id") == "124" {
-		_, _ = fmt.Fprint(w, `{"illust":{"id":124,"type":"illust","page_count":2,
+		_, _ = fmt.Fprint(w, `{"illust":{"id":124,"type":"illust","page_count":1,
             "image_urls":{"large":"https://i.pximg.net/cover.jpg"},
             "meta_pages":[{"image_urls":{"original":"https://i.pximg.net/cover.jpg","large":"https://i.pximg.net/p0"}},
             {"image_urls":{"original":"https://i.pximg.net/cover.jpg","large":"https://i.pximg.net/p1"}}]}}`)
@@ -723,7 +714,7 @@ func servePixivThumbnailDetail(w http.ResponseWriter, r *http.Request) {
 
 func checkPixivMergedPreview(t *testing.T, previews *thumbnails, downloads *atomic.Int32) {
 	t.Helper()
-	small, large, actual, err := previews.generate(inlineLink("https://www.pixiv.net/artworks/124"), 0)
+	small, large, actual, err := previews.generate(inlineLink("https://www.pixiv.net/artworks/124"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -731,8 +722,10 @@ func checkPixivMergedPreview(t *testing.T, previews *thumbnails, downloads *atom
 	if err != nil {
 		t.Fatal(err)
 	}
-	checkMergeBadge(t, previews, small, 1, true)
-	checkMergeBadge(t, previews, large, 1, true)
+	checkCountBadge(t, previews, small, 2)
+	checkCountBadge(t, previews, large, 2)
+	checkMergeBadge(t, previews, small, 2, true)
+	checkMergeBadge(t, previews, large, 2, true)
 	if img.Bounds().Size() != image.Pt(400, 320) || actual != 1 || downloads.Load() != 3 {
 		t.Fatalf("Pixiv merged preview: size %v, count %d, downloads %d", img.Bounds().Size(), actual, downloads.Load())
 	}
@@ -800,13 +793,10 @@ func TestMergedThumbnailSources(t *testing.T) {
 		t.Fatalf("joined preview: dimensions %v, count %d", img.Bounds().Size(), work.actual)
 	}
 
-	checkMergeBadge(t, previews, work.data, 2, true)
-	checkMergeBadge(t, previews, work.large, 2, true)
-	override, _, actual, err := previews.generate(link, 1)
-	if err != nil || actual != 2 {
-		t.Fatalf("merged count override: count %d, error %v", actual, err)
-	}
-	checkMergeBadge(t, previews, override, 1, true)
+	checkCountBadge(t, previews, work.data, 3)
+	checkCountBadge(t, previews, work.large, 3)
+	checkMergeBadge(t, previews, work.data, 3, true)
+	checkMergeBadge(t, previews, work.large, 3, true)
 
 	awaitCachedThumbnail(t, db, "x:10", 2)
 	before := downloads.Load()
@@ -816,14 +806,14 @@ func TestMergedThumbnailSources(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		id    string
-		count int
-		size  image.Point
+		id            string
+		count, actual int
+		size          image.Point
 	}{
-		{"11", 3, image.Pt(240, 384)}, {"12", 2, image.Pt(240, 384)}, {"14", 3, image.Pt(240, 384)},
+		{"11", 3, 3, image.Pt(240, 384)}, {"12", 3, 2, image.Pt(240, 384)}, {"14", 4, 3, image.Pt(240, 384)},
 	} {
 		link := inlineLink("https://x.com/user/status/" + tc.id)
-		small, large, actual, err := previews.generate(link, 0)
+		small, large, actual, err := previews.generate(link)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -831,14 +821,16 @@ func TestMergedThumbnailSources(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		checkCountBadge(t, previews, small, tc.count)
+		checkCountBadge(t, previews, large, tc.count)
 		checkMergeBadge(t, previews, small, tc.count, false)
 		checkMergeBadge(t, previews, large, tc.count, false)
-		if img.Bounds().Size() != tc.size || actual != tc.count {
+		if img.Bounds().Size() != tc.size || actual != tc.actual {
 			t.Fatalf("%s: size %v count %d", tc.id, img.Bounds().Size(), actual)
 		}
 	}
 
-	if _, _, _, err := previews.generate(inlineLink("https://x.com/user/status/13"), 0); err == nil {
+	if _, _, _, err := previews.generate(inlineLink("https://x.com/user/status/13")); err == nil {
 		t.Fatal("later failed download was ignored")
 	}
 }
@@ -951,5 +943,206 @@ func checkMergeBadge(t *testing.T, previews *thumbnails, data []byte, count int,
 	}
 	if got := dark && strokes == 4; got != want {
 		t.Errorf("merge badge count=%d size=%v: dark=%v strokes=%d, want %v", count, size, dark, strokes, want)
+	}
+}
+
+func checkCountBadge(t *testing.T, previews *thumbnails, data []byte, count int) {
+	t.Helper()
+
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	badge := image.NewRGBA(image.Rect(0, 0, 384*4, 56*4))
+	left, err := previews.badge(badge, count)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alternative := count - 1
+	if count == 2 {
+		alternative = 3
+	}
+	other := image.NewRGBA(badge.Bounds())
+	if _, err := previews.badge(other, alternative); err != nil {
+		t.Fatal(err)
+	}
+
+	size := img.Bounds().Size()
+	scale := float64(min(size.X, size.Y)) / 384
+	// Compare only pixels where the expected and alternative numerals differ.
+	matches, samples := 0, 0
+	for y := 25; y < 42; y++ {
+		for x := left/4 + 35; x < 366; x++ {
+			r, g, b, _ := badge.At(x*4+2, y*4+2).RGBA()
+			expected := (r + g + b) / 3
+			r, g, b, _ = other.At(x*4+2, y*4+2).RGBA()
+			other := (r + g + b) / 3
+			if expected > 60000 && other < 10000 || expected < 10000 && other > 60000 {
+				ir, ig, ib, _ := img.At(size.X-int((384-float64(x))*scale), int(float64(y)*scale)).RGBA()
+				got := (ir + ig + ib) / 3
+				if expected > 60000 && got > 30000 || expected < 10000 && got < 30000 {
+					matches++
+				}
+				samples++
+			}
+		}
+	}
+	if samples == 0 || matches*100/samples < 55 {
+		t.Errorf("count badge %d size %v: %d/%d distinguishing pixels", count, size, matches, samples)
+	}
+}
+
+func TestThumbnailAspectRatios(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		size   image.Point
+		merged bool
+	}{
+		{"landscape", image.Pt(640, 400), false}, {"portrait", image.Pt(400, 640), false},
+		{"merged-landscape", image.Pt(640, 400), true}, {"merged-portrait", image.Pt(400, 640), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parts := aspectPanels(t, tc.size, tc.merged)
+
+			uploaded := make(chan []byte, 1)
+			server := aspectServer(t, parts, uploaded)
+			defer server.Close()
+
+			bot, err := tgbotapi.NewBotAPIWithAPIEndpoint("token", server.URL+"/bot%s/%s")
+			if err != nil {
+				t.Fatal(err)
+			}
+			db := testArtworkDB(t)
+			previews := testPreviews(t, db, bot)
+			target, _ := url.Parse(server.URL)
+			previews.client = &http.Client{Transport: redirectTransport{target, http.DefaultTransport}}
+
+			link := inlineLink("https://x.com/user/status/20")
+			previews.photo(link, 0)
+			work := previews.start(link, 0)
+			<-work.done
+			if work.err != nil {
+				t.Fatal(work.err)
+			}
+			if work.actual != 1 {
+				t.Fatalf("post-merge count = %d", work.actual)
+			}
+
+			var upload []byte
+			select {
+			case upload = <-uploaded:
+			case <-time.After(5 * time.Second):
+				t.Fatal("upload timed out")
+			}
+
+			checkAspectPreviews(t, previews, tc.size, tc.merged, [][]byte{work.data, work.large, upload})
+			if !bytes.Equal(upload, work.large) {
+				t.Error("cached upload differs from large preview")
+			}
+
+			awaitCachedThumbnail(t, db, "x:20", 1)
+			if id, _, _ := previews.photo(link, 1); id != "aspect" {
+				t.Fatalf("post-merge cache alias = %q", id)
+			}
+			// A cached artwork can request a preview under its post-merge count before the upload is available.
+			cachedWork := previews.start(link, 1)
+			<-cachedWork.done
+			if cachedWork.err != nil {
+				t.Fatal(cachedWork.err)
+			}
+			if !bytes.Equal(cachedWork.data, work.data) || !bytes.Equal(cachedWork.large, work.large) {
+				t.Error("post-merge cache key changed preview")
+			}
+		})
+	}
+}
+
+func aspectPanels(t *testing.T, size image.Point, merged bool) [][]byte {
+	t.Helper()
+	scene := artScene(image.Rectangle{Max: size}, 0)
+	edge, _, err := image.Decode(bytes.NewReader(thumbnailFixture(t, size.X, size.Y)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rect := range []image.Rectangle{
+		image.Rect(0, 0, size.X/12, size.Y), image.Rect(size.X-size.X/12, 0, size.X, size.Y),
+		image.Rect(0, 0, size.X, size.Y/12), image.Rect(0, size.Y-size.Y/12, size.X, size.Y),
+	} {
+		draw.Draw(scene, rect, edge, rect.Min, draw.Src)
+	}
+	var parts [][]byte
+	rects := []image.Rectangle{scene.Bounds()}
+	if merged {
+		rects = []image.Rectangle{image.Rect(0, 0, size.X/2, size.Y), image.Rect(size.X/2, 0, size.X, size.Y)}
+	}
+	for _, rect := range rects {
+		var b bytes.Buffer
+		if err := png.Encode(&b, scene.SubImage(rect)); err != nil {
+			t.Fatal(err)
+		}
+		parts = append(parts, b.Bytes())
+	}
+	return parts
+}
+
+func aspectServer(t *testing.T, parts [][]byte, uploaded chan<- []byte) *httptest.Server {
+	t.Helper()
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/bottoken/getMe":
+			_, _ = fmt.Fprint(w, `{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`)
+		case "/bottoken/sendPhoto":
+			file, _, err := r.FormFile("photo")
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			defer func() { _ = file.Close() }()
+			var b bytes.Buffer
+			if _, err := b.ReadFrom(file); err != nil {
+				t.Error(err)
+				return
+			}
+			uploaded <- b.Bytes()
+			_, _ = fmt.Fprint(w, `{"ok":true,"result":{"message_id":1,"photo":[{"file_id":"aspect"}]}}`)
+		case "/bottoken/deleteMessage":
+			_, _ = fmt.Fprint(w, `{"ok":true,"result":true}`)
+		case "/user/status/20":
+			items := make([]map[string]string, len(parts))
+			for i := range parts {
+				items[i] = map[string]string{"type": "photo", "url": fmt.Sprintf("%s/p%d", server.URL, i)}
+			}
+			response := map[string]any{"code": 200, "tweet": map[string]any{"media": map[string]any{"all": items}}}
+			_ = json.NewEncoder(w).Encode(response)
+		case "/p0", "/p1":
+			_, _ = w.Write(parts[int(r.URL.Path[2]-'0')])
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	return server
+}
+
+func checkAspectPreviews(t *testing.T, previews *thumbnails, sourceSize image.Point, merged bool, data [][]byte) {
+	t.Helper()
+	for _, data := range data {
+		img, format, err := image.Decode(bytes.NewReader(data))
+		if err != nil || format != "jpeg" {
+			t.Fatalf("image: %s %v", format, err)
+		}
+		size := img.Bounds().Size()
+		longest := max(size.X, size.Y)
+		if abs := float64(size.X)*float64(sourceSize.Y)/float64(sourceSize.X) - float64(size.Y); abs < -1 || abs > 1 {
+			t.Errorf("aspect ratio %v, source %v", size, sourceSize)
+		}
+		if longest != 384 && longest != 640 {
+			t.Errorf("unexpected dimensions %v", size)
+		}
+		checkThumbnailEdges(t, img)
+		if merged {
+			checkCountBadge(t, previews, data, 2)
+			checkMergeBadge(t, previews, data, 2, true)
+		}
 	}
 }

@@ -217,7 +217,7 @@ func (t *thumbnails) start(link *url.URL, count int) *thumbnailWork {
 	t.work[key] = w
 	go func() {
 		t.workers <- struct{}{}
-		data, large, actual, err := t.generate(link, count)
+		data, large, actual, err := t.generate(link)
 		t.mu.Lock()
 		w.data, w.large, w.actual, w.err, w.finished = data, large, actual, err, time.Now()
 		if err != nil {
@@ -370,7 +370,7 @@ func (t *thumbnails) pixivSource(link *url.URL) (thumbnailSource, error) {
 	if illust == nil {
 		return thumbnailSource{}, fmt.Errorf("missing Pixiv preview")
 	}
-	source := thumbnailSource{pixiv: true, count: max(1, illust.PageCount)}
+	source := thumbnailSource{pixiv: true, count: max(1, illust.PageCount, len(illust.MetaPages))}
 	if illust.Type != "ugoira" && len(illust.MetaPages) > 1 {
 		source.pixivPages = true
 		for _, page := range illust.MetaPages {
@@ -477,7 +477,7 @@ func (t *thumbnails) mergeSource(source thumbnailSource) (image.Image, int, bool
 	return img, actual, merged, err
 }
 
-func (t *thumbnails) generate(link *url.URL, count int) ([]byte, []byte, int, error) {
+func (t *thumbnails) generate(link *url.URL) ([]byte, []byte, int, error) {
 	source, err := t.source(link)
 	if err != nil {
 		return nil, nil, 0, err
@@ -485,9 +485,6 @@ func (t *thumbnails) generate(link *url.URL, count int) ([]byte, []byte, int, er
 	img, actual, merged, err := t.mergeSource(source)
 	if err != nil {
 		return nil, nil, 0, err
-	}
-	if count == 0 {
-		count = actual
 	}
 
 	b := img.Bounds()
@@ -501,7 +498,7 @@ func (t *thumbnails) generate(link *url.URL, count int) ([]byte, []byte, int, er
 	canvas := image.NewRGBA(image.Rect(0, 0, width, height))
 	draw.Draw(canvas, canvas.Bounds(), image.NewUniform(color.White), image.Point{}, draw.Src)
 	draw.CatmullRom.Scale(canvas, canvas.Bounds(), img, b, draw.Over, nil)
-	if err := t.decorate(canvas, source.pixiv, count, merged); err != nil {
+	if err := t.decorate(canvas, source.pixiv, source.count, merged); err != nil {
 		return nil, nil, 0, err
 	}
 
