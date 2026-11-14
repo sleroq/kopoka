@@ -13,7 +13,7 @@ import (
 
 type artwork struct {
 	ID, URL, Author, Text, Caption string
-	Photos                         []string
+	Photos, Types                  []string
 }
 
 func artworkID(link *url.URL) string {
@@ -52,6 +52,17 @@ func openArtworkDB(path string) (*sql.DB, error) {
 			return nil, err
 		}
 	}
+	var hasTypes int
+	if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info('artwork') WHERE name='media_types'`).Scan(&hasTypes); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if hasTypes == 0 {
+		if _, err := db.Exec(`ALTER TABLE artwork ADD COLUMN media_types TEXT NOT NULL DEFAULT '[]'`); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+	}
 	return db, nil
 }
 
@@ -64,15 +75,19 @@ func saveArtwork(db *sql.DB, user int64, a artwork, inline bool) error {
 	if err != nil {
 		return err
 	}
+	types, err := json.Marshal(a.Types)
+	if err != nil {
+		return err
+	}
 	tx, err := db.Begin()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	_, err = tx.Exec(`INSERT INTO artwork VALUES (?, ?, ?, ?, ?, ?)
+	_, err = tx.Exec(`INSERT INTO artwork (id,url,author,text,caption,photos,media_types) VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET url=excluded.url, author=excluded.author,
-        text=excluded.text, caption=excluded.caption, photos=excluded.photos`,
-		a.ID, a.URL, a.Author, a.Text, a.Caption, string(photos))
+        text=excluded.text, caption=excluded.caption, photos=excluded.photos, media_types=excluded.media_types`,
+		a.ID, a.URL, a.Author, a.Text, a.Caption, string(photos), string(types))
 	if err != nil {
 		return err
 	}
@@ -120,12 +135,24 @@ func deleteHistory(db *sql.DB, user int64) error {
 
 func scanArtwork(rows *sql.Rows) (artwork, error) {
 	var a artwork
-	var photos string
-	if err := rows.Scan(&a.ID, &a.URL, &a.Author, &a.Text, &a.Caption, &photos); err != nil {
+	var photos, types string
+	if err := rows.Scan(&a.ID, &a.URL, &a.Author, &a.Text, &a.Caption, &photos, &types); err != nil {
 		return a, err
 	}
 	if err := json.Unmarshal([]byte(photos), &a.Photos); err != nil {
 		return a, err
+	}
+	if err := json.Unmarshal([]byte(types), &a.Types); err != nil {
+		return a, err
+	}
+	if len(a.Types) == 0 {
+		a.Types = make([]string, len(a.Photos))
+		for i := range a.Types {
+			a.Types[i] = "photo"
+		}
+	}
+	if len(a.Types) != len(a.Photos) {
+		return a, fmt.Errorf("artwork %s has mismatched media types", a.ID)
 	}
 	if len(a.Photos) == 0 {
 		return a, fmt.Errorf("artwork %s has no photos", a.ID)
@@ -134,7 +161,7 @@ func scanArtwork(rows *sql.Rows) (artwork, error) {
 }
 
 func findArtwork(db *sql.DB, id string) (*artwork, error) {
-	rows, err := db.Query(`SELECT id,url,author,text,caption,photos FROM artwork WHERE id = ?`, id)
+	rows, err := db.Query(`SELECT id,url,author,text,caption,photos,media_types FROM artwork WHERE id = ?`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -147,7 +174,7 @@ func findArtwork(db *sql.DB, id string) (*artwork, error) {
 }
 
 func artworkHistory(db *sql.DB, user int64, offset int) ([]artwork, error) {
-	rows, err := db.Query(`SELECT a.id,a.url,a.author,a.text,a.caption,a.photos
+	rows, err := db.Query(`SELECT a.id,a.url,a.author,a.text,a.caption,a.photos,a.media_types
         FROM history h JOIN artwork a ON a.id=h.artwork_id
         WHERE h.user_id=? AND (h.inline_origin=1 OR NOT EXISTS (SELECT 1 FROM history_chat_hidden WHERE user_id=h.user_id)) ORDER BY h.sequence DESC LIMIT 51 OFFSET ?`, user, offset)
 	if err != nil {

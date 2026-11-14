@@ -43,7 +43,7 @@ func inlineLink(text string) *url.URL {
 
 func cachedInlineResult(a artwork) map[string]any {
 	result := map[string]any{
-		"type": "photo", "id": a.ID, "photo_file_id": a.Photos[0],
+		"type": mediaType(a, 0), "id": a.ID, mediaType(a, 0) + "_file_id": a.Photos[0],
 		"title": a.Author, "description": a.Text,
 	}
 	if len(a.Photos) == 1 {
@@ -55,14 +55,26 @@ func cachedInlineResult(a artwork) map[string]any {
 	return result
 }
 
+func mediaType(a artwork, i int) string {
+	if len(a.Types) == 0 {
+		return "photo"
+	}
+	return a.Types[i]
+}
+
 func slideshow(a artwork) map[string]any {
 	var markup strings.Builder
 	markup.WriteString("<tg-slideshow>")
 	media := make([]any, 0, len(a.Photos))
 	for i, id := range a.Photos {
 		key := strconv.Itoa(i)
-		fmt.Fprintf(&markup, `<img src="tg://photo?id=%s"/>`, key)
-		media = append(media, map[string]any{"id": key, "media": map[string]any{"type": "photo", "media": id}})
+		kind := mediaType(a, i)
+		if kind == "video" {
+			fmt.Fprintf(&markup, `<video src="tg://video?id=%s"></video>`, key)
+		} else {
+			fmt.Fprintf(&markup, `<img src="tg://photo?id=%s"/>`, key)
+		}
+		media = append(media, map[string]any{"id": key, "media": map[string]any{"type": kind, "media": id}})
 	}
 	fmt.Fprintf(&markup, "<figcaption>%s</figcaption></tg-slideshow>", a.Caption)
 	return map[string]any{"html": markup.String(), "media": media}
@@ -167,18 +179,19 @@ func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB,
 	}
 
 	for _, item := range photos {
-		id, err := cacheInlinePhoto(bot, cacheChat, item.(tgbotapi.InputMediaPhoto))
+		id, err := cacheInlineMedia(bot, cacheChat, item)
 		if err != nil {
 			return err
 		}
 		a.Photos = append(a.Photos, id)
+		a.Types = append(a.Types, mediaBase(item).Type)
 	}
 
-	first := photos[0].(tgbotapi.InputMediaPhoto)
+	first := mediaBase(photos[0])
 	a.Caption = first.Caption
 	params := tgbotapi.Params{"inline_message_id": chosen.InlineMessageID, "reply_markup": `{"inline_keyboard":[]}`}
 	method := "editMessageMedia"
-	var payload any = map[string]any{"type": "photo", "media": a.Photos[0], "caption": a.Caption, "parse_mode": first.ParseMode}
+	var payload any = map[string]any{"type": a.Types[0], "media": a.Photos[0], "caption": a.Caption, "parse_mode": first.ParseMode}
 	if len(a.Photos) > 1 {
 		method = "editMessageText"
 		payload = slideshow(a)
@@ -203,33 +216,44 @@ func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB,
 	return nil
 }
 
-func cacheInlinePhoto(bot *tgbotapi.BotAPI, chat string, photo tgbotapi.InputMediaPhoto) (string, error) {
-	config := tgbotapi.NewPhoto(0, photo.Media)
+func cacheInlineMedia(bot *tgbotapi.BotAPI, chat string, item any) (string, error) {
+	var chatID int64
+	var channel string
 	if strings.HasPrefix(chat, "@") {
-		config.ChannelUsername = chat
+		channel = chat
 	} else {
 		id, err := strconv.ParseInt(chat, 10, 64)
 		if err != nil || id == 0 {
 			return "", fmt.Errorf("invalid INLINE_CACHE_CHAT_ID: %q", chat)
 		}
-		config.ChatID = id
+		chatID = id
 	}
+
+	base := mediaBase(item)
 	message, err := retryTelegram(func() (tgbotapi.Message, error) {
-		attempt := tgbotapi.NewPhoto(config.ChatID, photo.Media)
-		attempt.ChannelUsername = config.ChannelUsername
-		return bot.Send(attempt)
+		if base.Type == "video" {
+			config := tgbotapi.NewVideo(chatID, base.Media)
+			config.ChannelUsername = channel
+			return bot.Send(config)
+		}
+		config := tgbotapi.NewPhoto(chatID, base.Media)
+		config.ChannelUsername = channel
+		return bot.Send(config)
 	})
 	if err != nil {
-		return "", fmt.Errorf("uploading inline photo: %w", err)
+		return "", fmt.Errorf("uploading inline media: %w", err)
 	}
-	deletion := tgbotapi.DeleteMessageConfig{
-		ChatID: config.ChatID, ChannelUsername: config.ChannelUsername,
-		MessageID: message.MessageID,
-	}
-	if _, err := retryTelegram(func() (*tgbotapi.APIResponse, error) {
-		return bot.Request(deletion)
-	}); err != nil {
+
+	deletion := tgbotapi.DeleteMessageConfig{ChatID: chatID, ChannelUsername: channel, MessageID: message.MessageID}
+	if _, err := retryTelegram(func() (*tgbotapi.APIResponse, error) { return bot.Request(deletion) }); err != nil {
 		log.Printf("deleting inline cache message: %v", err)
+	}
+
+	if base.Type == "video" {
+		if message.Video == nil || message.Video.FileID == "" {
+			return "", fmt.Errorf("inline upload returned no video")
+		}
+		return message.Video.FileID, nil
 	}
 	if len(message.Photo) == 0 {
 		return "", fmt.Errorf("inline upload returned no photo")

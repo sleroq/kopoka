@@ -124,8 +124,13 @@ func handleXLink(link *url.URL, metadata *artwork) ([]any, error) {
 				Name string `json:"name"`
 			} `json:"author"`
 			Media struct {
+				All []struct {
+					Type string `json:"type"`
+					URL  string `json:"url"`
+				} `json:"all"`
 				Photos []struct {
-					URL string `json:"url"`
+					Type string `json:"type"`
+					URL  string `json:"url"`
 				} `json:"photos"`
 			} `json:"media"`
 		} `json:"tweet"`
@@ -143,20 +148,36 @@ func handleXLink(link *url.URL, metadata *artwork) ([]any, error) {
 	metadata.Author, metadata.Text = response.Tweet.Author.Name, response.Tweet.Text
 	link.Host = "fxtwitter.com"
 	var photos []any
-	for i, image := range response.Tweet.Media.Photos {
+	items := response.Tweet.Media.All
+	if items == nil {
+		items = response.Tweet.Media.Photos
+	}
+	for i, image := range items {
 		if image.URL == "" {
 			return nil, fmt.Errorf("FxTwitter response missing photo URL at index %d", i)
 		}
-		photo := tgbotapi.NewInputMediaPhoto(tgbotapi.FileURL(image.URL))
+		var base tgbotapi.BaseInputMedia
+		switch image.Type {
+		case "", "photo":
+			base = tgbotapi.NewInputMediaPhoto(tgbotapi.FileURL(image.URL)).BaseInputMedia
+		case "video", "gif":
+			base = tgbotapi.NewInputMediaVideo(tgbotapi.FileURL(image.URL)).BaseInputMedia
+		default:
+			return nil, fmt.Errorf("unsupported FxTwitter media type %q", image.Type)
+		}
 		if i%10 == 0 {
-			photo.Caption = fmt.Sprintf(
+			base.Caption = fmt.Sprintf(
 				"<a href=\"%s\">%s</a>\n",
 				html.EscapeString(link.String()),
 				html.EscapeString(response.Tweet.Author.Name),
 			)
-			photo.ParseMode = "HTML"
+			base.ParseMode = "HTML"
 		}
-		photos = append(photos, photo)
+		if base.Type == "video" {
+			photos = append(photos, tgbotapi.InputMediaVideo{BaseInputMedia: base})
+		} else {
+			photos = append(photos, tgbotapi.InputMediaPhoto{BaseInputMedia: base})
+		}
 	}
 	return photos, nil
 }
@@ -228,7 +249,10 @@ func processLink(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, messa
 	}
 	if valid != nil && len(photos) > 0 && len(ids) == len(photos) {
 		a.Photos = ids
-		a.Caption = photos[0].(tgbotapi.InputMediaPhoto).Caption
+		a.Caption = mediaBase(photos[0]).Caption
+		for _, item := range photos {
+			a.Types = append(a.Types, mediaBase(item).Type)
+		}
 		if err := saveArtwork(db, message.From.ID, a, false); err != nil {
 			log.Printf("saving chat artwork: %v", err)
 		}

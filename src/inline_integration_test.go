@@ -521,7 +521,7 @@ func TestInlineMultipartRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	photo := tgbotapi.NewInputMediaPhoto(tgbotapi.FileBytes{Name: "photo.jpg", Bytes: []byte("image bytes")})
-	id, err := cacheInlinePhoto(bot, "@cache", photo)
+	id, err := cacheInlineMedia(bot, "@cache", photo)
 	if err != nil || id != "photo" || sends != 3 {
 		t.Fatalf("id=%q sends=%d err=%v", id, sends, err)
 	}
@@ -770,4 +770,139 @@ func TestHistoryPreferenceTelegramFlow(t *testing.T) {
 	selectCached(1, "x:1")
 	selectNew("4")
 	checkHistory(1, "x:4", "x:1")
+}
+
+func TestXVideoChatAndInline(t *testing.T) {
+	for _, tc := range []struct {
+		name, all string
+		kinds     []string
+	}{
+		{"video", `[{"type":"video","url":"https://example.com/v.mp4"}]`, []string{"video"}},
+		{"mixed", `[{"type":"video","url":"https://example.com/v.mp4"},{"type":"photo","url":"https://example.com/p.jpg"},{"type":"gif","url":"https://example.com/g.mp4"}]`, []string{"video", "photo", "video"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := testArtworkDB(t)
+
+			var album []map[string]any
+			var edit url.Values
+			var answer []map[string]any
+			var sent []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = r.ParseForm()
+				switch {
+				case r.URL.Path == "/u/status/1":
+					_, _ = fmt.Fprintf(w, `{"code":200,"tweet":{"text":"Post","author":{"name":"Artist & Co"},`+
+						`"media":{"all":%s,"photos":[{"url":"wrong"}]}}}`, tc.all)
+				case strings.HasSuffix(r.URL.Path, "/getMe"):
+					_, _ = fmt.Fprint(w, `{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`)
+				case strings.HasSuffix(r.URL.Path, "/sendChatAction"), strings.HasSuffix(r.URL.Path, "/deleteMessage"):
+					_, _ = fmt.Fprint(w, `{"ok":true,"result":true}`)
+				case strings.HasSuffix(r.URL.Path, "/sendVideo"), strings.HasSuffix(r.URL.Path, "/sendPhoto"):
+					kind := "photo"
+					if strings.HasSuffix(r.URL.Path, "/sendVideo") {
+						kind = "video"
+					}
+					sent = append(sent, kind)
+					if r.FormValue("chat_id") == "123" && !strings.Contains(r.FormValue("caption"), "Artist &amp; Co") {
+						t.Errorf("chat caption: %v", r.Form)
+					}
+					if kind == "video" {
+						_, _ = fmt.Fprint(w, `{"ok":true,"result":{"message_id":1,`+
+							`"video":{"file_id":"vid","file_unique_id":"v","width":1,"height":1,"duration":1}}}`)
+					} else {
+						_, _ = fmt.Fprint(w, `{"ok":true,"result":{"message_id":1,`+
+							`"photo":[{"file_id":"pic","file_unique_id":"p","width":1,"height":1}]}}`)
+					}
+				case strings.HasSuffix(r.URL.Path, "/sendMediaGroup"):
+					if err := json.Unmarshal([]byte(r.FormValue("media")), &album); err != nil {
+						t.Error(err)
+					}
+					_, _ = fmt.Fprint(w, `{"ok":true,"result":[`+
+						`{"message_id":1,"video":{"file_id":"vid","file_unique_id":"v","width":1,"height":1,"duration":1}},`+
+						`{"message_id":2,"photo":[{"file_id":"pic","file_unique_id":"p","width":1,"height":1}]},`+
+						`{"message_id":3,"video":{"file_id":"vid","file_unique_id":"v","width":1,"height":1,"duration":1}}]}`)
+				case strings.HasSuffix(r.URL.Path, "/editMessageMedia"), strings.HasSuffix(r.URL.Path, "/editMessageText"):
+					edit = r.Form
+					_, _ = fmt.Fprint(w, `{"ok":true,"result":true}`)
+				case strings.HasSuffix(r.URL.Path, "/answerInlineQuery"):
+					if err := json.Unmarshal([]byte(r.FormValue("results")), &answer); err != nil {
+						t.Error(err)
+					}
+					_, _ = fmt.Fprint(w, `{"ok":true,"result":true}`)
+				default:
+					t.Errorf("unexpected %s", r.URL.Path)
+				}
+			}))
+			defer server.Close()
+			target, _ := url.Parse(server.URL)
+			original := http.DefaultTransport
+			http.DefaultTransport = redirectTransport{target, original}
+			defer func() { http.DefaultTransport = original }()
+			bot, err := tgbotapi.NewBotAPIWithAPIEndpoint("token", server.URL+"/bot%s/%s")
+			if err != nil {
+				t.Fatal(err)
+			}
+			link := "https://x.com/u/status/1"
+			handleMessage(bot, nil, db, &tgbotapi.Message{
+				MessageID: 42, Chat: &tgbotapi.Chat{ID: 123}, From: &tgbotapi.User{ID: 1}, Text: link,
+				Entities: []tgbotapi.MessageEntity{{Type: "url", Length: len(link)}},
+			})
+			a, err := findArtwork(db, "x:1")
+			if err != nil || a == nil || !reflect.DeepEqual(a.Types, tc.kinds) {
+				t.Fatalf("saved: %#v %v", a, err)
+			}
+			if len(tc.kinds) > 1 {
+				if len(album) != len(tc.kinds) {
+					t.Fatalf("album: %#v", album)
+				}
+				for i, kind := range tc.kinds {
+					if album[i]["type"] != kind {
+						t.Fatalf("album: %#v", album)
+					}
+				}
+				if !strings.Contains(album[0]["caption"].(string), "Artist &amp; Co") {
+					t.Fatalf("album caption: %#v", album)
+				}
+			}
+			handleInlineQuery(bot, db, &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 1}, Query: link})
+			if len(answer) != 1 || answer[0]["type"] != "video" || answer[0]["video_file_id"] != "vid" {
+				t.Fatalf("cached: %#v", answer)
+			}
+			// Exercise the uncached chosen-result path even though the chat already stored this artwork.
+			handleChosenInlineResult(bot, nil, db, &tgbotapi.ChosenInlineResult{
+				From: &tgbotapi.User{ID: 2}, ResultID: inlineResultID, InlineMessageID: "inline", Query: link,
+			}, "@cache")
+			var payload map[string]any
+			field := "media"
+			if len(tc.kinds) > 1 {
+				field = "rich_message"
+			}
+			if err := json.Unmarshal([]byte(edit.Get(field)), &payload); err != nil {
+				t.Fatalf("edit %v: %v", edit, err)
+			}
+			if len(tc.kinds) == 1 {
+				if payload["type"] != "video" || payload["media"] != "vid" || !strings.Contains(payload["caption"].(string), "Artist") {
+					t.Fatalf("edit: %#v", payload)
+				}
+			} else {
+				html := payload["html"].(string)
+				if !strings.Contains(html, `<video src="tg://video?id=0"></video><img src="tg://photo?id=1"/><video src="tg://video?id=2"></video>`) || !strings.Contains(html, "Artist &amp; Co") {
+					t.Fatalf("markup: %s", html)
+				}
+				media := payload["media"].([]any)
+				for i, kind := range tc.kinds {
+					if media[i].(map[string]any)["media"].(map[string]any)["type"] != kind {
+						t.Fatalf("media: %#v", media)
+					}
+				}
+				rich := answer[0]["input_message_content"].(map[string]any)["rich_message"]
+				if !reflect.DeepEqual(rich, payload) {
+					t.Fatalf("cached %#v != edited %#v", rich, payload)
+				}
+			}
+			if len(sent) < len(tc.kinds) {
+				t.Fatalf("cache sends: %v", sent)
+			}
+		})
+	}
 }

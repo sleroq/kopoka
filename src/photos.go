@@ -31,6 +31,28 @@ func mergeArtPhotos(photos []any) []any {
 	if len(photos) < 2 {
 		return photos
 	}
+	for _, item := range photos {
+		if _, ok := item.(tgbotapi.InputMediaVideo); ok {
+			var result []any
+			for start := 0; start < len(photos); {
+				if _, ok := photos[start].(tgbotapi.InputMediaVideo); ok {
+					result = append(result, photos[start])
+					start++
+					continue
+				}
+				end := start + 1
+				for end < len(photos) {
+					if _, ok := photos[end].(tgbotapi.InputMediaPhoto); !ok {
+						break
+					}
+					end++
+				}
+				result = append(result, mergeArtPhotos(photos[start:end])...)
+				start = end
+			}
+			return result
+		}
+	}
 	client := &http.Client{Timeout: 10 * time.Second}
 	images := make([]image.Image, len(photos))
 	for i, media := range photos {
@@ -81,57 +103,86 @@ func sendPhotos(bot *tgbotapi.BotAPI, chatID int64, replyID int, photos []any) e
 	return err
 }
 
+func mediaBase(item any) tgbotapi.BaseInputMedia {
+	switch media := item.(type) {
+	case tgbotapi.InputMediaPhoto:
+		return media.BaseInputMedia
+	case tgbotapi.InputMediaVideo:
+		return media.BaseInputMedia
+	default:
+		panic("unsupported media")
+	}
+}
+
 func sendPhotosWithIDs(bot *tgbotapi.BotAPI, chatID int64, replyID int, photos []any) ([]string, error) {
 	if len(photos) == 0 {
 		return nil, nil
 	}
 	var ids []string
-	original := photos[0].(tgbotapi.InputMediaPhoto)
+	original := mediaBase(photos[0])
 
 	for start := 0; start < len(photos); start += 10 {
 		end := min(start+10, len(photos))
 		batch := make([]any, 0, end-start)
 		for i := start; i < end; i++ {
-			photo := photos[i].(tgbotapi.InputMediaPhoto)
-			photo.Caption = ""
-			photo.ParseMode = ""
-			photo.CaptionEntities = nil
+			base := mediaBase(photos[i])
+			base.Caption = ""
+			base.ParseMode = ""
+			base.CaptionEntities = nil
 			if i == start {
-				photo.Caption = original.Caption
-				photo.ParseMode = original.ParseMode
-				photo.CaptionEntities = original.CaptionEntities
+				base.Caption = original.Caption
+				base.ParseMode = original.ParseMode
+				base.CaptionEntities = original.CaptionEntities
 			}
-			batch = append(batch, photo)
+			switch item := photos[i].(type) {
+			case tgbotapi.InputMediaPhoto:
+				item.BaseInputMedia = base
+				batch = append(batch, item)
+			case tgbotapi.InputMediaVideo:
+				item.BaseInputMedia = base
+				batch = append(batch, item)
+			}
 		}
+
+		var messages []tgbotapi.Message
 		if len(batch) == 1 {
-			media := batch[0].(tgbotapi.InputMediaPhoto)
-			photo := tgbotapi.NewPhoto(chatID, media.Media)
-			photo.ReplyToMessageID = replyID
-			photo.Caption = media.Caption
-			photo.ParseMode = media.ParseMode
-			photo.CaptionEntities = media.CaptionEntities
-			message, err := retryTelegram(func() (tgbotapi.Message, error) {
-				return bot.Send(photo)
-			})
+			base := mediaBase(batch[0])
+			var msg tgbotapi.Message
+			var err error
+			if base.Type == "video" {
+				video := tgbotapi.NewVideo(chatID, base.Media)
+				video.ReplyToMessageID = replyID
+				video.Caption = base.Caption
+				video.ParseMode = base.ParseMode
+				video.CaptionEntities = base.CaptionEntities
+				msg, err = retryTelegram(func() (tgbotapi.Message, error) { return bot.Send(video) })
+			} else {
+				photo := tgbotapi.NewPhoto(chatID, base.Media)
+				photo.ReplyToMessageID = replyID
+				photo.Caption = base.Caption
+				photo.ParseMode = base.ParseMode
+				photo.CaptionEntities = base.CaptionEntities
+				msg, err = retryTelegram(func() (tgbotapi.Message, error) { return bot.Send(photo) })
+			}
 			if err != nil {
 				return nil, err
 			}
-			if len(message.Photo) > 0 && message.Photo[len(message.Photo)-1].FileID != "" {
-				ids = append(ids, message.Photo[len(message.Photo)-1].FileID)
-			}
+			messages = []tgbotapi.Message{msg}
 		} else {
 			group := tgbotapi.NewMediaGroup(chatID, batch)
 			group.ReplyToMessageID = replyID
-			messages, err := retryTelegram(func() ([]tgbotapi.Message, error) {
-				return bot.SendMediaGroup(group)
-			})
+			var err error
+			messages, err = retryTelegram(func() ([]tgbotapi.Message, error) { return bot.SendMediaGroup(group) })
 			if err != nil {
 				return nil, err
 			}
-			for _, message := range messages {
-				if len(message.Photo) > 0 && message.Photo[len(message.Photo)-1].FileID != "" {
-					ids = append(ids, message.Photo[len(message.Photo)-1].FileID)
-				}
+		}
+
+		for _, message := range messages {
+			if message.Video != nil && message.Video.FileID != "" {
+				ids = append(ids, message.Video.FileID)
+			} else if len(message.Photo) > 0 && message.Photo[len(message.Photo)-1].FileID != "" {
+				ids = append(ids, message.Photo[len(message.Photo)-1].FileID)
 			}
 		}
 	}

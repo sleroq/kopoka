@@ -1,5 +1,5 @@
 # pokopa
-Telegram image downloader bot supporting Pixiv and X.
+Telegram media downloader bot supporting Pixiv and X.
 
 ## Split artwork
 
