@@ -146,8 +146,8 @@ func TestChatHistorySettingsFlow(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	var answers []map[string]any
-	var reply, callback string
-	server := chatHistoryServer(t, &answers, &reply, &callback)
+	var reply, markup, callback string
+	server := chatHistoryServer(t, &answers, &reply, &markup, &callback)
 	defer server.Close()
 	target, _ := url.Parse(server.URL)
 	original := http.DefaultTransport
@@ -198,8 +198,8 @@ func TestChatHistorySettingsFlow(t *testing.T) {
 	chat("https://x.com/u/status/invalid")
 	check("x:1", "x:99")
 	command("/settings")
-	if !strings.Contains(reply, "Visible") {
-		t.Fatal(reply)
+	if reply != "Settings" || !strings.Contains(markup, "✓ Show chat links in search history") {
+		t.Fatalf("settings: %q %s", reply, markup)
 	}
 	toggle(2, "chat")
 	if callback == "" {
@@ -224,8 +224,8 @@ func TestChatHistorySettingsFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	command("/settings")
-	if !strings.Contains(reply, "Off") || !strings.Contains(reply, "Hidden") {
-		t.Fatal(reply)
+	if reply != "Settings" || !strings.Contains(markup, "History: Off") || !strings.Contains(markup, "✗ Show chat links in search history") {
+		t.Fatalf("settings: %q %s", reply, markup)
 	}
 	toggle(1, "chat")
 	check("x:1", "x:2", "x:99")
@@ -234,7 +234,7 @@ func TestChatHistorySettingsFlow(t *testing.T) {
 	check("x:5", "x:1", "x:2", "x:99")
 }
 
-func chatHistoryServer(t *testing.T, answers *[]map[string]any, reply, callback *string) *httptest.Server {
+func chatHistoryServer(t *testing.T, answers *[]map[string]any, reply, markup, callback *string) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
@@ -259,6 +259,7 @@ func chatHistoryServer(t *testing.T, answers *[]map[string]any, reply, callback 
 			_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":43,"photo":[{"file_id":"small"},{"file_id":"usable"}]}}`))
 		case strings.HasSuffix(r.URL.Path, "/sendMessage"):
 			*reply = r.FormValue("text")
+			*markup = r.FormValue("reply_markup")
 			_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":43}}`))
 		case strings.HasSuffix(r.URL.Path, "/answerCallbackQuery"):
 			*callback = r.FormValue("text")
