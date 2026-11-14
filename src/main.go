@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/everpcpc/pixiv"
@@ -40,19 +41,27 @@ func pixivCaption(illust *pixiv.Illust) string {
 	return fmt.Sprintf(
 		"<a href=\"%s\">%s</a>\n",
 		"https://www.pixiv.net/artworks/"+strconv.Itoa(int(illust.ID)),
-		illust.User.Name,
+		html.EscapeString(illust.User.Name),
 	)
 }
 
+// The Pixiv client refreshes package-level credentials without synchronization.
+var pixivRequestMu sync.Mutex
+
 func handlePixivLink(app *pixiv.AppPixivAPI, link *url.URL) ([]any, error) {
-	idStr := strings.Split(link.Path, "/artworks/")[1]
+	idStr, ok := strings.CutPrefix(link.Path, "/artworks/")
+	if !ok {
+		return nil, fmt.Errorf("invalid Pixiv artwork path: %s", link.Path)
+	}
 	id, err := strconv.Atoi(idStr)
 
 	if err != nil {
 		return nil, fmt.Errorf("parsing Pixiv ID: %w", err)
 	}
 
+	pixivRequestMu.Lock()
 	illust, err := app.IllustDetail(uint64(id))
+	pixivRequestMu.Unlock()
 	if err != nil {
 		return nil, fmt.Errorf("fetching Pixiv illust: %w", err)
 	}
@@ -168,25 +177,69 @@ func showProcessing(bot *tgbotapi.BotAPI, chatID int64) func() {
 	return func() { close(stop) }
 }
 
-func processLink(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, message *tgbotapi.Message, link *url.URL) error {
-	var fetchPhotos func() ([]any, error)
+func supportedLink(link *url.URL) bool {
+	switch link.Host {
+	case "www.pixiv.net", "pixiv.net", "x.com", "fixupx.com", "vxtwitter.com", "fixvx.com", "twitter.com", "fxtwitter.com":
+		return true
+	}
+	return false
+}
+
+func fetchArtPhotos(app *pixiv.AppPixivAPI, link *url.URL) ([]any, error) {
+	var photos []any
+	var err error
 	switch link.Host {
 	case "www.pixiv.net", "pixiv.net":
-		fetchPhotos = func() ([]any, error) { return handlePixivLink(app, link) }
-	case "x.com", "fixupx.com", "vxtwitter.com", "fixvx.com", "twitter.com", "fxtwitter.com":
-		fetchPhotos = func() ([]any, error) { return handleXLink(link) }
+		photos, err = handlePixivLink(app, link)
 	default:
+		photos, err = handleXLink(link)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return mergeArtPhotos(photos), nil
+}
+
+func processLink(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, message *tgbotapi.Message, link *url.URL) error {
+	if !supportedLink(link) {
 		return nil
 	}
-
 	stop := showProcessing(bot, message.Chat.ID)
 	defer stop()
-
-	photos, err := fetchPhotos()
+	photos, err := fetchArtPhotos(app, link)
 	if err != nil {
 		return err
 	}
-	return sendPhotos(bot, message.Chat.ID, message.MessageID, mergeArtPhotos(photos))
+	return sendPhotos(bot, message.Chat.ID, message.MessageID, photos)
+}
+
+func handleMessage(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, message *tgbotapi.Message) {
+	command := message.CommandWithAt()
+	if command == "json" || strings.EqualFold(command, "json@"+bot.Self.UserName) {
+		if err := sendChatJSON(bot, message); err != nil {
+			log.Printf("sending chat JSON: %v", err)
+		}
+		return
+	}
+	if message.From == nil {
+		return
+	}
+	log.Printf("[%s] %s", message.From.UserName, message.Text)
+	for _, entity := range message.Entities {
+		if entity.Type != "url" {
+			continue
+		}
+		link := message.Text[entity.Offset : entity.Offset+entity.Length]
+		parsed, err := url.Parse(link)
+		if err != nil {
+			log.Println(err)
+			continue
+		}
+		parsed.RawQuery = ""
+		if err := processLink(bot, app, message, parsed); err != nil {
+			log.Println(err)
+		}
+	}
 }
 
 func main() {
@@ -203,29 +256,14 @@ func main() {
 	updates := bot.GetUpdatesChan(*u)
 
 	for update := range updates {
-		if update.Message != nil { // If we got a message
-			log.Printf("[%s] %s", update.Message.From.UserName, update.Message.Text)
-
-			var urls []string
-
-			for _, entity := range update.Message.Entities {
-				if entity.Type == "url" {
-					urls = append(urls, update.Message.Text[entity.Offset:entity.Offset+entity.Length])
-				}
-			}
-
-			for _, link := range urls {
-				parsed, err := url.Parse(link)
-				if err != nil {
-					log.Println(err)
-					continue
-				}
-				parsed.RawQuery = ""
-
-				if err := processLink(bot, pApp, update.Message, parsed); err != nil {
-					log.Println(err)
-				}
-			}
+		if update.InlineQuery != nil {
+			go handleInlineQuery(bot, pApp, update.InlineQuery, os.Getenv("INLINE_CACHE_CHAT_ID"))
+		}
+		if update.Message != nil {
+			handleMessage(bot, pApp, update.Message)
+		}
+		if update.ChannelPost != nil {
+			handleMessage(bot, pApp, update.ChannelPost)
 		}
 	}
 }
