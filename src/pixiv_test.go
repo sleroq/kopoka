@@ -134,7 +134,7 @@ func TestSetupPixivClient(t *testing.T) {
 			if err != nil {
 				t.Error(err)
 			}
-		case "/original.png":
+		case "/large.png":
 			if r.Referer() != "https://www.pixiv.net/" {
 				http.Error(w, "missing Pixiv referer", http.StatusForbidden)
 				return
@@ -194,8 +194,8 @@ func TestSetupPixivClient(t *testing.T) {
 		for _, media := range photos {
 			photo := media.(tgbotapi.InputMediaPhoto)
 			file, ok := photo.Media.(tgbotapi.FileBytes)
-			if !ok || file.Name != "original.png" || !bytes.Equal(file.Bytes, original.Bytes()) {
-				t.Fatalf("Pixiv original was not preserved as an upload: %T", photo.Media)
+			if !ok || file.Name != "large.png" || !bytes.Equal(file.Bytes, original.Bytes()) {
+				t.Fatalf("Pixiv large image was not preserved as an upload: %T", photo.Media)
 			}
 		}
 		photo := photos[0].(tgbotapi.InputMediaPhoto)
