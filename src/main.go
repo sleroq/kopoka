@@ -287,8 +287,9 @@ func handleMessage(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, mes
 	if command == "help" || command == "start" || strings.EqualFold(command, "help@"+bot.Self.UserName) || strings.EqualFold(command, "start@"+bot.Self.UserName) {
 		reply := tgbotapi.NewMessage(message.Chat.ID, "Just send me x.com / pixiv.net link with media in it. Or use me inline")
 		reply.ReplyToMessageID = message.MessageID
+		query := ""
 		reply.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonSwitch("Open inline", "")))
+			tgbotapi.InlineKeyboardButton{Text: "Open inline", SwitchInlineQueryCurrentChat: &query}))
 		if _, err := bot.Send(reply); err != nil {
 			log.Printf("sending help: %v", err)
 		}
