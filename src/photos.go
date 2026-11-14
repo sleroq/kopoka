@@ -110,6 +110,8 @@ func mediaBase(item any) tgbotapi.BaseInputMedia {
 		return media.BaseInputMedia
 	case tgbotapi.InputMediaVideo:
 		return media.BaseInputMedia
+	case tgbotapi.InputMediaAnimation:
+		return media.BaseInputMedia
 	default:
 		panic("unsupported media")
 	}
@@ -142,6 +144,9 @@ func sendPhotosWithIDs(bot *tgbotapi.BotAPI, chatID int64, replyID int, photos [
 			case tgbotapi.InputMediaVideo:
 				item.BaseInputMedia = base
 				batch = append(batch, item)
+			case tgbotapi.InputMediaAnimation:
+				item.BaseInputMedia = base
+				batch = append(batch, item)
 			}
 		}
 
@@ -150,14 +155,22 @@ func sendPhotosWithIDs(bot *tgbotapi.BotAPI, chatID int64, replyID int, photos [
 			base := mediaBase(batch[0])
 			var msg tgbotapi.Message
 			var err error
-			if base.Type == "video" {
+			switch base.Type {
+			case "animation":
+				animation := tgbotapi.NewAnimation(chatID, base.Media)
+				animation.ReplyToMessageID = replyID
+				animation.Caption = base.Caption
+				animation.ParseMode = base.ParseMode
+				animation.CaptionEntities = base.CaptionEntities
+				msg, err = retryTelegram(func() (tgbotapi.Message, error) { return bot.Send(animation) })
+			case "video":
 				video := tgbotapi.NewVideo(chatID, base.Media)
 				video.ReplyToMessageID = replyID
 				video.Caption = base.Caption
 				video.ParseMode = base.ParseMode
 				video.CaptionEntities = base.CaptionEntities
 				msg, err = retryTelegram(func() (tgbotapi.Message, error) { return bot.Send(video) })
-			} else {
+			default:
 				photo := tgbotapi.NewPhoto(chatID, base.Media)
 				photo.ReplyToMessageID = replyID
 				photo.Caption = base.Caption
@@ -180,9 +193,12 @@ func sendPhotosWithIDs(bot *tgbotapi.BotAPI, chatID int64, replyID int, photos [
 		}
 
 		for _, message := range messages {
-			if message.Video != nil && message.Video.FileID != "" {
+			switch {
+			case message.Animation != nil && message.Animation.FileID != "":
+				ids = append(ids, message.Animation.FileID)
+			case message.Video != nil && message.Video.FileID != "":
 				ids = append(ids, message.Video.FileID)
-			} else if len(message.Photo) > 0 && message.Photo[len(message.Photo)-1].FileID != "" {
+			case len(message.Photo) > 0 && message.Photo[len(message.Photo)-1].FileID != "":
 				ids = append(ids, message.Photo[len(message.Photo)-1].FileID)
 			}
 		}

@@ -83,10 +83,10 @@ func handlePixivLink(app *pixiv.AppPixivAPI, link *url.URL, metadata *artwork) (
 		if err != nil {
 			return nil, err
 		}
-		video := tgbotapi.NewInputMediaVideo(file)
-		video.Caption = pixivCaption(illust)
-		video.ParseMode = "HTML"
-		return []any{video}, nil
+		animation := tgbotapi.NewInputMediaAnimation(file)
+		animation.Caption = pixivCaption(illust)
+		animation.ParseMode = "HTML"
+		return []any{animation}, nil
 	}
 	var photos []any
 	for i, page := range illust.MetaPages {
@@ -228,7 +228,7 @@ func processLink(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, messa
 
 	action := tgbotapi.ChatUploadPhoto
 	for _, item := range photos {
-		if mediaBase(item).Type == "video" {
+		if mediaBase(item).Type == "video" || mediaBase(item).Type == "animation" {
 			action = tgbotapi.ChatUploadVideo
 			break
 		}

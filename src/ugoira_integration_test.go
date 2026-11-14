@@ -52,6 +52,7 @@ func TestPixivUgoiraIntegration(t *testing.T) {
 	archive := ugoiraTestArchive(t)
 	var answer []map[string]any
 	var edit map[string]any
+	var uploads []string
 
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -76,8 +77,17 @@ func TestPixivUgoiraIntegration(t *testing.T) {
 				t.Error(err)
 			}
 			_, _ = fmt.Fprint(w, `{"ok":true,"result":true}`)
-		case "/bottoken/sendVideo":
-			_, _ = fmt.Fprint(w, `{"ok":true,"result":{"message_id":1,"video":{"file_id":"video-id"}}}`)
+		case "/bottoken/sendChatAction":
+			_, _ = fmt.Fprint(w, `{"ok":true,"result":true}`)
+		case "/bottoken/sendAnimation":
+			if err := r.ParseMultipartForm(32 << 20); err != nil {
+				t.Error(err)
+			}
+			uploads = append(uploads, r.FormValue("chat_id"))
+			if r.FormValue("chat_id") != "@cache" && (r.FormValue("reply_to_message_id") != "42" || !strings.Contains(r.FormValue("caption"), "artist") || r.FormValue("parse_mode") != "HTML") {
+				t.Errorf("chat animation parameters: %v", r.Form)
+			}
+			_, _ = fmt.Fprint(w, `{"ok":true,"result":{"message_id":1,"animation":{"file_id":"animation-id"}}}`)
 		case "/bottoken/deleteMessage":
 			_, _ = fmt.Fprint(w, `{"ok":true,"result":true}`)
 		case "/bottoken/editMessageMedia":
@@ -123,25 +133,38 @@ func TestPixivUgoiraIntegration(t *testing.T) {
 	if len(media) != 1 {
 		t.Fatalf("got %d media", len(media))
 	}
-	video, ok := media[0].(tgbotapi.InputMediaVideo)
+	animation, ok := media[0].(tgbotapi.InputMediaAnimation)
 	if !ok {
-		t.Fatalf("got %T, want video", media[0])
+		t.Fatalf("got %T, want animation", media[0])
 	}
-	file, ok := video.Media.(tgbotapi.FileBytes)
-	if !ok || video.ParseMode != "HTML" || !strings.Contains(video.Caption, "artist") {
-		t.Fatal("missing video upload or caption")
+	file, ok := animation.Media.(tgbotapi.FileBytes)
+	if !ok || animation.ParseMode != "HTML" || !strings.Contains(animation.Caption, "artist") {
+		t.Fatal("missing animation upload or caption")
 	}
 	checkUgoiraVideo(t, file.Bytes)
-	checkPixivInlineFlow(t, server, app, &answer, &edit)
+	checkPixivInlineFlow(t, server, app, &answer, &edit, &uploads)
 }
 
-func checkPixivInlineFlow(t *testing.T, server *httptest.Server, app *pixiv.AppPixivAPI, answer *[]map[string]any, edit *map[string]any) {
+func checkPixivInlineFlow(t *testing.T, server *httptest.Server, app *pixiv.AppPixivAPI, answer *[]map[string]any, edit *map[string]any, uploads *[]string) {
 	t.Helper()
+
 	bot, err := tgbotapi.NewBotAPIWithClient("token", server.URL+"/bot%s/%s", server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	db := testArtworkDB(t)
+	message := &tgbotapi.Message{MessageID: 42, Chat: &tgbotapi.Chat{ID: 123}, From: &tgbotapi.User{ID: 2}}
+	link := inlineLink("https://www.pixiv.net/artworks/152026329")
+	if err := processLink(bot, app, db, message, link); err != nil {
+		t.Fatal(err)
+	}
+	chatArt, err := findArtwork(db, artworkID(link))
+	if err != nil || chatArt == nil || len(chatArt.Types) != 1 || chatArt.Types[0] != "animation" || chatArt.Photos[0] != "animation-id" {
+		t.Fatalf("chat artwork: %+v, %v", chatArt, err)
+	}
+	// Use a fresh database to exercise the uncached inline path.
+	db = testArtworkDB(t)
 	query := &tgbotapi.InlineQuery{
 		ID: "query", From: &tgbotapi.User{ID: 1},
 		Query: "https://www.pixiv.net/en/artworks/152026329",
@@ -156,7 +179,7 @@ func checkPixivInlineFlow(t *testing.T, server *httptest.Server, app *pixiv.AppP
 	}
 	queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})
 	handleChosenInlineResult(bot, app, db, chosen, "@cache", queue)
-	if (*edit)["type"] != "video" || (*edit)["media"] != "video-id" {
+	if (*edit)["type"] != "animation" || (*edit)["media"] != "animation-id" {
 		t.Fatalf("inline edit: %v", *edit)
 	}
 	handleInlineQuery(bot, db, query, testPreviews(t, db, bot))
@@ -164,9 +187,14 @@ func checkPixivInlineFlow(t *testing.T, server *httptest.Server, app *pixiv.AppP
 		t.Fatalf("cached inline answer: %v", *answer)
 	}
 	rich := (*answer)[0]["input_message_content"].(map[string]any)["rich_message"].(map[string]any)
-	media := rich["media"].([]any)[0].(map[string]any)["media"].(map[string]any)
-	if media["type"] != "video" || media["media"] != "video-id" {
-		t.Fatalf("cached media: %#v", media)
+	block := rich["blocks"].([]any)[0].(map[string]any)
+	media := block["animation"].(map[string]any)
+	caption := block["caption"].(map[string]any)["text"].([]any)[0].(map[string]any)
+	if block["type"] != "animation" || media["type"] != "animation" || media["media"] != "animation-id" || caption["text"] != "artist" || caption["url"] != link.String() {
+		t.Fatalf("cached animation: %#v", block)
+	}
+	if len(*uploads) != 2 || (*uploads)[0] != "123" || (*uploads)[1] != "@cache" {
+		t.Fatalf("animation uploads: %v", *uploads)
 	}
 }
 

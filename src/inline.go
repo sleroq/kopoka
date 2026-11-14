@@ -83,6 +83,12 @@ func richArtwork(a artwork) map[string]any {
 		return slideshow(a)
 	}
 	kind := mediaType(a, 0)
+	if kind == "animation" {
+		return map[string]any{"blocks": []any{map[string]any{
+			"type": "animation", "animation": map[string]any{"type": "animation", "media": a.Photos[0]},
+			"caption": map[string]any{"text": []any{map[string]any{"type": "url", "text": a.Author, "url": a.URL}, "\n"}},
+		}}}
+	}
 	media := []any{map[string]any{"id": "0", "media": map[string]any{"type": kind, "media": a.Photos[0]}}}
 	markup := `<img src="tg://photo?id=0"/>`
 	if kind == "video" {
@@ -295,6 +301,11 @@ func cacheInlineMedia(bot *tgbotapi.BotAPI, chat string, item any) (string, erro
 
 	base := mediaBase(item)
 	message, err := retryTelegram(func() (tgbotapi.Message, error) {
+		if base.Type == "animation" {
+			config := tgbotapi.NewAnimation(chatID, base.Media)
+			config.ChannelUsername = channel
+			return bot.Send(config)
+		}
 		if base.Type == "video" {
 			config := tgbotapi.NewVideo(chatID, base.Media)
 			config.ChannelUsername = channel
@@ -313,6 +324,12 @@ func cacheInlineMedia(bot *tgbotapi.BotAPI, chat string, item any) (string, erro
 		log.Printf("deleting inline cache message: %v", err)
 	}
 
+	if base.Type == "animation" {
+		if message.Animation == nil || message.Animation.FileID == "" {
+			return "", fmt.Errorf("inline upload returned no animation")
+		}
+		return message.Animation.FileID, nil
+	}
 	if base.Type == "video" {
 		if message.Video == nil || message.Video.FileID == "" {
 			return "", fmt.Errorf("inline upload returned no video")
