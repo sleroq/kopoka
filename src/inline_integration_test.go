@@ -810,6 +810,66 @@ func TestHistoryPreferenceTelegramFlow(t *testing.T) {
 	selectCached(1, "x:1")
 	selectNew("4")
 	checkHistory(1, "x:4", "x:1")
+
+	command("/settings")
+	if !strings.Contains(markup, "History order: Recent activity") {
+		t.Fatalf("default order: %s", markup)
+	}
+	selectCached(1, "x:1")
+	checkHistory(1, "x:1", "x:4")
+	callback(2, "settings:order:1")
+	if callbackAnswer == "" || !strings.Contains(markup, "History order: Recent activity") {
+		t.Fatalf("unauthorized order toggle: %q %s", callbackAnswer, markup)
+	}
+	callback(1, "settings:order:1")
+	if callbackAnswer != "" || !strings.Contains(markup, "History order: First saved") {
+		t.Fatalf("first-saved order: %q %s", callbackAnswer, markup)
+	}
+	checkHistory(1, "x:4", "x:1")
+	selectCached(1, "x:1")
+	a, err := findArtwork(db, "x:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := saveArtwork(db, 1, *a, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveArtwork(db, 1, *a, true); err != nil {
+		t.Fatal(err)
+	}
+	checkHistory(1, "x:4", "x:1")
+	selectCached(2, "x:1")
+	checkHistory(2, "x:1", "x:2")
+
+	a.ID = "x:5"
+	if err := saveArtwork(db, 1, *a, false); err != nil {
+		t.Fatal(err)
+	}
+	checkHistory(1, "x:5", "x:4", "x:1")
+	callback(1, "settings:chat:1")
+	checkHistory(1, "x:4", "x:1")
+	selectCached(1, "x:5")
+	checkHistory(1, "x:5", "x:4", "x:1")
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = openArtworkDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command("/settings")
+	if !strings.Contains(markup, "History order: First saved") {
+		t.Fatalf("persisted order: %s", markup)
+	}
+	selectCached(1, "x:4")
+	checkHistory(1, "x:5", "x:4", "x:1")
+	callback(1, "settings:order:1")
+	if callbackAnswer != "" || !strings.Contains(markup, "History order: Recent activity") {
+		t.Fatalf("recent order: %q %s", callbackAnswer, markup)
+	}
+	checkHistory(1, "x:4", "x:5", "x:1")
+	selectCached(1, "x:1")
+	checkHistory(1, "x:1", "x:4", "x:5")
 }
 
 func TestXVideoChatAndInline(t *testing.T) {

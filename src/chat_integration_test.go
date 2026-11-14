@@ -244,6 +244,10 @@ func TestChatHistorySettingsFlow(t *testing.T) {
 	toggle(1, "history")
 	chat("https://x.com/u/status/5")
 	check("x:5", "x:1", "x:2", "x:99")
+	toggle(1, "order")
+	check("x:5", "x:2", "x:1", "x:99")
+	toggle(1, "order")
+	check("x:5", "x:1", "x:2", "x:99")
 }
 
 func chatHistoryServer(t *testing.T, answers *[]map[string]any, reply, markup, callback *string) *httptest.Server {

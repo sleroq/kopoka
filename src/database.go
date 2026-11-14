@@ -37,6 +37,7 @@ func openArtworkDB(path string) (*sql.DB, error) {
  CREATE TABLE IF NOT EXISTS history (sequence INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, artwork_id TEXT NOT NULL, UNIQUE(user_id, artwork_id));
  CREATE TABLE IF NOT EXISTS history_opt_out (user_id INTEGER PRIMARY KEY);
  CREATE TABLE IF NOT EXISTS history_chat_hidden (user_id INTEGER PRIMARY KEY);
+ CREATE TABLE IF NOT EXISTS history_first_saved (user_id INTEGER PRIMARY KEY);
  CREATE TABLE IF NOT EXISTS instant_inline_settings (user_id INTEGER PRIMARY KEY, x INTEGER NOT NULL DEFAULT 0, pixiv INTEGER NOT NULL DEFAULT 0);`)
 	if err != nil {
 		_ = db.Close()
@@ -53,6 +54,21 @@ func openArtworkDB(path string) (*sql.DB, error) {
 			return nil, err
 		}
 	}
+
+	var hasFirstSequence int
+	row := db.QueryRow(`SELECT count(*) FROM pragma_table_info('history') WHERE name='first_sequence'`)
+	if err := row.Scan(&hasFirstSequence); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if hasFirstSequence == 0 {
+		if _, err := db.Exec(`ALTER TABLE history ADD COLUMN first_sequence INTEGER NOT NULL DEFAULT 0;
+            UPDATE history SET first_sequence = sequence`); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+	}
+
 	var hasTypes int
 	if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info('artwork') WHERE name='media_types'`).Scan(&hasTypes); err != nil {
 		_ = db.Close()
@@ -140,7 +156,10 @@ func selectArtwork(db interface {
 func recordArtwork(db interface {
 	Exec(string, ...any) (sql.Result, error)
 }, user int64, id string, inline bool) error {
-	_, err := db.Exec(`INSERT INTO history(user_id, artwork_id, inline_origin) SELECT ?, id, ? FROM artwork WHERE id = ? AND NOT EXISTS (SELECT 1 FROM history_opt_out WHERE user_id = ?)
+	_, err := db.Exec(`INSERT INTO history(user_id, artwork_id, inline_origin, first_sequence)
+        SELECT ?, id, ?, max(coalesce((SELECT seq FROM sqlite_sequence WHERE name='history'), 0),
+                             coalesce((SELECT max(sequence) FROM history), 0)) + 1
+        FROM artwork WHERE id = ? AND NOT EXISTS (SELECT 1 FROM history_opt_out WHERE user_id = ?)
         ON CONFLICT(user_id, artwork_id) DO UPDATE SET
         inline_origin = max(history.inline_origin, excluded.inline_origin),
         sequence = (SELECT coalesce(max(sequence),0)+1 FROM history)`, user, inline, id, user)
@@ -210,7 +229,9 @@ func findArtwork(db *sql.DB, id string) (*artwork, error) {
 func artworkHistory(db *sql.DB, user int64, offset int) ([]artwork, error) {
 	rows, err := db.Query(`SELECT a.id,a.url,a.author,a.text,a.caption,a.photos,a.media_types
         FROM history h JOIN artwork a ON a.id=h.artwork_id
-        WHERE h.user_id=? AND (h.inline_origin=1 OR NOT EXISTS (SELECT 1 FROM history_chat_hidden WHERE user_id=h.user_id)) ORDER BY h.sequence DESC LIMIT 51 OFFSET ?`, user, offset)
+        WHERE h.user_id=? AND (h.inline_origin=1 OR NOT EXISTS (SELECT 1 FROM history_chat_hidden WHERE user_id=h.user_id))
+        ORDER BY CASE WHEN EXISTS (SELECT 1 FROM history_first_saved WHERE user_id=h.user_id)
+            THEN h.first_sequence ELSE h.sequence END DESC LIMIT 51 OFFSET ?`, user, offset)
 	if err != nil {
 		return nil, err
 	}

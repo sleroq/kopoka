@@ -95,9 +95,10 @@ func handleHistoryCallback(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.Cal
 }
 
 func settingsView(db *sql.DB, user int64) (string, tgbotapi.InlineKeyboardMarkup, error) {
-	var disabled, hidden bool
+	var disabled, hidden, firstSaved bool
 	err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM history_opt_out WHERE user_id=?),
-        EXISTS(SELECT 1 FROM history_chat_hidden WHERE user_id=?)`, user, user).Scan(&disabled, &hidden)
+        EXISTS(SELECT 1 FROM history_chat_hidden WHERE user_id=?),
+        EXISTS(SELECT 1 FROM history_first_saved WHERE user_id=?)`, user, user, user).Scan(&disabled, &hidden, &firstSaved)
 	if err != nil {
 		return "", tgbotapi.InlineKeyboardMarkup{}, err
 	}
@@ -108,11 +109,16 @@ func settingsView(db *sql.DB, user int64) (string, tgbotapi.InlineKeyboardMarkup
 	if hidden {
 		chat = "✗"
 	}
+	order := "Recent activity"
+	if firstSaved {
+		order = "First saved"
+	}
 	button := func(text, action string) tgbotapi.InlineKeyboardButton {
 		return tgbotapi.NewInlineKeyboardButtonData(text, fmt.Sprintf("settings:%s:%d", action, user))
 	}
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(button("History: "+history, "history")),
+		tgbotapi.NewInlineKeyboardRow(button("History order: "+order, "order")),
 		tgbotapi.NewInlineKeyboardRow(button("Show chat links in search history: "+chat, "chat")),
 		tgbotapi.NewInlineKeyboardRow(button("Instant inline query", "instant")),
 	)
@@ -196,6 +202,16 @@ func handleSettingsCallback(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.Ca
 		err = db.QueryRow(`SELECT EXISTS(SELECT 1 FROM history_opt_out WHERE user_id=?)`, user).Scan(&disabled)
 		if err == nil {
 			err = setHistoryEnabled(db, user, disabled)
+		}
+	case "order":
+		var firstSaved bool
+		err = db.QueryRow(`SELECT EXISTS(SELECT 1 FROM history_first_saved WHERE user_id=?)`, user).Scan(&firstSaved)
+		if err == nil {
+			if firstSaved {
+				_, err = db.Exec(`DELETE FROM history_first_saved WHERE user_id=?`, user)
+			} else {
+				_, err = db.Exec(`INSERT INTO history_first_saved(user_id) VALUES (?)`, user)
+			}
 		}
 	case "chat":
 		var hidden bool
