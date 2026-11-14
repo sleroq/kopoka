@@ -51,7 +51,7 @@ func pixivCaption(illust *pixiv.Illust) string {
 // The Pixiv client refreshes package-level credentials without synchronization.
 var pixivRequestMu sync.Mutex
 
-func handlePixivLink(app *pixiv.AppPixivAPI, link *url.URL) ([]any, error) {
+func handlePixivLink(app *pixiv.AppPixivAPI, link *url.URL, metadata *artwork) ([]any, error) {
 	idStr, ok := strings.CutPrefix(link.Path, "/artworks/")
 	if !ok {
 		return nil, fmt.Errorf("invalid Pixiv artwork path: %s", link.Path)
@@ -69,6 +69,7 @@ func handlePixivLink(app *pixiv.AppPixivAPI, link *url.URL) ([]any, error) {
 		return nil, fmt.Errorf("fetching Pixiv illust: %w", err)
 	}
 
+	metadata.Author, metadata.Text = illust.User.Name, illust.Title
 	client := &http.Client{Timeout: 30 * time.Second}
 	var photos []any
 	for i, page := range illust.MetaPages {
@@ -100,7 +101,7 @@ func handlePixivLink(app *pixiv.AppPixivAPI, link *url.URL) ([]any, error) {
 	return photos, nil
 }
 
-func handleXLink(link *url.URL) ([]any, error) {
+func handleXLink(link *url.URL, metadata *artwork) ([]any, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	apiLink := *link
 	apiLink.Host = "api.fxtwitter.com"
@@ -117,6 +118,7 @@ func handleXLink(link *url.URL) ([]any, error) {
 		Code    int    `json:"code"`
 		Message string `json:"message"`
 		Tweet   *struct {
+			Text   string `json:"text"`
 			Author struct {
 				Name string `json:"name"`
 			} `json:"author"`
@@ -137,6 +139,7 @@ func handleXLink(link *url.URL) ([]any, error) {
 		return nil, fmt.Errorf("FxTwitter response missing author name")
 	}
 
+	metadata.Author, metadata.Text = response.Tweet.Author.Name, response.Tweet.Text
 	link.Host = "fxtwitter.com"
 	var photos []any
 	for i, image := range response.Tweet.Media.Photos {
@@ -188,14 +191,14 @@ func supportedLink(link *url.URL) bool {
 	return false
 }
 
-func fetchArtPhotos(app *pixiv.AppPixivAPI, link *url.URL) ([]any, error) {
+func fetchArtPhotos(app *pixiv.AppPixivAPI, link *url.URL, metadata *artwork) ([]any, error) {
 	var photos []any
 	var err error
 	switch link.Host {
 	case "www.pixiv.net", "pixiv.net":
-		photos, err = handlePixivLink(app, link)
+		photos, err = handlePixivLink(app, link, metadata)
 	default:
-		photos, err = handleXLink(link)
+		photos, err = handleXLink(link, metadata)
 	}
 	if err != nil {
 		return nil, err
@@ -209,7 +212,7 @@ func processLink(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, message *tgbotapi
 	}
 	stop := showProcessing(bot, message.Chat.ID)
 	defer stop()
-	photos, err := fetchArtPhotos(app, link)
+	photos, err := fetchArtPhotos(app, link, &artwork{})
 	if err != nil {
 		return err
 	}
@@ -282,6 +285,19 @@ func handleMessage(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, message *tgbota
 }
 
 func main() {
+	path := os.Getenv("SQLITE_PATH")
+	if path == "" {
+		path = "kopoka.db"
+	}
+	db, err := openArtworkDB(path)
+	if err != nil {
+		log.Panicf("opening artwork database: %v", err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			log.Printf("closing artwork database: %v", err)
+		}
+	}()
 	bot, u, err := setupTelegramBot()
 	if err != nil {
 		log.Panic(err)
@@ -296,10 +312,10 @@ func main() {
 
 	for update := range updates {
 		if update.InlineQuery != nil {
-			go handleInlineQuery(bot, update.InlineQuery)
+			go handleInlineQuery(bot, db, update.InlineQuery)
 		}
 		if update.ChosenInlineResult != nil {
-			go handleChosenInlineResult(bot, pApp, update.ChosenInlineResult, os.Getenv("INLINE_CACHE_CHAT_ID"))
+			go handleChosenInlineResult(bot, pApp, db, update.ChosenInlineResult, os.Getenv("INLINE_CACHE_CHAT_ID"))
 		}
 		if update.Message != nil {
 			go handleMessage(bot, pApp, update.Message)

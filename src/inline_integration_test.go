@@ -1,12 +1,15 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -31,9 +34,20 @@ func (r redirectTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	return r.base.RoundTrip(req)
 }
 
+func testArtworkDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := openArtworkDB(filepath.Join(t.TempDir(), "art.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
 func TestInlineTelegramFlow(t *testing.T) {
 	for _, count := range []int{1, 2} {
 		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			db := testArtworkDB(t)
 			cacheChat := "@cache"
 			if count == 2 {
 				cacheChat = "-100123"
@@ -53,6 +67,7 @@ func TestInlineTelegramFlow(t *testing.T) {
 					}
 					tweet := map[string]any{
 						"author": map[string]string{"name": "Artist"},
+						"text":   "A real post",
 						"media":  map[string]any{"photos": photos},
 					}
 					_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "tweet": tweet})
@@ -107,14 +122,18 @@ func TestInlineTelegramFlow(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			query := &tgbotapi.InlineQuery{ID: "query", Query: " https://x.com/user/status/1?tracking=1 "}
-			handleInlineQuery(bot, query)
+			query := &tgbotapi.InlineQuery{
+				From: &tgbotapi.User{ID: 1}, ID: "query", Query: " https://x.com/user/status/1?tracking=1 ",
+			}
+			handleInlineQuery(bot, db, query)
 			if strings.Join(calls, ",") != "answer" || len(answer) != 1 {
 				t.Fatalf("calls: %v, answer: %#v", calls, answer)
 			}
 			checkInlineAnswer(t, answer[0])
-			chosen := &tgbotapi.ChosenInlineResult{ResultID: inlineResultID, InlineMessageID: "inline", Query: query.Query}
-			handleChosenInlineResult(bot, nil, chosen, cacheChat)
+			chosen := &tgbotapi.ChosenInlineResult{
+				From: &tgbotapi.User{ID: 1}, ResultID: inlineResultID, InlineMessageID: "inline", Query: query.Query,
+			}
+			handleChosenInlineResult(bot, nil, db, chosen, cacheChat)
 			method := "editMessageMedia"
 			if count == 2 {
 				method = "editMessageText"
@@ -127,7 +146,90 @@ func TestInlineTelegramFlow(t *testing.T) {
 				t.Fatalf("edit: %v", edit)
 			}
 			checkInlineEdit(t, count, edit)
+
+			checkCachedInlineFlow(t, bot, db, query, &answer, &calls, edit, count, cacheChat)
 		})
+	}
+}
+
+func checkCachedInlineFlow(t *testing.T, bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.InlineQuery, answer *[]map[string]any, calls *[]string, edit url.Values, count int, cacheChat string) {
+	t.Helper()
+	// The same status under another host and user resolves to the cached artwork.
+	query.Query = "https://vxtwitter.com/another/status/1?ref=2"
+	handleInlineQuery(bot, db, query)
+	cached := (*answer)[0]
+	if cached["type"] != "photo" || cached["id"] != "x:1" || cached["photo_file_id"] != "large1" || cached["title"] != "Artist" || cached["description"] != "A real post" {
+		t.Fatalf("cached result: %#v", cached)
+	}
+	if count == 1 {
+		if cached["parse_mode"] != "HTML" || !strings.Contains(cached["caption"].(string), "Artist") {
+			t.Fatalf("cached: %#v", cached)
+		}
+	} else {
+		rich := cached["input_message_content"].(map[string]any)["rich_message"].(map[string]any)
+		var edited map[string]any
+		if err := json.Unmarshal([]byte(edit.Get("rich_message")), &edited); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(rich, edited) {
+			t.Fatalf("cached slideshow: %#v, edit: %#v", rich, edited)
+		}
+	}
+
+	before := len(*calls)
+	handleChosenInlineResult(bot, nil, db, &tgbotapi.ChosenInlineResult{
+		From: &tgbotapi.User{ID: 2}, ResultID: cached["id"].(string),
+	}, cacheChat)
+	if len(*calls) != before {
+		t.Fatalf("cached selection made requests: %v", (*calls)[before:])
+	}
+
+	query.Query = ""
+	query.From.ID = 2
+	handleInlineQuery(bot, db, query)
+	if len(*answer) != 1 || (*answer)[0]["id"] != "x:1" {
+		t.Fatalf("history: %#v", *answer)
+	}
+	query.From.ID = 3
+	handleInlineQuery(bot, db, query)
+	if len(*answer) != 0 {
+		t.Fatalf("other user's history: %#v", *answer)
+	}
+
+	// Reopening the on-disk database retains artwork and histories.
+	path := filepath.Join(t.TempDir(), "reopen.db")
+	disk, err := openArtworkDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := findArtwork(db, "x:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := saveSelection(disk, 1, *a); err != nil {
+		t.Fatal(err)
+	}
+	second := *a
+	second.ID = "pixiv:2"
+	second.Text = "another"
+	if err := saveSelection(disk, 1, second); err != nil {
+		t.Fatal(err)
+	}
+	if err := selectArtwork(disk, 1, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := disk.Close(); err != nil {
+		t.Fatal(err)
+	}
+	disk, err = openArtworkDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = disk.Close() }()
+	query.From.ID = 1
+	handleInlineQuery(bot, disk, query)
+	if len(*answer) != 2 || (*answer)[0]["id"] != "x:1" || (*answer)[1]["id"] != "pixiv:2" {
+		t.Fatalf("reopened history: %#v", *answer)
 	}
 }
 
@@ -164,9 +266,53 @@ func checkInlineEdit(t *testing.T, count int, edit url.Values) {
 	}
 }
 
+func TestInlineHistoryPagination(t *testing.T) {
+	db := testArtworkDB(t)
+	for i := range 51 {
+		a := artwork{ID: fmt.Sprintf("x:%d", i), Author: "Artist", Photos: []string{"photo"}}
+		if err := saveSelection(db, 1, a); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var results []map[string]any
+	var next string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/getMe") {
+			_, _ = w.Write([]byte(`{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`))
+			return
+		}
+		_ = r.ParseForm()
+		if err := json.Unmarshal([]byte(r.FormValue("results")), &results); err != nil {
+			t.Error(err)
+		}
+		next = r.FormValue("next_offset")
+		if r.FormValue("is_personal") != "true" {
+			t.Error("history response is not personal")
+		}
+		_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+	}))
+	defer server.Close()
+	bot, err := tgbotapi.NewBotAPIWithAPIEndpoint("token", server.URL+"/bot%s/%s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := &tgbotapi.InlineQuery{ID: "id", From: &tgbotapi.User{ID: 1}}
+	handleInlineQuery(bot, db, query)
+	if len(results) != 50 || next != "50" {
+		t.Fatalf("first page: %d results, next %q", len(results), next)
+	}
+	query.Offset = next
+	handleInlineQuery(bot, db, query)
+	if len(results) != 1 || results[0]["id"] != "x:0" || next != "" {
+		t.Fatalf("last page: %#v, next %q", results, next)
+	}
+}
+
 func TestInlineEmptyAnswers(t *testing.T) {
 	for _, query := range []string{"", "not a URL", "https://example.com/a", "https://pixiv.net/not-art", "https://pixiv.net/artworks/not-a-number"} {
 		t.Run(query, func(t *testing.T) {
+			db := testArtworkDB(t)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if strings.HasSuffix(r.URL.Path, "/getMe") {
 					_, _ = w.Write([]byte(`{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`))
@@ -186,7 +332,7 @@ func TestInlineEmptyAnswers(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			handleInlineQuery(bot, &tgbotapi.InlineQuery{ID: "id", Query: query})
+			handleInlineQuery(bot, db, &tgbotapi.InlineQuery{From: &tgbotapi.User{ID: 1}, ID: "id", Query: query})
 		})
 	}
 }
@@ -194,6 +340,7 @@ func TestInlineEmptyAnswers(t *testing.T) {
 func TestInlineChosenFailures(t *testing.T) {
 	for _, query := range []string{"invalid", "https://x.com/user/status/1"} {
 		t.Run(query, func(t *testing.T) {
+			db := testArtworkDB(t)
 			var edits int
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
@@ -222,15 +369,19 @@ func TestInlineChosenFailures(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			chosen := &tgbotapi.ChosenInlineResult{ResultID: inlineResultID, InlineMessageID: "inline", Query: query}
-			handleChosenInlineResult(bot, nil, chosen, "@cache")
+			chosen := &tgbotapi.ChosenInlineResult{
+				From: &tgbotapi.User{ID: 1}, ResultID: inlineResultID, InlineMessageID: "inline", Query: query,
+			}
+			handleChosenInlineResult(bot, nil, db, chosen, "@cache")
 			if edits != 1 {
 				t.Fatalf("edits: %d", edits)
 			}
 
 			chosen.ResultID = "other"
-			handleChosenInlineResult(bot, nil, chosen, "@cache")
-			handleChosenInlineResult(bot, nil, &tgbotapi.ChosenInlineResult{ResultID: inlineResultID, Query: query}, "@cache")
+			handleChosenInlineResult(bot, nil, db, chosen, "@cache")
+			handleChosenInlineResult(bot, nil, db, &tgbotapi.ChosenInlineResult{
+				From: &tgbotapi.User{ID: 1}, ResultID: inlineResultID, Query: query,
+			}, "@cache")
 			if edits != 1 {
 				t.Fatalf("unexpected edits: %d", edits)
 			}
@@ -241,6 +392,7 @@ func TestInlineChosenFailures(t *testing.T) {
 func TestInlineRetryTelegram(t *testing.T) {
 	for _, failUpload := range []bool{false, true} {
 		t.Run(fmt.Sprintf("failUpload=%v", failUpload), func(t *testing.T) {
+			db := testArtworkDB(t)
 			var server *httptest.Server
 			var sends, edits, failures int
 			limited := make(chan struct{})
@@ -294,16 +446,19 @@ func TestInlineRetryTelegram(t *testing.T) {
 			}
 			done := make(chan struct{})
 			go func() {
-				chosen := &tgbotapi.ChosenInlineResult{
+				chosen := &tgbotapi.ChosenInlineResult{From: &tgbotapi.User{ID: 1},
 					ResultID: inlineResultID, InlineMessageID: "inline", Query: "https://x.com/user/status/1",
 				}
-				handleChosenInlineResult(bot, nil, chosen, "@cache")
+				handleChosenInlineResult(bot, nil, db, chosen, "@cache")
 				close(done)
 			}()
 			if !failUpload {
 				<-limited
 				answered := make(chan struct{})
-				go func() { handleInlineQuery(bot, &tgbotapi.InlineQuery{ID: "other"}); close(answered) }()
+				go func() {
+					handleInlineQuery(bot, db, &tgbotapi.InlineQuery{From: &tgbotapi.User{ID: 1}, ID: "other"})
+					close(answered)
+				}()
 				select {
 				case <-answered:
 				case <-time.After(500 * time.Millisecond):

@@ -22,7 +22,7 @@
           pname = "kopoka";
           version = "0.1.0";
           src = ./.;
-          vendorHash = "sha256-7RmfrDdJbluHTu8K+mPSglHDH3dUEV4NKmHp/3v6EJM=";
+          vendorHash = "sha256-CnUwcEd6Lb6FMZDt5TA/4TKkWvMcX1buD+28iBAz6KA=";
           subPackages = [ "src" ];
           ldflags = [
             "-s"

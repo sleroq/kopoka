@@ -57,7 +57,7 @@ func TestHandleXLink(t *testing.T) {
 			})
 			t.Cleanup(func() { http.DefaultTransport = original })
 			link, _ := url.Parse("https://x.com/user/status/123")
-			photos, err := handleXLink(link)
+			photos, err := handleXLink(link, &artwork{})
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("error = %v, want error %v", err, tt.wantErr)
 			}
@@ -86,7 +86,7 @@ func TestXPostLiveMerge(t *testing.T) {
 		t.Skip("live X API regression; set KOPOKA_LIVE_TESTS=1 to run")
 	}
 	link, _ := url.Parse("https://x.com/Cookiaria/status/2120987799931265207")
-	photos, err := handleXLink(link)
+	photos, err := handleXLink(link, &artwork{})
 	if err != nil {
 		t.Fatal(err)
 	}

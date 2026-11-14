@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -40,15 +41,73 @@ func inlineLink(text string) *url.URL {
 	return link
 }
 
-func handleInlineQuery(bot *tgbotapi.BotAPI, query *tgbotapi.InlineQuery) {
-	log.Print("received inline query")
+func cachedInlineResult(a artwork) map[string]any {
+	result := map[string]any{
+		"type": "photo", "id": a.ID, "photo_file_id": a.Photos[0],
+		"title": a.Author, "description": a.Text,
+	}
+	if len(a.Photos) == 1 {
+		result["caption"] = a.Caption
+		result["parse_mode"] = "HTML"
+	} else {
+		result["input_message_content"] = map[string]any{"rich_message": slideshow(a)}
+	}
+	return result
+}
+
+func slideshow(a artwork) map[string]any {
+	var markup strings.Builder
+	markup.WriteString("<tg-slideshow>")
+	media := make([]any, 0, len(a.Photos))
+	for i, id := range a.Photos {
+		key := strconv.Itoa(i)
+		fmt.Fprintf(&markup, `<img src="tg://photo?id=%s"/>`, key)
+		media = append(media, map[string]any{"id": key, "media": map[string]any{"type": "photo", "media": id}})
+	}
+	fmt.Fprintf(&markup, "<figcaption>%s</figcaption></tg-slideshow>", a.Caption)
+	return map[string]any{"html": markup.String(), "media": media}
+}
+
+func inlineHistory(db *sql.DB, query *tgbotapi.InlineQuery) ([]any, string) {
+	offset, err := strconv.Atoi(query.Offset)
+	if err != nil || offset < 0 {
+		offset = 0
+	}
+	history, err := artworkHistory(db, query.From.ID, offset)
+	if err != nil {
+		log.Printf("loading inline history: %v", err)
+	}
+	nextOffset := ""
+	if len(history) > 50 {
+		history = history[:50]
+		nextOffset = strconv.Itoa(offset + 50)
+	}
 	results := []any{}
-	if inlineLink(query.Query) != nil {
-		results = append(results, map[string]any{
-			"type": "article", "id": inlineResultID, "title": "Artwork",
-			"input_message_content": map[string]any{"message_text": "Loading artwork…", "disable_web_page_preview": true},
-			"reply_markup":          map[string]any{"inline_keyboard": []any{[]any{map[string]any{"text": "Please wait…", "disabled": map[string]any{}}}}},
-		})
+	for _, a := range history {
+		results = append(results, cachedInlineResult(a))
+	}
+	return results, nextOffset
+}
+
+func handleInlineQuery(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.InlineQuery) {
+	results := []any{}
+	nextOffset := ""
+	if strings.TrimSpace(query.Query) == "" {
+		results, nextOffset = inlineHistory(db, query)
+	} else if link := inlineLink(query.Query); link != nil {
+		a, err := findArtwork(db, artworkID(link))
+		if err != nil {
+			log.Printf("loading cached artwork: %v", err)
+		}
+		if a != nil {
+			results = append(results, cachedInlineResult(*a))
+		} else {
+			results = append(results, map[string]any{
+				"type": "article", "id": inlineResultID, "title": "Artwork",
+				"input_message_content": map[string]any{"message_text": "Loading artwork…", "disable_web_page_preview": true},
+				"reply_markup":          map[string]any{"inline_keyboard": []any{[]any{map[string]any{"text": "Please wait…", "disabled": map[string]any{}}}}},
+			})
+		}
 	}
 	encoded, err := json.Marshal(results)
 	if err != nil {
@@ -57,19 +116,25 @@ func handleInlineQuery(bot *tgbotapi.BotAPI, query *tgbotapi.InlineQuery) {
 	}
 	params := tgbotapi.Params{
 		"inline_query_id": query.ID, "results": string(encoded), "cache_time": "0",
+		"is_personal": "true", "next_offset": nextOffset,
 	}
 	if _, err := bot.MakeRequest("answerInlineQuery", params); err != nil {
 		log.Printf("answering inline query: %v", err)
 	}
 }
 
-func handleChosenInlineResult(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, chosen *tgbotapi.ChosenInlineResult, cacheChat string) {
-	log.Print("received chosen inline result")
-	if chosen.ResultID != inlineResultID || chosen.InlineMessageID == "" {
-		log.Print("invalid chosen inline result or missing inline message ID")
+func handleChosenInlineResult(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, cacheChat string) {
+	if chosen.ResultID != inlineResultID {
+		if err := selectArtwork(db, chosen.From.ID, chosen.ResultID); err != nil {
+			log.Printf("recording inline selection: %v", err)
+		}
 		return
 	}
-	if err := editInlineArtwork(bot, app, chosen, cacheChat); err != nil {
+	if chosen.InlineMessageID == "" {
+		log.Print("missing inline message ID")
+		return
+	}
+	if err := editInlineArtwork(bot, app, db, chosen, cacheChat); err != nil {
 		log.Printf("processing chosen inline result: %v", err)
 		params := tgbotapi.Params{
 			"inline_message_id": chosen.InlineMessageID, "text": "Could not load artwork. Please try again.",
@@ -83,13 +148,14 @@ func handleChosenInlineResult(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, chos
 	}
 }
 
-func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, chosen *tgbotapi.ChosenInlineResult, cacheChat string) error {
+func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, cacheChat string) error {
 	link := inlineLink(chosen.Query)
 	if link == nil {
 		return fmt.Errorf("invalid artwork URL")
 	}
 
-	photos, err := fetchArtPhotos(app, link)
+	a := artwork{ID: artworkID(link), URL: strings.TrimSpace(chosen.Query)}
+	photos, err := fetchArtPhotos(app, link, &a)
 	if err != nil {
 		return err
 	}
@@ -100,48 +166,39 @@ func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, chosen *tgb
 		return fmt.Errorf("inline slideshow exceeds 50 photos: %d", len(photos))
 	}
 
-	ids := make([]string, 0, len(photos))
 	for _, item := range photos {
 		id, err := cacheInlinePhoto(bot, cacheChat, item.(tgbotapi.InputMediaPhoto))
 		if err != nil {
 			return err
 		}
-		ids = append(ids, id)
+		a.Photos = append(a.Photos, id)
 	}
 
 	first := photos[0].(tgbotapi.InputMediaPhoto)
+	a.Caption = first.Caption
 	params := tgbotapi.Params{"inline_message_id": chosen.InlineMessageID, "reply_markup": `{"inline_keyboard":[]}`}
 	method := "editMessageMedia"
-	var payload any
-	if len(ids) == 1 {
-		payload = map[string]any{"type": "photo", "media": ids[0], "caption": first.Caption, "parse_mode": first.ParseMode}
-	} else {
+	var payload any = map[string]any{"type": "photo", "media": a.Photos[0], "caption": a.Caption, "parse_mode": first.ParseMode}
+	if len(a.Photos) > 1 {
 		method = "editMessageText"
-		var markup strings.Builder
-		markup.WriteString("<tg-slideshow>")
-		media := make([]any, 0, len(ids))
-		for i, id := range ids {
-			key := strconv.Itoa(i)
-			fmt.Fprintf(&markup, `<img src="tg://photo?id=%s"/>`, key)
-			media = append(media, map[string]any{"id": key, "media": map[string]any{"type": "photo", "media": id}})
-		}
-		fmt.Fprintf(&markup, "<figcaption>%s</figcaption></tg-slideshow>", first.Caption)
-		payload = map[string]any{"html": markup.String(), "media": media}
+		payload = slideshow(a)
 	}
 
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("encoding inline artwork: %w", err)
 	}
-	if len(ids) == 1 {
+	if len(a.Photos) == 1 {
 		params["media"] = string(encoded)
 	} else {
 		params["rich_message"] = string(encoded)
 	}
-	if _, err := retryTelegram(func() (*tgbotapi.APIResponse, error) {
-		return bot.MakeRequest(method, params)
-	}); err != nil {
+	if _, err := retryTelegram(func() (*tgbotapi.APIResponse, error) { return bot.MakeRequest(method, params) }); err != nil {
 		return fmt.Errorf("editing inline artwork: %w", err)
+	}
+
+	if err := saveSelection(db, chosen.From.ID, a); err != nil {
+		log.Printf("saving inline artwork: %v", err)
 	}
 	return nil
 }
