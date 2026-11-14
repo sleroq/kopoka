@@ -642,7 +642,7 @@ func historyPreferenceServer(t *testing.T, answers *[]map[string]any, reply, mar
 		case r.URL.Path == "/image":
 			_, _ = w.Write([]byte("image"))
 		case strings.HasSuffix(r.URL.Path, "/getMe"):
-			_, _ = w.Write([]byte(`{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot","username":"kopoka_bot"}}`))
+			_, _ = w.Write([]byte(`{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot","username":"runtime_test_bot"}}`))
 		case strings.HasSuffix(r.URL.Path, "/sendMessage"), strings.HasSuffix(r.URL.Path, "/editMessageText"):
 			_ = r.ParseForm()
 			*reply = r.FormValue("text")
@@ -735,7 +735,7 @@ func TestHistoryPreferenceTelegramFlow(t *testing.T) {
 	selectCached(2, "x:1")
 	checkHistory(1, "x:1")
 
-	command("/historyoff@kopoka_bot")
+	command("/historyoff@runtime_test_bot")
 	if reply != historyOffText || !strings.Contains(markup, "Delete my history") || !strings.Contains(markup, "history:delete:1") {
 		t.Fatalf("reply: %q markup: %s", reply, markup)
 	}
@@ -817,6 +817,26 @@ func TestHistoryPreferenceTelegramFlow(t *testing.T) {
 	checkHistory(1, "x:4", "x:1")
 
 	command("/settings")
+	if !strings.Contains(markup, "Configure history") || !strings.Contains(markup, "Instant inline query") || strings.Contains(markup, "History order") {
+		t.Fatalf("main settings: %s", markup)
+	}
+	callback(2, "settings:history-menu:1")
+	if callbackAnswer == "" || !strings.Contains(markup, "Configure history") {
+		t.Fatalf("unauthorized navigation: %q %s", callbackAnswer, markup)
+	}
+	callback(1, "settings:history-menu:1")
+	var keyboard tgbotapi.InlineKeyboardMarkup
+	if err := json.Unmarshal([]byte(markup), &keyboard); err != nil {
+		t.Fatal(err)
+	}
+	if callbackAnswer != "" || len(keyboard.InlineKeyboard) != 4 || keyboard.InlineKeyboard[2][0].Text != "Disable history" || keyboard.InlineKeyboard[2][0].URL == nil || *keyboard.InlineKeyboard[2][0].URL != "https://t.me/runtime_test_bot?text=%2Fhistoryoff" {
+		t.Fatalf("history submenu: %q %s", callbackAnswer, markup)
+	}
+	callback(1, "settings:back:1")
+	if callbackAnswer != "" || !strings.Contains(markup, "Configure history") || strings.Contains(markup, "History order") {
+		t.Fatalf("back to main: %q %s", callbackAnswer, markup)
+	}
+	callback(1, "settings:history-menu:1")
 	if !strings.Contains(markup, "History order: Recent activity") {
 		t.Fatalf("default order: %s", markup)
 	}
@@ -852,6 +872,9 @@ func TestHistoryPreferenceTelegramFlow(t *testing.T) {
 	}
 	checkHistory(1, "x:5", "x:4", "x:1")
 	callback(1, "settings:chat:1")
+	if callbackAnswer != "" || !strings.Contains(markup, "Show chat links in search history: ✗") || !strings.Contains(markup, "Back") {
+		t.Fatalf("chat toggle: %q %s", callbackAnswer, markup)
+	}
 	checkHistory(1, "x:4", "x:1")
 	selectCached(1, "x:5")
 	checkHistory(1, "x:5", "x:4", "x:1")
@@ -863,6 +886,7 @@ func TestHistoryPreferenceTelegramFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	command("/settings")
+	callback(1, "settings:history-menu:1")
 	if !strings.Contains(markup, "History order: First saved") {
 		t.Fatalf("persisted order: %s", markup)
 	}
@@ -875,6 +899,23 @@ func TestHistoryPreferenceTelegramFlow(t *testing.T) {
 	checkHistory(1, "x:4", "x:5", "x:1")
 	selectCached(1, "x:1")
 	checkHistory(1, "x:1", "x:4", "x:5")
+
+	command("/historyoff")
+	command("/settings")
+	callback(1, "settings:history-menu:1")
+	if !strings.Contains(markup, "Enable history") || strings.Contains(markup, "Disable history") {
+		t.Fatalf("disabled history settings: %s", markup)
+	}
+	callback(2, "settings:enable-history:1")
+	if callbackAnswer == "" || !strings.Contains(markup, "Enable history") {
+		t.Fatalf("unauthorized enable: %q %s", callbackAnswer, markup)
+	}
+	callback(1, "settings:enable-history:1")
+	if callbackAnswer != "" || !strings.Contains(markup, "Disable history") || !strings.Contains(markup, "Back") {
+		t.Fatalf("enabled history: %q %s", callbackAnswer, markup)
+	}
+	selectCached(1, "x:4")
+	checkHistory(1, "x:4", "x:1", "x:5")
 }
 
 func TestXVideoChatAndInline(t *testing.T) {

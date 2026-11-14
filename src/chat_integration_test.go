@@ -228,7 +228,8 @@ func TestChatHistorySettingsFlow(t *testing.T) {
 	chat("https://x.com/u/status/invalid")
 	check("x:1", "x:99")
 	command("/settings")
-	if reply != "Settings" || !strings.Contains(markup, "Show chat links in search history: ✓") {
+	toggle(1, "history-menu")
+	if reply != "Settings\n\nHistory" || !strings.Contains(markup, "Show chat links in search history: ✓") {
 		t.Fatalf("settings: %q %s", reply, markup)
 	}
 	toggle(2, "chat")
@@ -244,7 +245,7 @@ func TestChatHistorySettingsFlow(t *testing.T) {
 	handleChosenInlineResult(bot, nil, db, chosen, "", queue)
 	chat("https://x.com/u/status/1")
 	check("x:1", "x:99")
-	toggle(1, "history")
+	command("/historyoff")
 	chat("https://x.com/u/status/5")
 	check("x:1", "x:99")
 	if err := db.Close(); err != nil {
@@ -255,12 +256,13 @@ func TestChatHistorySettingsFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	command("/settings")
-	if reply != "Settings" || !strings.Contains(markup, "History: Off") || !strings.Contains(markup, "Show chat links in search history: ✗") {
+	toggle(1, "history-menu")
+	if reply != "Settings\n\nHistory" || !strings.Contains(markup, "Enable history") || !strings.Contains(markup, "Show chat links in search history: ✗") {
 		t.Fatalf("settings: %q %s", reply, markup)
 	}
 	toggle(1, "chat")
 	check("x:1", "x:2", "x:99")
-	toggle(1, "history")
+	toggle(1, "enable-history")
 	chat("https://x.com/u/status/5")
 	check("x:5", "x:1", "x:2", "x:99")
 	toggle(1, "order")
@@ -284,7 +286,7 @@ func chatHistoryServer(t *testing.T, answers *[]map[string]any, reply, markup, c
 			_, _ = w.Write([]byte(response))
 		case strings.HasSuffix(r.URL.Path, "/getMe"):
 			_, _ = w.Write([]byte(`{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`))
-		case strings.HasSuffix(r.URL.Path, "/setMessageReaction"), strings.HasSuffix(r.URL.Path, "/sendChatAction"), strings.HasSuffix(r.URL.Path, "/editMessageText"):
+		case strings.HasSuffix(r.URL.Path, "/setMessageReaction"), strings.HasSuffix(r.URL.Path, "/sendChatAction"):
 			_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
 		case strings.HasSuffix(r.URL.Path, "/sendPhoto"):
 			if strings.Contains(r.FormValue("caption"), "/status/3") {
@@ -292,7 +294,7 @@ func chatHistoryServer(t *testing.T, answers *[]map[string]any, reply, markup, c
 				return
 			}
 			_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":43,"photo":[{"file_id":"small"},{"file_id":"usable"}]}}`))
-		case strings.HasSuffix(r.URL.Path, "/sendMessage"):
+		case strings.HasSuffix(r.URL.Path, "/sendMessage"), strings.HasSuffix(r.URL.Path, "/editMessageText"):
 			*reply = r.FormValue("text")
 			*markup = r.FormValue("reply_markup")
 			_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":43}}`))

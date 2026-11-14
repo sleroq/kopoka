@@ -94,7 +94,17 @@ func handleHistoryCallback(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.Cal
 	}
 }
 
-func settingsView(db *sql.DB, user int64) (string, tgbotapi.InlineKeyboardMarkup, error) {
+func settingsView(user int64) (string, tgbotapi.InlineKeyboardMarkup) {
+	button := func(text, action string) tgbotapi.InlineKeyboardButton {
+		return tgbotapi.NewInlineKeyboardButtonData(text, fmt.Sprintf("settings:%s:%d", action, user))
+	}
+	return "Settings", tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(button("Configure history", "history-menu")),
+		tgbotapi.NewInlineKeyboardRow(button("Instant inline query", "instant")),
+	)
+}
+
+func historySettingsView(db *sql.DB, user int64, username string) (string, tgbotapi.InlineKeyboardMarkup, error) {
 	var disabled, hidden, firstSaved bool
 	err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM history_opt_out WHERE user_id=?),
         EXISTS(SELECT 1 FROM history_chat_hidden WHERE user_id=?),
@@ -102,10 +112,7 @@ func settingsView(db *sql.DB, user int64) (string, tgbotapi.InlineKeyboardMarkup
 	if err != nil {
 		return "", tgbotapi.InlineKeyboardMarkup{}, err
 	}
-	history, chat := "On", "✓"
-	if disabled {
-		history = "Off"
-	}
+	chat := "✓"
 	if hidden {
 		chat = "✗"
 	}
@@ -116,13 +123,17 @@ func settingsView(db *sql.DB, user int64) (string, tgbotapi.InlineKeyboardMarkup
 	button := func(text, action string) tgbotapi.InlineKeyboardButton {
 		return tgbotapi.NewInlineKeyboardButtonData(text, fmt.Sprintf("settings:%s:%d", action, user))
 	}
+	history := tgbotapi.NewInlineKeyboardButtonURL("Disable history", "https://t.me/"+username+"?text=%2Fhistoryoff")
+	if disabled {
+		history = button("Enable history", "enable-history")
+	}
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(button("History: "+history, "history")),
 		tgbotapi.NewInlineKeyboardRow(button("History order: "+order, "order")),
 		tgbotapi.NewInlineKeyboardRow(button("Show chat links in search history: "+chat, "chat")),
-		tgbotapi.NewInlineKeyboardRow(button("Instant inline query", "instant")),
+		tgbotapi.NewInlineKeyboardRow(history),
+		tgbotapi.NewInlineKeyboardRow(button("Back", "back")),
 	)
-	return "Settings", keyboard, nil
+	return "Settings\n\nHistory", keyboard, nil
 }
 
 func instantSettingsView(db *sql.DB, user int64) (string, tgbotapi.InlineKeyboardMarkup, error) {
@@ -151,16 +162,10 @@ func instantSettingsView(db *sql.DB, user int64) (string, tgbotapi.InlineKeyboar
 }
 
 func showSettings(bot *tgbotapi.BotAPI, db *sql.DB, message *tgbotapi.Message) {
-	text, keyboard, err := settingsView(db, message.From.ID)
-	if err != nil {
-		log.Printf("loading settings: %v", err)
-		text = "Could not load your settings. Please try again."
-	}
+	text, keyboard := settingsView(message.From.ID)
 	reply := tgbotapi.NewMessage(message.Chat.ID, text)
 	reply.ReplyToMessageID = message.MessageID
-	if err == nil {
-		reply.ReplyMarkup = keyboard
-	}
+	reply.ReplyMarkup = keyboard
 	if _, err := bot.Send(reply); err != nil {
 		log.Printf("sending settings: %v", err)
 	}
@@ -189,21 +194,25 @@ func handleSettingsCallback(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.Ca
 		return
 	}
 
-	instant := false
+	view := parts[1]
 	switch parts[1] {
-	case "instant":
-		instant = true
+	case "instant", "history-menu":
 	case "instant-all", "instant-x", "instant-pixiv":
-		instant = true
+		view = "instant"
 		err = toggleInstantInline(db, user, strings.TrimPrefix(parts[1], "instant-"))
 	case "back":
+	case "enable-history":
+		view = "history-menu"
+		err = setHistoryEnabled(db, user, true)
 	case "history":
+		view = "history-menu"
 		var disabled bool
 		err = db.QueryRow(`SELECT EXISTS(SELECT 1 FROM history_opt_out WHERE user_id=?)`, user).Scan(&disabled)
 		if err == nil {
 			err = setHistoryEnabled(db, user, disabled)
 		}
 	case "order":
+		view = "history-menu"
 		var firstSaved bool
 		err = db.QueryRow(`SELECT EXISTS(SELECT 1 FROM history_first_saved WHERE user_id=?)`, user).Scan(&firstSaved)
 		if err == nil {
@@ -214,6 +223,7 @@ func handleSettingsCallback(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.Ca
 			}
 		}
 	case "chat":
+		view = "history-menu"
 		var hidden bool
 		err = db.QueryRow(`SELECT EXISTS(SELECT 1 FROM history_chat_hidden WHERE user_id=?)`, user).Scan(&hidden)
 		if err == nil {
@@ -235,10 +245,13 @@ func handleSettingsCallback(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.Ca
 
 	var text string
 	var keyboard tgbotapi.InlineKeyboardMarkup
-	if instant {
+	switch view {
+	case "instant":
 		text, keyboard, err = instantSettingsView(db, user)
-	} else {
-		text, keyboard, err = settingsView(db, user)
+	case "history-menu":
+		text, keyboard, err = historySettingsView(db, user, bot.Self.UserName)
+	default:
+		text, keyboard = settingsView(user)
 	}
 	if err != nil {
 		log.Printf("loading settings: %v", err)

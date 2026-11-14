@@ -223,7 +223,7 @@ func TestInstantInlineSettingsFlow(t *testing.T) {
 	s.expectThumbnail(1, "https://x.com/u/status/1", false)
 	s.expectThumbnail(1, "https://pixiv.net/artworks/2", false)
 	s.tap("Back", 1)
-	if view := api.snapshot(); view.text != "Settings" || !strings.Contains(view.markup, "History:") {
+	if view := api.snapshot(); view.text != "Settings" || !strings.Contains(view.markup, "Configure history") {
 		t.Fatalf("settings back: %#v", view)
 	}
 	if _, err := db.Exec(`DROP TABLE instant_inline_settings`); err != nil {
