@@ -238,7 +238,7 @@ func checkInlineAnswer(t *testing.T, result map[string]any) {
 	content := result["input_message_content"].(map[string]any)
 	keyboard := result["reply_markup"].(map[string]any)["inline_keyboard"].([]any)
 	button := keyboard[0].([]any)[0].(map[string]any)
-	if result["type"] != "article" || result["id"] != inlineResultID || content["message_text"] != "Loading artwork…" || content["disable_web_page_preview"] != true || button["text"] != "Please wait…" || button["disabled"] == nil {
+	if result["type"] != "article" || result["id"] != inlineResultID || result["thumbnail_url"] != "https://d.fxtwitter.com/user/status/1" || content["message_text"] != "Loading artwork…" || content["disable_web_page_preview"] != true || button["text"] != "Please wait…" || button["disabled"] == nil {
 		t.Fatalf("answer: %#v", result)
 	}
 }
@@ -316,6 +316,34 @@ func TestInlineHistoryPagination(t *testing.T) {
 	if len(results) != 1 || results[0]["id"] != "x:0" || next != "" {
 		t.Fatalf("last page: %#v, next %q", results, next)
 	}
+}
+
+func TestInlinePixivThumbnail(t *testing.T) {
+	db := testArtworkDB(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/getMe") {
+			_, _ = w.Write([]byte(`{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`))
+			return
+		}
+		if !strings.HasSuffix(r.URL.Path, "/answerInlineQuery") {
+			t.Errorf("unexpected request: %s", r.URL.Path)
+		}
+		_ = r.ParseForm()
+		var results []map[string]any
+		if err := json.Unmarshal([]byte(r.FormValue("results")), &results); err != nil {
+			t.Fatal(err)
+		}
+		if len(results) != 1 || results[0]["thumbnail_url"] != "https://pixiv.cat/82775556.jpg" {
+			t.Errorf("results: %#v", results)
+		}
+		_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+	}))
+	defer server.Close()
+	bot, err := tgbotapi.NewBotAPIWithAPIEndpoint("token", server.URL+"/bot%s/%s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handleInlineQuery(bot, db, &tgbotapi.InlineQuery{ID: "query", Query: "https://www.pixiv.net/artworks/82775556?ref=1"})
 }
 
 func TestInlineEmptyAnswers(t *testing.T) {

@@ -41,6 +41,13 @@ func inlineLink(text string) *url.URL {
 	return link
 }
 
+func inlineThumbnail(link *url.URL) string {
+	if link.Host == "pixiv.net" || link.Host == "www.pixiv.net" {
+		return "https://pixiv.cat/" + strings.TrimPrefix(link.Path, "/artworks/") + ".jpg"
+	}
+	return "https://d.fxtwitter.com" + link.Path
+}
+
 func cachedInlineResult(a artwork) map[string]any {
 	result := map[string]any{
 		"type": mediaType(a, 0), "id": a.ID, mediaType(a, 0) + "_file_id": a.Photos[0],
@@ -116,6 +123,7 @@ func handleInlineQuery(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.InlineQ
 		} else {
 			results = append(results, map[string]any{
 				"type": "article", "id": inlineResultID, "title": "Artwork",
+				"thumbnail_url":         inlineThumbnail(link),
 				"input_message_content": map[string]any{"message_text": "Loading artwork…", "disable_web_page_preview": true},
 				"reply_markup":          map[string]any{"inline_keyboard": []any{[]any{map[string]any{"text": "Please wait…", "disabled": map[string]any{}}}}},
 			})
