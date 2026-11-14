@@ -284,6 +284,16 @@ func messageLinks(message *tgbotapi.Message) []*url.URL {
 
 func handleMessage(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, message *tgbotapi.Message) {
 	command := message.CommandWithAt()
+	if command == "help" || command == "start" || strings.EqualFold(command, "help@"+bot.Self.UserName) || strings.EqualFold(command, "start@"+bot.Self.UserName) {
+		reply := tgbotapi.NewMessage(message.Chat.ID, "Just send me x.com / pixiv.net link with media in it. Or use me inline")
+		reply.ReplyToMessageID = message.MessageID
+		reply.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonSwitch("Open inline", "")))
+		if _, err := bot.Send(reply); err != nil {
+			log.Printf("sending help: %v", err)
+		}
+		return
+	}
 	if command == "json" || strings.EqualFold(command, "json@"+bot.Self.UserName) {
 		if err := sendChatJSON(bot, message); err != nil {
 			log.Printf("sending chat JSON: %v", err)
