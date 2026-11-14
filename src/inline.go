@@ -112,26 +112,43 @@ func inlineHistory(db *sql.DB, query *tgbotapi.InlineQuery) ([]any, string) {
 	return results, nextOffset
 }
 
+func inlineArtworkResult(db *sql.DB, user int64, link *url.URL) map[string]any {
+	a, err := findArtwork(db, artworkID(link))
+	if err != nil {
+		log.Printf("loading cached artwork: %v", err)
+	}
+	if a != nil {
+		return cachedInlineResult(*a)
+	}
+
+	result := map[string]any{
+		"type": "article", "id": inlineResultID, "title": "Artwork",
+		"input_message_content": map[string]any{"message_text": "Loading artwork…", "disable_web_page_preview": true},
+		"reply_markup":          map[string]any{"inline_keyboard": []any{[]any{map[string]any{"text": "Please wait…", "disabled": map[string]any{}}}}},
+	}
+	settings, err := loadInstantInlineSettings(db, user)
+	instant := settings.X
+	if link.Host == "pixiv.net" || link.Host == "www.pixiv.net" {
+		instant = settings.Pixiv
+	}
+	if err != nil {
+		log.Printf("loading instant inline settings: %v", err)
+	} else if !instant {
+		result["thumbnail_url"] = inlineThumbnail(link)
+	}
+	return result
+}
+
+// Inline queries must not contact media sources. Telegram may fetch optional
+// thumbnail URLs; the bot fetches artwork only after a result is selected.
 func handleInlineQuery(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.InlineQuery) {
 	results := []any{}
 	nextOffset := ""
+
 	if strings.TrimSpace(query.Query) == "" {
 		results, nextOffset = inlineHistory(db, query)
 	} else if link := inlineLink(query.Query); link != nil {
-		a, err := findArtwork(db, artworkID(link))
-		if err != nil {
-			log.Printf("loading cached artwork: %v", err)
-		}
-		if a != nil {
-			results = append(results, cachedInlineResult(*a))
-		} else {
-			results = append(results, map[string]any{
-				"type": "article", "id": inlineResultID, "title": "Artwork",
-				"thumbnail_url":         inlineThumbnail(link),
-				"input_message_content": map[string]any{"message_text": "Loading artwork…", "disable_web_page_preview": true},
-				"reply_markup":          map[string]any{"inline_keyboard": []any{[]any{map[string]any{"text": "Please wait…", "disabled": map[string]any{}}}}},
-			})
-		}
+		results = append(results, inlineArtworkResult(db, query.From.ID, link))
 	}
 	encoded, err := json.Marshal(results)
 	if err != nil {

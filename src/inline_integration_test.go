@@ -347,7 +347,9 @@ func TestInlinePixivThumbnail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handleInlineQuery(bot, db, &tgbotapi.InlineQuery{ID: "query", Query: "https://www.pixiv.net/artworks/82775556?ref=1"})
+	handleInlineQuery(bot, db, &tgbotapi.InlineQuery{
+		ID: "query", From: &tgbotapi.User{ID: 1}, Query: "https://www.pixiv.net/artworks/82775556?ref=1",
+	})
 }
 
 func TestInlineEmptyAnswers(t *testing.T) {

@@ -114,8 +114,34 @@ func settingsView(db *sql.DB, user int64) (string, tgbotapi.InlineKeyboardMarkup
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(button("History: "+history, "history")),
 		tgbotapi.NewInlineKeyboardRow(button("Show chat links in search history: "+chat, "chat")),
+		tgbotapi.NewInlineKeyboardRow(button("Instant inline query", "instant")),
 	)
 	return "Settings", keyboard, nil
+}
+
+func instantSettingsView(db *sql.DB, user int64) (string, tgbotapi.InlineKeyboardMarkup, error) {
+	settings, err := loadInstantInlineSettings(db, user)
+	if err != nil {
+		return "", tgbotapi.InlineKeyboardMarkup{}, err
+	}
+	button := func(text, action string) tgbotapi.InlineKeyboardButton {
+		return tgbotapi.NewInlineKeyboardButtonData(text, fmt.Sprintf("settings:%s:%d", action, user))
+	}
+	mark := func(enabled bool) string {
+		if enabled {
+			return "✓"
+		}
+		return "✗"
+	}
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(button("Toggle all", "instant-all")),
+		tgbotapi.NewInlineKeyboardRow(button("X: "+mark(settings.X), "instant-x")),
+		tgbotapi.NewInlineKeyboardRow(button("Pixiv: "+mark(settings.Pixiv), "instant-pixiv")),
+		tgbotapi.NewInlineKeyboardRow(button("Back", "back")),
+	)
+	text := "Settings\n\n<blockquote><b>Instant inline query</b>\n" +
+		"Skip external previews for new links to show inline results as quickly as possible.</blockquote>"
+	return text, keyboard, nil
 }
 
 func showSettings(bot *tgbotapi.BotAPI, db *sql.DB, message *tgbotapi.Message) {
@@ -157,7 +183,14 @@ func handleSettingsCallback(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.Ca
 		return
 	}
 
+	instant := false
 	switch parts[1] {
+	case "instant":
+		instant = true
+	case "instant-all", "instant-x", "instant-pixiv":
+		instant = true
+		err = toggleInstantInline(db, user, strings.TrimPrefix(parts[1], "instant-"))
+	case "back":
 	case "history":
 		var disabled bool
 		err = db.QueryRow(`SELECT EXISTS(SELECT 1 FROM history_opt_out WHERE user_id=?)`, user).Scan(&disabled)
@@ -184,7 +217,13 @@ func handleSettingsCallback(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.Ca
 		return
 	}
 
-	text, keyboard, err := settingsView(db, user)
+	var text string
+	var keyboard tgbotapi.InlineKeyboardMarkup
+	if instant {
+		text, keyboard, err = instantSettingsView(db, user)
+	} else {
+		text, keyboard, err = settingsView(db, user)
+	}
 	if err != nil {
 		log.Printf("loading settings: %v", err)
 		answer.Text = "Could not load your settings. Please try again."
@@ -192,6 +231,7 @@ func handleSettingsCallback(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.Ca
 	}
 	edit := tgbotapi.NewEditMessageText(query.Message.Chat.ID, query.Message.MessageID, text)
 	edit.ReplyMarkup = &keyboard
+	edit.ParseMode = "HTML"
 	if _, err := bot.Request(edit); err != nil {
 		log.Printf("editing settings: %v", err)
 		answer.Text = "Could not update the message. Please try again."

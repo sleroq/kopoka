@@ -36,7 +36,8 @@ func openArtworkDB(path string) (*sql.DB, error) {
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS artwork (id TEXT PRIMARY KEY, url TEXT NOT NULL, author TEXT NOT NULL, text TEXT NOT NULL, caption TEXT NOT NULL, photos TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS history (sequence INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, artwork_id TEXT NOT NULL, UNIQUE(user_id, artwork_id));
  CREATE TABLE IF NOT EXISTS history_opt_out (user_id INTEGER PRIMARY KEY);
- CREATE TABLE IF NOT EXISTS history_chat_hidden (user_id INTEGER PRIMARY KEY);`)
+ CREATE TABLE IF NOT EXISTS history_chat_hidden (user_id INTEGER PRIMARY KEY);
+ CREATE TABLE IF NOT EXISTS instant_inline_settings (user_id INTEGER PRIMARY KEY, x INTEGER NOT NULL DEFAULT 0, pixiv INTEGER NOT NULL DEFAULT 0);`)
 	if err != nil {
 		_ = db.Close()
 		return nil, err
@@ -64,6 +65,39 @@ func openArtworkDB(path string) (*sql.DB, error) {
 		}
 	}
 	return db, nil
+}
+
+type instantInlineSettings struct {
+	X, Pixiv bool
+}
+
+func loadInstantInlineSettings(db *sql.DB, user int64) (instantInlineSettings, error) {
+	var settings instantInlineSettings
+	row := db.QueryRow(`SELECT x, pixiv FROM instant_inline_settings WHERE user_id=?`, user)
+	err := row.Scan(&settings.X, &settings.Pixiv)
+	if err == sql.ErrNoRows {
+		err = nil
+	}
+	return settings, err
+}
+
+func toggleInstantInline(db *sql.DB, user int64, action string) error {
+	var query string
+	switch action {
+	case "x":
+		query = `INSERT INTO instant_inline_settings(user_id, x) VALUES (?, 1)
+			ON CONFLICT(user_id) DO UPDATE SET x = NOT x`
+	case "pixiv":
+		query = `INSERT INTO instant_inline_settings(user_id, pixiv) VALUES (?, 1)
+			ON CONFLICT(user_id) DO UPDATE SET pixiv = NOT pixiv`
+	case "all":
+		query = `INSERT INTO instant_inline_settings(user_id, x, pixiv) VALUES (?, 1, 1)
+			ON CONFLICT(user_id) DO UPDATE SET x = NOT (x AND pixiv), pixiv = NOT (x AND pixiv)`
+	default:
+		return fmt.Errorf("invalid instant inline action: %s", action)
+	}
+	_, err := db.Exec(query, user)
+	return err
 }
 
 func saveSelection(db *sql.DB, user int64, a artwork) error {
