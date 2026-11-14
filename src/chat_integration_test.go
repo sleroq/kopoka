@@ -198,7 +198,7 @@ func TestChatHistorySettingsFlow(t *testing.T) {
 	chat("https://x.com/u/status/invalid")
 	check("x:1", "x:99")
 	command("/settings")
-	if reply != "Settings" || !strings.Contains(markup, "✓ Show chat links in search history") {
+	if reply != "Settings" || !strings.Contains(markup, "Show chat links in search history: ✓") {
 		t.Fatalf("settings: %q %s", reply, markup)
 	}
 	toggle(2, "chat")
@@ -224,7 +224,7 @@ func TestChatHistorySettingsFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	command("/settings")
-	if reply != "Settings" || !strings.Contains(markup, "History: Off") || !strings.Contains(markup, "✗ Show chat links in search history") {
+	if reply != "Settings" || !strings.Contains(markup, "History: Off") || !strings.Contains(markup, "Show chat links in search history: ✗") {
 		t.Fatalf("settings: %q %s", reply, markup)
 	}
 	toggle(1, "chat")

@@ -113,7 +113,7 @@ func settingsView(db *sql.DB, user int64) (string, tgbotapi.InlineKeyboardMarkup
 	}
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(button("History: "+history, "history")),
-		tgbotapi.NewInlineKeyboardRow(button(chat+" Show chat links in search history", "chat")),
+		tgbotapi.NewInlineKeyboardRow(button("Show chat links in search history: "+chat, "chat")),
 	)
 	return "Settings", keyboard, nil
 }
