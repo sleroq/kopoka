@@ -48,18 +48,55 @@ func inlineLink(text string) *url.URL {
 			return nil
 		}
 	}
+	photo := 0
+	if link.Host == "pixiv.net" || link.Host == "www.pixiv.net" {
+		photo, _ = strconv.Atoi(link.Query().Get("photo"))
+	}
 	link.RawQuery = ""
+	if photo > 0 {
+		link.RawQuery = url.Values{"photo": {strconv.Itoa(photo)}}.Encode()
+	}
 	link.Fragment = ""
 	return link
 }
 
 func inlineQueryLink(query string) *url.URL {
-	for word := range strings.FieldsSeq(query) {
-		if link := inlineLink(word); link != nil {
-			return link
+	link, _ := inlineQuerySelection(query)
+	return link
+}
+
+func inlineQuerySelection(query string) (*url.URL, bool) {
+	words := strings.Fields(query)
+	for i, word := range words {
+		link := inlineLink(word)
+		if link == nil {
+			continue
 		}
+		if link.Host == "pixiv.net" || link.Host == "www.pixiv.net" {
+			link.RawQuery = ""
+		}
+		if i+1 < len(words) && strings.Trim(words[i+1], "0123456789") == "" {
+			if n, err := strconv.Atoi(words[i+1]); err == nil && n > 0 {
+				if xLinkHosts[strings.ToLower(link.Host)] {
+					link = xPostLink(link)
+					link.Path += "/photo/" + strconv.Itoa(n)
+				} else {
+					link.RawQuery = url.Values{"photo": {strconv.Itoa(n)}}.Encode()
+				}
+				return link, true
+			}
+		}
+		return link, false
 	}
-	return nil
+	return nil, false
+}
+
+func preferredInlineLink(db *sql.DB, user int64, query string) (*url.URL, error) {
+	link, explicit := inlineQuerySelection(query)
+	if link == nil || explicit {
+		return link, nil
+	}
+	return preferredPhotoLink(db, user, link)
 }
 
 func inlinePhoto(photo previewPhoto) map[string]any {
@@ -98,9 +135,14 @@ func richArtwork(a artwork) map[string]any {
 	}
 	kind := mediaType(a, 0)
 	if kind == "animation" {
+		address := a.URL
+		if link := inlineLink(a.URL); link != nil && pixivPhotoIndex(link) > 0 {
+			link.RawQuery = ""
+			address = link.String()
+		}
 		return map[string]any{"blocks": []any{map[string]any{
 			"type": "animation", "animation": map[string]any{"type": "animation", "media": a.Photos[0]},
-			"caption": map[string]any{"text": []any{map[string]any{"type": "url", "text": a.Author, "url": a.URL}}},
+			"caption": map[string]any{"text": []any{map[string]any{"type": "url", "text": a.Author, "url": address}}},
 		}}}
 	}
 	media := []any{map[string]any{"id": "0", "media": map[string]any{"type": kind, "media": a.Photos[0]}}}
@@ -274,7 +316,7 @@ func inlineMergedResult(link *url.URL, previews *thumbnails, instant bool, bars 
 	return result
 }
 
-func inlineArtworkResults(db *sql.DB, user int64, link *url.URL, previews *thumbnails) []any {
+func inlineArtworkResults(db *sql.DB, user int64, link *url.URL, previews *thumbnails, explicit bool) []any {
 	settings, err := loadInstantInlineSettings(db, user)
 	instant := settings.X
 
@@ -284,6 +326,9 @@ func inlineArtworkResults(db *sql.DB, user int64, link *url.URL, previews *thumb
 	if err != nil {
 		instant = true
 		log.Printf("loading instant inline settings: %v", err)
+	}
+	if explicit {
+		return []any{inlineArtworkResult(db, link, previews, instant)}
 	}
 	normal := make(chan map[string]any, 1)
 	merged := make(chan map[string]any, 1)
@@ -318,12 +363,13 @@ func inlineQueryResults(db *sql.DB, query *tgbotapi.InlineQuery, previews *thumb
 		return inlineHistoryView(db, query, source, invert, previews)
 	}
 	if link := inlineQueryLink(query.Query); link != nil {
-		link, err := preferredPhotoLink(db, query.From.ID, link)
+		link, err := preferredInlineLink(db, query.From.ID, query.Query)
 		if err != nil {
 			log.Printf("loading photo preference: %v", err)
 			return []any{}, ""
 		}
-		return inlineArtworkResults(db, query.From.ID, link, previews), ""
+		_, explicit := inlineQuerySelection(query.Query)
+		return inlineArtworkResults(db, query.From.ID, link, previews, explicit), ""
 	}
 	return []any{}, ""
 }
@@ -422,7 +468,7 @@ func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB,
 		return fmt.Errorf("invalid artwork URL")
 	}
 
-	link, err := preferredPhotoLink(db, chosen.From.ID, link)
+	link, err := preferredInlineLink(db, chosen.From.ID, chosen.Query)
 	if err != nil {
 		return err
 	}

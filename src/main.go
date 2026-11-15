@@ -72,6 +72,10 @@ func handlePixivLink(app *pixiv.AppPixivAPI, link *url.URL, metadata *artwork) (
 	}
 
 	metadata.Author, metadata.Text = illust.User.Name, illust.Title
+	selected, err := selectPixivPhoto(illust, link)
+	if err != nil {
+		return nil, err
+	}
 	client := &http.Client{Timeout: 30 * time.Second}
 	if illust.Type == "ugoira" {
 		pixivRequestMu.Lock()
@@ -91,13 +95,16 @@ func handlePixivLink(app *pixiv.AppPixivAPI, link *url.URL, metadata *artwork) (
 	}
 	var photos []any
 	for i, page := range illust.MetaPages {
+		if selected > 0 && i != selected-1 {
+			continue
+		}
 		file, err := downloadPixivPhoto(client, page.Images.Large, page.Images.Original)
 		if err != nil {
 			return nil, err
 		}
 		photo := tgbotapi.NewInputMediaPhoto(file)
 
-		if i%10 == 0 {
+		if len(photos)%10 == 0 {
 			photo.Caption = pixivCaption(illust)
 			photo.ParseMode = "HTML"
 		}
@@ -209,7 +216,7 @@ func fetchArtPhotos(app *pixiv.AppPixivAPI, link *url.URL, metadata *artwork, me
 	if merge != "" {
 		return forceMergePanels(photos, merge == "bars")
 	}
-	if xPhotoIndex(link) > 0 {
+	if xPhotoIndex(link) > 0 || pixivPhotoIndex(link) > 0 {
 		return photos, nil
 	}
 	return mergeArtPhotos(photos), nil

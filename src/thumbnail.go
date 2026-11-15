@@ -272,7 +272,7 @@ func (t *thumbnails) mergedPhoto(link *url.URL, instant bool) (previewPhoto, boo
 }
 
 func (t *thumbnails) mergedPhotoVariant(link *url.URL, instant, bars bool) (previewPhoto, bool) {
-	if xPhotoIndex(link) > 0 {
+	if xPhotoIndex(link) > 0 || pixivPhotoIndex(link) > 0 {
 		return previewPhoto{}, false
 	}
 
@@ -657,10 +657,17 @@ func (t *thumbnails) pixivSource(link *url.URL) (thumbnailSource, error) {
 	if illust == nil {
 		return thumbnailSource{}, fmt.Errorf("missing Pixiv preview")
 	}
-	source := thumbnailSource{pixiv: true, count: max(1, illust.PageCount, len(illust.MetaPages))}
+	selected, err := selectPixivPhoto(illust, link)
+	if err != nil {
+		return thumbnailSource{}, err
+	}
+	source := thumbnailSource{pixiv: true, count: max(1, illust.PageCount, len(illust.MetaPages)), selected: selected}
 	if illust.Type != "ugoira" && len(illust.MetaPages) > 1 {
 		source.pixivPages = true
-		for _, page := range illust.MetaPages {
+		for i, page := range illust.MetaPages {
+			if selected > 0 && i != selected-1 {
+				continue
+			}
 			source.media = append(source.media, thumbnailMedia{URL: page.Images.Original, ThumbnailURL: page.Images.Large})
 		}
 		return source, nil

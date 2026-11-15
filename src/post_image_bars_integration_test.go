@@ -80,7 +80,7 @@ func TestPostImageBarsInlineResults(t *testing.T) {
 			}
 		}
 		link := inlineLink("https://x.com/user/status/" + tc.id + "/photo/2")
-		results := inlineArtworkResults(db, user, link, previews)
+		results := inlineArtworkResults(db, user, link, previews, false)
 		found := 0
 		for _, item := range results {
 			result := item.(map[string]any)

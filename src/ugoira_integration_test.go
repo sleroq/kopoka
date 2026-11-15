@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -142,6 +143,14 @@ func TestPixivUgoiraIntegration(t *testing.T) {
 		t.Fatal("missing animation upload or caption")
 	}
 	checkUgoiraVideo(t, file.Bytes)
+	selected := inlineQueryLink("https://www.pixiv.net/artworks/152026329 1")
+	if media, err := handlePixivLink(app, selected, &artwork{}); err != nil || len(media) != 1 {
+		t.Fatalf("selected ugoira: %v %v", media, err)
+	}
+	var unavailable unavailablePhotoError
+	if _, err := handlePixivLink(app, inlineQueryLink("https://www.pixiv.net/artworks/152026329 2"), &artwork{}); !errors.As(err, &unavailable) || unavailable.index != 2 {
+		t.Fatalf("ugoira out of range: %v", err)
+	}
 	checkPixivInlineFlow(t, server, app, &answer, &edit, &uploads)
 }
 
@@ -235,5 +244,126 @@ func checkUgoiraVideo(t *testing.T, video []byte) {
 	duration, err := strconv.ParseFloat(probe.Streams[0].Duration, 64)
 	if err != nil || duration < .718 || duration > .722 {
 		t.Fatalf("duration = %q; probe: %s", probe.Streams[0].Duration, output)
+	}
+}
+
+func pixivSelectionServer(t *testing.T, downloads *[]string) *httptest.Server {
+	t.Helper()
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/token":
+			_, _ = fmt.Fprint(w, `{"response":{"access_token":"access","refresh_token":"refresh","expires_in":3600,"user":{}}}`)
+		case "/v1/illust/detail":
+			if r.URL.Query().Get("photo") != "" {
+				t.Error("internal selection sent to Pixiv")
+			}
+			if r.URL.Query().Get("illust_id") == "124" {
+				_, _ = fmt.Fprint(w, `{"illust":{"id":124,"type":"illust","user":{"name":"artist"},`+
+					`"image_urls":{"large":"https://i.pximg.net/p0"},"meta_single_page":{"original_image_url":"https://i.pximg.net/p0"}}}`)
+				return
+			}
+			_, _ = fmt.Fprint(w, `{"illust":{"id":123,"type":"illust","title":"title","user":{"name":"artist"},"page_count":2,`+
+				`"meta_pages":[{"image_urls":{"large":"https://i.pximg.net/p0"}},{"image_urls":{"large":"https://i.pximg.net/p1"}}]}}`)
+		case "/p0", "/p1":
+			*downloads = append(*downloads, r.URL.Path)
+			_, _ = fmt.Fprint(w, "image")
+		case "/bottoken/getMe":
+			_, _ = fmt.Fprint(w, `{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`)
+		case "/bottoken/sendPhoto":
+			_, _ = fmt.Fprint(w, `{"ok":true,"result":{"message_id":1,"photo":[{"file_id":"selected"}]}}`)
+		case "/bottoken/deleteMessage", "/bottoken/editMessageMedia":
+			_, _ = fmt.Fprint(w, `{"ok":true,"result":true}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func TestPixivNumericSelection(t *testing.T) {
+	var downloads []string
+	server := pixivSelectionServer(t, &downloads)
+	base := server.Client().Transport.(*http.Transport).Clone()
+	base.TLSClientConfig.ServerName = "127.0.0.1"
+	base.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
+	}
+	oldClient, oldTransport := http.DefaultClient, http.DefaultTransport
+	http.DefaultClient, http.DefaultTransport = &http.Client{}, base
+	t.Cleanup(func() {
+		http.DefaultClient.Transport.(*pixivTransport).pixiv.CloseIdleConnections()
+		base.CloseIdleConnections()
+		http.DefaultClient, http.DefaultTransport = oldClient, oldTransport
+	})
+	t.Setenv("PIXIV_ACCESS_TOKEN", "access")
+	t.Setenv("PIXIV_REFRESH_TOKEN", "refresh")
+	t.Setenv("PIXIV_TOKEN_DEADLINE", "3600")
+	app, err := setupPixivClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bot, err := tgbotapi.NewBotAPIWithClient("token", server.URL+"/bot%s/%s", server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := testArtworkDB(t)
+	query := "https://www.pixiv.net/en/artworks/123 2"
+	link := inlineQueryLink(query)
+	if artworkID(link) != "pixiv:123:photo:2" || inlineLink(link.String()).String() != link.String() {
+		t.Fatal(link)
+	}
+	previews := testPreviews(t, db, bot)
+	results := inlineArtworkResults(db, 1, link, previews, true)
+	if len(results) != 1 {
+		t.Fatalf("selected results: %v", results)
+	}
+
+	chosen := &tgbotapi.ChosenInlineResult{
+		From: &tgbotapi.User{ID: 1}, ResultID: inlineResultID, InlineMessageID: "inline", Query: query,
+	}
+	if err := editInlineArtwork(bot, app, db, chosen, "@cache", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(downloads) != 1 || downloads[0] != "/p1" {
+		t.Fatal(downloads)
+	}
+	a, err := findArtwork(db, artworkID(link))
+	if err != nil || a == nil || len(a.Photos) != 1 || strings.Contains(a.Caption, "?photo=") {
+		t.Fatalf("artwork: %+v %v", a, err)
+	}
+	results = inlineArtworkResults(db, 1, link, previews, true)
+	if len(results) != 1 || results[0].(map[string]any)["id"] != a.ID {
+		t.Fatal(results)
+	}
+	chosen.ResultID = a.ID
+	queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})
+	handleChosenInlineResult(bot, app, db, chosen, "@cache", queue, nil)
+	if len(downloads) != 1 {
+		t.Fatal(downloads)
+	}
+
+	_, err = handlePixivLink(app, inlineQueryLink("https://www.pixiv.net/artworks/123 3"), &artwork{})
+	var unavailable unavailablePhotoError
+	if !errors.As(err, &unavailable) || unavailable.index != 3 || len(downloads) != 1 {
+		t.Fatalf("out of range: %v %v", err, downloads)
+	}
+	_, err = handlePixivLink(app, inlineQueryLink("https://www.pixiv.net/artworks/123"), &artwork{})
+	if err != nil || len(downloads) != 3 {
+		t.Fatalf("full post: %v %v", err, downloads)
+	}
+
+	single := inlineQueryLink("https://pixiv.net/artworks/124 1")
+	if media, err := handlePixivLink(app, single, &artwork{}); err != nil || len(media) != 1 {
+		t.Fatalf("single page: %v %v", media, err)
+	}
+	if _, err := handlePixivLink(app, inlineQueryLink("https://pixiv.net/artworks/124 2"), &artwork{}); !errors.As(err, &unavailable) || unavailable.index != 2 {
+		t.Fatalf("single page out of range: %v", err)
+	}
+
+	previews.app = app
+	source, err := previews.pixivSource(link)
+	if err != nil || source.selected != 2 || len(source.media) != 1 || source.media[0].ThumbnailURL != "https://i.pximg.net/p1" {
+		t.Fatalf("selected thumbnail: %+v %v", source, err)
 	}
 }

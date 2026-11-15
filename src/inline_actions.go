@@ -76,6 +76,9 @@ func artworkActionData(action string, user int64, link *url.URL) string {
 	rawID, _, _ = strings.Cut(rawID, ":")
 	number, _ := strconv.ParseUint(rawID, 10, 64)
 	data := fmt.Sprintf("art:%s:%s:%s%s", action, strconv.FormatInt(user, 36), site[:1], strconv.FormatUint(number, 36))
+	if site == "pixiv" && pixivPhotoIndex(link) > 0 {
+		data += ":" + strconv.FormatInt(int64(pixivPhotoIndex(link)), 36)
+	}
 	if site == "x" {
 		name := strings.Split(link.Path, "/")[1]
 		encoded := base64.RawURLEncoding.EncodeToString([]byte(name))
@@ -101,8 +104,16 @@ func artworkActionLink(parts []string) *url.URL {
 		return nil
 	}
 	switch {
-	case parts[3][0] == 'p' && len(parts) == 4:
-		return inlineLink(fmt.Sprintf("https://www.pixiv.net/artworks/%d", id))
+	case parts[3][0] == 'p' && (len(parts) == 4 || len(parts) == 5):
+		link := fmt.Sprintf("https://www.pixiv.net/artworks/%d", id)
+		if len(parts) == 5 {
+			n, err := strconv.ParseUint(parts[4], 36, 63)
+			if err != nil || n == 0 {
+				return nil
+			}
+			link += "?photo=" + strconv.FormatUint(n, 10)
+		}
+		return inlineLink(link)
 	case parts[3][0] == 'x' && (len(parts) == 5 || len(parts) == 6):
 		name, err := base64.RawURLEncoding.DecodeString(parts[4])
 		if err != nil {

@@ -329,6 +329,10 @@ func originalPixivFiles(app *pixiv.AppPixivAPI, link *url.URL) ([]originalSource
 	if err != nil {
 		return nil, fmt.Errorf("fetching Pixiv illust: %w", err)
 	}
+	selected, err := selectPixivPhoto(illust, link)
+	if err != nil {
+		return nil, err
+	}
 	if illust.Type == "ugoira" {
 		pixivRequestMu.Lock()
 		metadata, err := app.UgoiraMetadata(id)
@@ -349,6 +353,9 @@ func originalPixivFiles(app *pixiv.AppPixivAPI, link *url.URL) ([]originalSource
 	}
 	sources := make([]originalSource, 0, len(illust.MetaPages))
 	for i, page := range illust.MetaPages {
+		if selected > 0 && i != selected-1 {
+			continue
+		}
 		source := originalSource{
 			url: page.Images.Original, preview: page.Images.Large,
 			kind: "photo", index: i + 1,

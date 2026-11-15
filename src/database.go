@@ -26,9 +26,10 @@ func artworkID(link *url.URL) string {
 	site := "x"
 	if link.Host == "pixiv.net" || link.Host == "www.pixiv.net" {
 		site = "pixiv"
+		index = pixivPhotoIndex(link)
 	}
 	result := site + ":" + strconv.FormatUint(id, 10)
-	if site == "x" && index > 0 {
+	if index > 0 {
 		result += ":photo:" + strconv.Itoa(index)
 	}
 	return result

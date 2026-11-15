@@ -246,3 +246,51 @@ func saveSelectedPhoto(t *testing.T, db *sql.DB, bot *tgbotapi.BotAPI, message *
 	}
 	return chosen, previews
 }
+
+func TestInlineNumericPhotoSelection(t *testing.T) {
+	db := testArtworkDB(t)
+	api, bot := startPhotoLinkServer(t)
+	api.fullPost = true
+	user := &tgbotapi.User{ID: 11}
+	if err := togglePhotoLinks(db, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	previews := testPreviews(t, db, bot)
+	queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})
+	query := "look https://x.com/artist/status/123/photo/1 2 now"
+	chosen := &tgbotapi.ChosenInlineResult{From: user, ResultID: inlineResultID, InlineMessageID: "inline", Query: query}
+	handleInlineQuery(bot, db, &tgbotapi.InlineQuery{ID: "q", From: user, Query: query}, previews)
+	if !strings.Contains(api.inlineResults, `"id":"artwork"`) || strings.Contains(api.inlineResults, `artwork:merged`) {
+		t.Fatal(api.inlineResults)
+	}
+	previews.mu.Lock()
+	workCount := len(previews.postImageWork)
+	previews.mu.Unlock()
+	if workCount != 0 {
+		t.Fatalf("explicit selection started %d post-image previews", workCount)
+	}
+
+	handleChosenInlineResult(bot, nil, db, chosen, "11", queue, nil)
+	selected, err := findArtwork(db, "x:123:photo:2")
+	if err != nil || selected == nil || len(selected.Photos) != 1 {
+		t.Fatalf("selected: %+v %v", selected, err)
+	}
+	handleInlineQuery(bot, db, &tgbotapi.InlineQuery{ID: "q", From: user, Query: query}, previews)
+	if !strings.Contains(api.inlineResults, `"id":"x:123:photo:2"`) || strings.Contains(api.inlineResults, `artwork:merged`) {
+		t.Fatal(api.inlineResults)
+	}
+	chosen.ResultID = selected.ID
+	handleChosenInlineResult(bot, nil, db, chosen, "11", queue, nil)
+	chosen.ResultID, chosen.Query = inlineResultID, "https://x.com/artist/status/123 9"
+	handleChosenInlineResult(bot, nil, db, chosen, "11", queue, nil)
+	if !strings.Contains(api.edit, "photo 9 is unavailable") {
+		t.Fatal(api.edit)
+	}
+
+	handleInlineQuery(bot, db, &tgbotapi.InlineQuery{
+		ID: "q", From: &tgbotapi.User{ID: 12}, Query: "https://x.com/artist/status/123/photo/2",
+	}, previews)
+	if !strings.Contains(api.inlineResults, "Post image") {
+		t.Fatalf("photo link without explicit selection lost post-image results: %s", api.inlineResults)
+	}
+}

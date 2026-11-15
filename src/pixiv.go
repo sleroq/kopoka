@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,26 @@ import (
 	"github.com/everpcpc/pixiv"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
+
+func pixivPhotoIndex(link *url.URL) int {
+	if link.Host != "pixiv.net" && link.Host != "www.pixiv.net" {
+		return 0
+	}
+	index, _ := strconv.Atoi(link.Query().Get("photo"))
+	return index
+}
+
+func selectPixivPhoto(illust *pixiv.Illust, link *url.URL) (int, error) {
+	selected := pixivPhotoIndex(link)
+	count := len(illust.MetaPages)
+	if illust.Type == "ugoira" || count == 0 {
+		count = 1
+	}
+	if selected > count {
+		return 0, unavailablePhotoError{selected}
+	}
+	return selected, nil
+}
 
 func downloadPixivPhoto(client *http.Client, preferredURL, fallbackURL string) (tgbotapi.FileBytes, error) {
 	// Upload locally: Telegram cannot fetch Pixiv's hotlink-protected URLs.
