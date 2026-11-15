@@ -51,7 +51,7 @@ fn height(output: &Output) -> u32 {
 #[test]
 fn cli_renders_theme_palettes() {
     for (theme, background) in [
-        ("light", [247, 249, 249]),
+        ("light", [255, 255, 255]),
         ("warm", [255, 246, 245]),
         ("dark", [0, 0, 0]),
         ("dim", [22, 24, 28]),

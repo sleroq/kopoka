@@ -94,7 +94,7 @@ func testPostImageInlineFlow(t *testing.T, realRenderer string) {
 	previews := testPreviews(t, db, bot)
 	query := &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 1}, Query: "https://x.com/user/status/42/photo/2"}
 	handleInlineQuery(bot, db, query, previews)
-	if len(results) != 5 || results[1]["id"] != "post-image:light:42" || results[2]["id"] != "post-image:dark:42" || results[3]["id"] != "post-image:light-bars:42" || results[4]["id"] != "post-image:dark-bars:42" || results[3]["photo_file_id"] != nil || strings.Join(calls, ",") != "answer" {
+	if len(results) != 6 || results[5]["id"] != "post:text" || results[1]["id"] != "post-image:light:42" || results[2]["id"] != "post-image:dark:42" || results[3]["id"] != "post-image:light-bars:42" || results[4]["id"] != "post-image:dark-bars:42" || results[3]["photo_file_id"] != nil || strings.Join(calls, ",") != "answer" {
 		t.Fatalf("results %v calls %v", results, calls)
 	}
 	queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})

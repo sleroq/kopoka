@@ -9,15 +9,19 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-// The Telegram library predates rich messages, so retain their captions on updates.
+// The Telegram library predates rich messages, so retain their text on updates.
+type telegramRichBlock struct {
+	Text    json.RawMessage `json:"text"`
+	Caption struct {
+		Text json.RawMessage `json:"text"`
+	} `json:"caption"`
+	Blocks []telegramRichBlock `json:"blocks"`
+}
+
 type telegramMessage struct {
 	tgbotapi.Message
 	RichMessage struct {
-		Blocks []struct {
-			Caption struct {
-				Text json.RawMessage `json:"text"`
-			} `json:"caption"`
-		} `json:"blocks"`
+		Blocks []telegramRichBlock `json:"blocks"`
 	} `json:"rich_message"`
 }
 

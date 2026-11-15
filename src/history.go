@@ -103,6 +103,7 @@ func settingsView(user int64) (string, tgbotapi.InlineKeyboardMarkup) {
 		tgbotapi.NewInlineKeyboardRow(button("Configure history", "history-menu")),
 		tgbotapi.NewInlineKeyboardRow(button("Instant inline query", "instant")),
 		tgbotapi.NewInlineKeyboardRow(button("Specific photo links", "photo-menu")),
+		tgbotapi.NewInlineKeyboardRow(button("X post format", "x-format-menu")),
 		tgbotapi.NewInlineKeyboardRow(button("Post image themes", "theme-menu")),
 		tgbotapi.NewInlineKeyboardRow(tgbotapi.InlineKeyboardButton{Text: "Timezone", SwitchInlineQueryCurrentChat: &query}),
 	)
@@ -186,6 +187,20 @@ func photoSettingsView(db *sql.DB, user int64) (string, tgbotapi.InlineKeyboardM
 		tgbotapi.NewInlineKeyboardRow(button("Back", "back"))), err
 }
 
+func xPostFormatSettingsView(db *sql.DB, user int64) (string, tgbotapi.InlineKeyboardMarkup, error) {
+	enabled, err := xPostRichTextEnabled(db, user)
+	format := "Telegram text"
+	if enabled {
+		format = "Rich text"
+	}
+	button := func(text, action string) tgbotapi.InlineKeyboardButton {
+		return tgbotapi.NewInlineKeyboardButtonData(text, fmt.Sprintf("settings:%s:%d", action, user))
+	}
+	return "Settings\n\nX post format", tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(button(format, "x-format-toggle")),
+		tgbotapi.NewInlineKeyboardRow(button("Back", "back"))), err
+}
+
 func showSettings(bot *tgbotapi.BotAPI, db *sql.DB, message *tgbotapi.Message) {
 	text, keyboard := settingsView(message.From.ID)
 	reply := tgbotapi.NewMessage(message.Chat.ID, text)
@@ -221,7 +236,10 @@ func handleSettingsCallback(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.Ca
 
 	view := parts[1]
 	switch parts[1] {
-	case "instant", "history-menu", "photo-menu", "theme-menu":
+	case "instant", "history-menu", "photo-menu", "theme-menu", "x-format-menu":
+	case "x-format-toggle":
+		view = "x-format-menu"
+		err = toggleXPostFormat(db, user)
 	case "photo-toggle":
 		view = "photo-menu"
 		err = togglePhotoLinks(db, user)
@@ -255,6 +273,8 @@ func handleSettingsCallback(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.Ca
 		text, keyboard = themeSettingsView(user)
 	case "photo-menu":
 		text, keyboard, err = photoSettingsView(db, user)
+	case "x-format-menu":
+		text, keyboard, err = xPostFormatSettingsView(db, user)
 	case "instant":
 		text, keyboard, err = instantSettingsView(db, user)
 	case "history-menu":

@@ -79,6 +79,8 @@ type fxImage struct {
 	} `json:"formats"`
 }
 type fxRichPost struct {
+	ID       string `json:"id"`
+	URL      string `json:"url"`
 	Text     string `json:"text"`
 	Created  int64  `json:"created_timestamp"`
 	Likes    uint64 `json:"likes"`

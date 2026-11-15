@@ -51,6 +51,20 @@ func richTextArtworkLink(raw json.RawMessage) *url.URL {
 	return nil
 }
 
+func richBlockArtworkLink(block telegramRichBlock) *url.URL {
+	for _, text := range []json.RawMessage{block.Text, block.Caption.Text} {
+		if link := richTextArtworkLink(text); link != nil {
+			return link
+		}
+	}
+	for _, child := range block.Blocks {
+		if link := richBlockArtworkLink(child); link != nil {
+			return link
+		}
+	}
+	return nil
+}
+
 func inlineMessageArtwork(message *telegramMessage) *url.URL {
 	for _, part := range []*tgbotapi.Message{
 		&message.Message,
@@ -63,7 +77,7 @@ func inlineMessageArtwork(message *telegramMessage) *url.URL {
 		}
 	}
 	for _, block := range message.RichMessage.Blocks {
-		if link := richTextArtworkLink(block.Caption.Text); link != nil {
+		if link := richBlockArtworkLink(block); link != nil {
 			return link
 		}
 	}

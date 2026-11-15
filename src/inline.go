@@ -361,7 +361,11 @@ func inlineArtworkResults(db *sql.DB, user int64, link *url.URL, previews *thumb
 	if result := <-bars; result != nil {
 		results = append(results, result)
 	}
-	return append(results, postImages...)
+	results = append(results, postImages...)
+	if xLinkHosts[strings.ToLower(link.Host)] {
+		results = append(results, inlinePostTextResult(link))
+	}
+	return results
 }
 
 func inlineQueryResults(db *sql.DB, query *tgbotapi.InlineQuery, previews *thumbnails) ([]any, string) {
@@ -416,7 +420,7 @@ func handleChosenInlineResult(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *
 	if link != nil && link.Host != "pixiv.net" && link.Host != "www.pixiv.net" {
 		theme = postImageTheme(chosen.ResultID, link)
 	}
-	if theme == "" && chosen.ResultID != inlineResultID && chosen.ResultID != inlineMergedResultID && chosen.ResultID != inlineBarsResultID {
+	if theme == "" && chosen.ResultID != inlinePostTextID && chosen.ResultID != inlineResultID && chosen.ResultID != inlineMergedResultID && chosen.ResultID != inlineBarsResultID {
 		id := chosen.ResultID
 		if parent, index, ok := strings.Cut(id, ":item:"); ok {
 			if n, err := strconv.Atoi(index); err == nil && n >= 0 {
@@ -443,14 +447,24 @@ func handleChosenInlineResult(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *
 		if theme != "" {
 			return editInlinePostImage(bot, db, chosen, cacheChat, link, theme, previews)
 		}
+		if chosen.ResultID == inlinePostTextID {
+			if link == nil || !xLinkHosts[strings.ToLower(link.Host)] {
+				return fmt.Errorf("invalid X post URL")
+			}
+			return editInlinePostText(bot, db, chosen, cacheChat, link)
+		}
 		return editInlineArtwork(bot, app, db, chosen, cacheChat, previews)
 	})
+	label := "artwork"
+	if chosen.ResultID == inlinePostTextID {
+		label = "post"
+	}
 	failure := ""
 	if err != nil {
-		failure = fmt.Sprintf("Could not load artwork: %s. Please retry later.", err)
+		failure = fmt.Sprintf("Could not load %s: %s. Please retry later.", label, err)
 	} else if err := <-result; err != nil {
 		log.Printf("processing chosen inline result: %v", err)
-		failure = "Could not load artwork. Please try again."
+		failure = fmt.Sprintf("Could not load %s. Please try again.", label)
 		if _, ok := errors.AsType[unavailablePhotoError](err); ok {
 			failure = "Could not load artwork: " + err.Error() + "."
 		}

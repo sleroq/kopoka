@@ -102,9 +102,15 @@ func TestPostImageBarsInlineResults(t *testing.T) {
 	} {
 		link := inlineLink("https://x.com/user/status/" + tc.id)
 		results := inlineArtworkResults(db, tc.user, link, previews, false)
+		if len(results) == 0 || results[len(results)-1].(map[string]any)["id"] != "post:text" {
+			t.Fatalf("id=%s user=%d results=%v", tc.id, tc.user, results)
+		}
 		artwork, postImages := 0, 0
 		for _, item := range results {
 			id := item.(map[string]any)["id"].(string)
+			if id == "post:text" {
+				continue
+			}
 			if strings.HasPrefix(id, "post-image:") {
 				postImages++
 			} else {

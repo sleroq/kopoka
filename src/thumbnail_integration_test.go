@@ -272,7 +272,7 @@ func reopenCachedThumbnail(t *testing.T, s *thumbnailTestServer, bot *tgbotapi.B
 	var version int
 	row := db.QueryRow(`SELECT render_version FROM thumbnail_cache WHERE artwork_id='x:1' AND media_count=0`)
 	err := row.Scan(&version)
-	if err != nil || version != 7 {
+	if err != nil || version != thumbnailRenderVersion {
 		t.Fatalf("cached render version: %d, %v", version, err)
 	}
 	if err := toggleInstantInline(db, query.From.ID, "x"); err != nil {
@@ -343,7 +343,7 @@ func uncachedThumbnailURLs(t *testing.T, result map[string]any) (string, string)
 		t.Fatalf("inline result: %#v", result)
 	}
 	pq, tq := p.Query(), thumb.Query()
-	if pq.Get("size") != "large" || tq.Has("size") || tq.Get("url") == "" || tq.Get("v") != "7" {
+	if pq.Get("size") != "large" || tq.Has("size") || tq.Get("url") == "" || tq.Get("v") != fmt.Sprint(thumbnailRenderVersion) {
 		t.Fatalf("preview queries: %v, %v", pq, tq)
 	}
 	pq.Del("size")
@@ -1160,7 +1160,7 @@ func TestPreviewDimensionsMigration(t *testing.T) {
 	CREATE TABLE thumbnail_cache (artwork_id TEXT NOT NULL, media_count INTEGER NOT NULL, file_id TEXT NOT NULL, render_version INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (artwork_id, media_count));
 	INSERT INTO artwork VALUES ('x:1','https://x.com/user/status/1','','','','["media"]','["photo"]');
 	INSERT INTO history(user_id,artwork_id) VALUES (1,'x:1');
-	INSERT INTO thumbnail_cache VALUES ('x:1',1,'existing',7)`)
+	INSERT INTO thumbnail_cache VALUES ('x:1',1,'existing',?)`, thumbnailRenderVersion)
 	if err != nil {
 		t.Fatal(err)
 	}
