@@ -18,8 +18,11 @@ import (
 )
 
 type postImagePreviewWork struct {
-	variants map[string]*postImagePreviewVariant
-	finished time.Time
+	variants  map[string]*postImagePreviewVariant
+	prepared  chan struct{}
+	barsKnown bool
+	hasBars   bool
+	finished  time.Time
 }
 type postImagePreviewVariant struct {
 	done            chan struct{}
@@ -49,7 +52,7 @@ func (t *thumbnails) startPostImagePreview(link *url.URL, zone string) *postImag
 	if work := t.postImageWork[key]; work != nil {
 		return work
 	}
-	work := &postImagePreviewWork{variants: map[string]*postImagePreviewVariant{
+	work := &postImagePreviewWork{prepared: make(chan struct{}), variants: map[string]*postImagePreviewVariant{
 		"light": {done: make(chan struct{})}, "dark": {done: make(chan struct{})},
 		"light-bars": {done: make(chan struct{})}, "dark-bars": {done: make(chan struct{})},
 	}}
@@ -59,6 +62,9 @@ func (t *thumbnails) startPostImagePreview(link *url.URL, zone string) *postImag
 		t.workers <- struct{}{}
 		defer func() { <-t.workers }()
 		request, bars, err := preparePostImageVariants(t.client, link, zone, true)
+		work.barsKnown = err == nil
+		work.hasBars = bars.Post.Media != nil && len(bars.Post.Media.Photos) > 1
+		close(work.prepared)
 		var wg sync.WaitGroup
 		for theme, variant := range work.variants {
 			wg.Add(1)
@@ -112,6 +118,15 @@ func (variant *postImagePreviewVariant) render(link *url.URL, request renderRequ
 	var out bytes.Buffer
 	variant.err = jpeg.Encode(&out, small, &jpeg.Options{Quality: 90})
 	variant.thumbnail = out.Bytes()
+}
+
+func (work *postImagePreviewWork) postImageHasBars() bool {
+	select {
+	case <-work.prepared:
+		return !work.barsKnown || work.hasBars
+	case <-time.After(8 * time.Second):
+		return true
+	}
 }
 
 func (t *thumbnails) postImagePreview(link *url.URL, theme, zone string, instant bool) previewPhoto {

@@ -288,11 +288,17 @@ func inlineArtworkResults(db *sql.DB, user int64, link *url.URL, previews *thumb
 	go func() { bars <- inlineMergedResult(link, previews, instant, true) }()
 
 	var postImages []chan map[string]any
+	var barsAvailable chan bool
 	if xLinkHosts[strings.ToLower(link.Host)] {
 		zone, err := loadUserTimezone(db, user)
 		if err != nil {
 			log.Printf("loading post image timezone: %v", err)
 		} else {
+			if !instant {
+				work := previews.startPostImagePreview(link, zone)
+				barsAvailable = make(chan bool, 1)
+				go func() { barsAvailable <- work.postImageHasBars() }()
+			}
 			for _, theme := range []string{"light", "dark", "light-bars", "dark-bars"} {
 				result := make(chan map[string]any, 1)
 				postImages = append(postImages, result)
@@ -308,8 +314,12 @@ func inlineArtworkResults(db *sql.DB, user int64, link *url.URL, previews *thumb
 	if result := <-bars; result != nil {
 		results = append(results, result)
 	}
-	for _, result := range postImages {
-		results = append(results, <-result)
+	showBars := barsAvailable == nil || <-barsAvailable
+	for i, result := range postImages {
+		image := <-result
+		if i < 2 || showBars {
+			results = append(results, image)
+		}
 	}
 	return results
 }
