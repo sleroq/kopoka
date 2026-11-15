@@ -161,7 +161,7 @@ func TestMediaQueueChatAndInline(t *testing.T) {
 		wg.Go(func() { work(); finished <- name })
 	}
 
-	launch("batch", func() { handleMessage(bot, nil, db, queuedChat(1, 42, 1, 2, 3, 4, 5, 6), queue) })
+	launch("batch", func() { handleMessage(bot, nil, db, queuedChat(1, 42, 1, 2, 3, 4, 5, 6), queue, nil) })
 	first := make(map[string]bool)
 	for range 3 {
 		first[queueEvent(t, api.started)] = true
@@ -176,7 +176,7 @@ func TestMediaQueueChatAndInline(t *testing.T) {
 		t.Fatalf("batch rejection: %s", message)
 	}
 
-	launch("forward", func() { handleMessage(bot, nil, db, queuedChat(1, 43, 9), queue) })
+	launch("forward", func() { handleMessage(bot, nil, db, queuedChat(1, 43, 9), queue, nil) })
 	message = queueEvent(t, api.feedback)
 	if !strings.HasPrefix(message, "43:") || !strings.Contains(strings.ToLower(message), "queue") {
 		t.Fatalf("forward rejection: %s", message)
@@ -187,7 +187,7 @@ func TestMediaQueueChatAndInline(t *testing.T) {
 	launch("rejected inline", func() {
 		handleChosenInlineResult(bot, nil, db, &tgbotapi.ChosenInlineResult{
 			From: &tgbotapi.User{ID: 1}, ResultID: inlineResultID, InlineMessageID: "rejected", Query: "https://x.com/u/status/10",
-		}, "@cache", queue)
+		}, "@cache", queue, nil)
 	})
 	message = queueEvent(t, api.edits)
 	if !strings.HasPrefix(message, "rejected:") || !strings.Contains(strings.ToLower(message), "queue") || !strings.Contains(strings.ToLower(message), "retry later") {
@@ -197,12 +197,12 @@ func TestMediaQueueChatAndInline(t *testing.T) {
 		t.Fatalf("finished before releasing work: %s", got)
 	}
 
-	launch("other chat", func() { handleMessage(bot, nil, db, queuedChat(2, 44, 7), queue) })
+	launch("other chat", func() { handleMessage(bot, nil, db, queuedChat(2, 44, 7), queue, nil) })
 	waitForQueued(t, queue, 2, 1)
 	launch("other inline", func() {
 		handleChosenInlineResult(bot, nil, db, &tgbotapi.ChosenInlineResult{
 			From: &tgbotapi.User{ID: 2}, ResultID: inlineResultID, InlineMessageID: "accepted", Query: "https://x.com/u/status/8",
-		}, "@cache", queue)
+		}, "@cache", queue, nil)
 	})
 	waitForQueued(t, queue, 2, 2)
 
@@ -270,36 +270,36 @@ func TestMediaQueueRollingLimits(t *testing.T) {
 	queue := newMediaQueue(limits)
 
 	// An upstream failure still consumes a link attempt.
-	handleMessage(bot, nil, db, queuedChat(1, 1, 1), queue)
-	handleMessage(bot, nil, db, queuedChat(1, 2, 2), queue)
+	handleMessage(bot, nil, db, queuedChat(1, 1, 1), queue, nil)
+	handleMessage(bot, nil, db, queuedChat(1, 2, 2), queue, nil)
 	handleChosenInlineResult(bot, nil, db, &tgbotapi.ChosenInlineResult{
 		From: &tgbotapi.User{ID: 1}, ResultID: inlineResultID, InlineMessageID: "limited", Query: "https://x.com/u/status/3",
-	}, "@cache", queue)
+	}, "@cache", queue, nil)
 	if message := strings.ToLower(queueEvent(t, api.edits)); !strings.Contains(message, "hour") || !strings.Contains(message, "retry later") {
 		t.Fatalf("hourly rejection: %s", message)
 	}
 	// Another user has an independent budget.
-	handleMessage(bot, nil, db, queuedChat(2, 4, 4), queue)
+	handleMessage(bot, nil, db, queuedChat(2, 4, 4), queue, nil)
 
 	queue.mu.Lock()
 	for i := range queue.users[1].started {
 		queue.users[1].started[i] = time.Now().Add(-2 * time.Hour)
 	}
 	queue.mu.Unlock()
-	handleMessage(bot, nil, db, queuedChat(1, 5, 5), queue)
-	handleMessage(bot, nil, db, queuedChat(1, 6, 6), queue)
+	handleMessage(bot, nil, db, queuedChat(1, 5, 5), queue, nil)
+	handleMessage(bot, nil, db, queuedChat(1, 6, 6), queue, nil)
 	if message := strings.ToLower(queueEvent(t, api.feedback)); !strings.Contains(message, "day") && !strings.Contains(message, "daily") {
 		t.Fatalf("daily rejection: %s", message)
 	}
 	queue.mu.Lock()
 	queue.users[1].started[0] = time.Now().Add(-25 * time.Hour)
 	queue.mu.Unlock()
-	handleMessage(bot, nil, db, queuedChat(1, 7, 7), queue)
+	handleMessage(bot, nil, db, queuedChat(1, 7, 7), queue, nil)
 
 	// Cached selections do not fetch media and remain available at the limit.
 	handleChosenInlineResult(bot, nil, db, &tgbotapi.ChosenInlineResult{
 		From: &tgbotapi.User{ID: 1}, ResultID: "x:2",
-	}, "@cache", queue)
+	}, "@cache", queue, nil)
 	var inlineOrigin int
 	if err := db.QueryRow(`SELECT inline_origin FROM history WHERE user_id = 1 AND artwork_id = 'x:2'`).Scan(&inlineOrigin); err != nil || inlineOrigin != 1 {
 		t.Fatalf("cached selection: inline_origin = %d, %v", inlineOrigin, err)
@@ -320,7 +320,7 @@ func TestMediaQueueReservesRateCapacity(t *testing.T) {
 	var wg sync.WaitGroup
 	defer func() { api.release(); wg.Wait() }()
 	launch := func(name string, id int) {
-		wg.Go(func() { handleMessage(bot, nil, db, queuedChat(1, id, id), queue); finished <- name })
+		wg.Go(func() { handleMessage(bot, nil, db, queuedChat(1, id, id), queue, nil); finished <- name })
 	}
 
 	launch("first", 1)

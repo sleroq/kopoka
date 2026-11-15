@@ -156,7 +156,7 @@ func checkPixivInlineFlow(t *testing.T, server *httptest.Server, app *pixiv.AppP
 	db := testArtworkDB(t)
 	message := &tgbotapi.Message{MessageID: 42, Chat: &tgbotapi.Chat{ID: 123}, From: &tgbotapi.User{ID: 2}}
 	link := inlineLink("https://www.pixiv.net/artworks/152026329")
-	if err := processLink(bot, app, db, message, link); err != nil {
+	if err := processLink(bot, app, db, message, link, nil); err != nil {
 		t.Fatal(err)
 	}
 	chatArt, err := findArtwork(db, artworkID(link))
@@ -178,12 +178,12 @@ func checkPixivInlineFlow(t *testing.T, server *httptest.Server, app *pixiv.AppP
 		InlineMessageID: "inline", Query: query.Query,
 	}
 	queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})
-	handleChosenInlineResult(bot, app, db, chosen, "@cache", queue)
+	handleChosenInlineResult(bot, app, db, chosen, "@cache", queue, nil)
 	if (*edit)["type"] != "animation" || (*edit)["media"] != "animation-id" {
 		t.Fatalf("inline edit: %v", *edit)
 	}
 	handleInlineQuery(bot, db, query, testPreviews(t, db, bot))
-	if len(*answer) != 1 || (*answer)[0]["type"] != "photo" || !strings.HasPrefix((*answer)[0]["photo_url"].(string), "https://preview.example.com/thumbnail?") {
+	if len(*answer) != 1 || (*answer)[0]["type"] != "photo" || (*answer)[0]["photo_url"] != "https://preview.example.com/thumbnail-placeholder-pixiv.jpg" {
 		t.Fatalf("cached inline answer: %v", *answer)
 	}
 	rich := (*answer)[0]["input_message_content"].(map[string]any)["rich_message"].(map[string]any)

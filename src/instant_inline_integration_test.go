@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/png"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -14,6 +18,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/everpcpc/pixiv"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
@@ -24,9 +29,10 @@ type instantTelegramView struct {
 }
 
 type instantTelegram struct {
-	t    *testing.T
-	mu   sync.Mutex
-	view instantTelegramView
+	t       *testing.T
+	mu      sync.Mutex
+	view    instantTelegramView
+	sources atomic.Int32
 }
 
 func (api *instantTelegram) snapshot() instantTelegramView {
@@ -37,6 +43,7 @@ func (api *instantTelegram) snapshot() instantTelegramView {
 
 func (api *instantTelegram) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
+
 	api.mu.Lock()
 	defer api.mu.Unlock()
 	switch {
@@ -55,6 +62,19 @@ func (api *instantTelegram) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			api.t.Error(err)
 		}
 		_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+	case r.URL.Path == "/u/status/1":
+		api.sources.Add(1)
+		_, _ = fmt.Fprintf(w, `{"code":200,"tweet":{"media":{"photos":[{"url":"https://i.pximg.net/preview.png"}]}}}`)
+	case r.URL.Path == "/auth/token":
+		_, _ = fmt.Fprint(w, `{"response":{"access_token":"access","refresh_token":"refresh","expires_in":3600,"user":{}}}`)
+	case r.URL.Path == "/v1/illust/detail":
+		api.sources.Add(1)
+		response := `{"illust":{"id":2,"type":"illust","page_count":1,` +
+			`"image_urls":{"large":"https://i.pximg.net/preview.png"}}}`
+		_, _ = fmt.Fprint(w, response)
+	case r.URL.Path == "/preview.png":
+		api.sources.Add(1)
+		_ = png.Encode(w, image.NewRGBA(image.Rect(0, 0, 480, 300)))
 	case r.URL.Path == "/u/status/777":
 		response := `{"code":200,"tweet":{"author":{"name":"Artist"},` +
 			`"media":{"photos":[{"url":"https://example.com/photo"}]}}}`
@@ -76,12 +96,15 @@ type instantNetworkGuard struct {
 	base     http.RoundTripper
 	attempts atomic.Int32
 	selected atomic.Bool
+	previews atomic.Bool
 }
 
 func (guard *instantNetworkGuard) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req.URL.Host != guard.target.Host {
 		guard.attempts.Add(1)
-		if !guard.selected.Load() || req.URL.Host != "api.fxtwitter.com" {
+		allowedSelection := guard.selected.Load() && req.URL.Host == "api.fxtwitter.com"
+		allowedPreview := guard.previews.Load() && (req.URL.Host == "api.fxtwitter.com" || req.URL.Host == "i.pximg.net")
+		if !allowedSelection && !allowedPreview {
 			return nil, fmt.Errorf("unexpected upstream request to %s", req.URL.Host)
 		}
 		copy := req.Clone(req.Context())
@@ -99,6 +122,7 @@ type instantSettingsScenario struct {
 	bot     *tgbotapi.BotAPI
 	api     *instantTelegram
 	network *instantNetworkGuard
+	app     *pixiv.AppPixivAPI
 }
 
 func (s *instantSettingsScenario) open() {
@@ -107,7 +131,7 @@ func (s *instantSettingsScenario) open() {
 		MessageID: 42, Chat: &tgbotapi.Chat{ID: 123}, From: &tgbotapi.User{ID: 1}, Text: "/settings",
 		Entities: []tgbotapi.MessageEntity{{Type: "bot_command", Length: len("/settings")}},
 	}
-	handleMessage(s.bot, nil, s.db, message, nil)
+	handleMessage(s.bot, nil, s.db, message, nil, nil)
 }
 
 func (s *instantSettingsScenario) buttons() []tgbotapi.InlineKeyboardButton {
@@ -151,12 +175,13 @@ func (s *instantSettingsScenario) tap(label string, actor int64) {
 
 func (s *instantSettingsScenario) inline(user int64, link string) map[string]any {
 	s.t.Helper()
-	before := s.network.attempts.Load()
 	query := &tgbotapi.InlineQuery{ID: "query", From: &tgbotapi.User{ID: user}, Query: link}
-	handleInlineQuery(s.bot, s.db, query, testPreviews(s.t, s.db, s.bot))
-	if after := s.network.attempts.Load(); after != before {
-		s.t.Fatalf("inline query attempted %d upstream requests", after-before)
+	previews, err := newThumbnails("https://preview.example.com", s.app, s.bot, s.db, "@cache")
+	if err != nil {
+		s.t.Fatal(err)
 	}
+	previews.client = &http.Client{Transport: s.network}
+	handleInlineQuery(s.bot, s.db, query, previews)
 	results := s.api.snapshot().results
 	if len(results) != 1 {
 		s.t.Fatalf("inline results: %#v", results)
@@ -166,20 +191,33 @@ func (s *instantSettingsScenario) inline(user int64, link string) map[string]any
 
 func (s *instantSettingsScenario) expectThumbnail(user int64, link string, withPreview bool) {
 	s.t.Helper()
+	before := s.api.sources.Load()
+	attempts := s.network.attempts.Load()
+	s.network.previews.Store(withPreview)
 	result := s.inline(user, link)
 	if withPreview {
+		if s.api.sources.Load() <= before {
+			s.t.Fatalf("no source fetch for %s", link)
+		}
 		_, thumbnail := uncachedThumbnailURLs(s.t, result)
 		parsed, err := url.Parse(thumbnail)
-		if err != nil || parsed.Query().Get("url") != inlineLink(link).String() {
-			s.t.Fatalf("thumbnail for %s: %q, %v", link, thumbnail, err)
+		if err != nil || parsed.Query().Get("url") != inlineLink(link).String() || result["photo_width"] != float64(480) || result["photo_height"] != float64(300) {
+			s.t.Fatalf("preview for %s: %#v", link, result)
+		}
+		awaitCachedThumbnail(s.t, s.db, artworkID(inlineLink(link)), 0)
+		if _, err := s.db.Exec(`DELETE FROM thumbnail_cache`); err != nil {
+			s.t.Fatal(err)
 		}
 		return
+	}
+	if s.api.sources.Load() != before || s.network.attempts.Load() != attempts {
+		s.t.Fatalf("instant mode fetched %s", link)
 	}
 	want := "https://preview.example.com/thumbnail-placeholder-x.jpg"
 	if strings.Contains(link, "pixiv.net") {
 		want = "https://preview.example.com/thumbnail-placeholder-pixiv.jpg"
 	}
-	if result["type"] != "photo" || result["photo_url"] != want || result["thumbnail_url"] != want {
+	if result["type"] != "photo" || result["photo_url"] != want || result["thumbnail_url"] != want || result["photo_width"] != float64(384) || result["photo_height"] != float64(384) {
 		s.t.Fatalf("placeholder for %s: %#v", link, result)
 	}
 }
@@ -191,20 +229,40 @@ func TestInstantInlineSettingsFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	api := &instantTelegram{t: t}
-	server := httptest.NewServer(api)
+	server := httptest.NewTLSServer(api)
 	target, err := url.Parse(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	original := http.DefaultTransport
-	guard := &instantNetworkGuard{target: target, base: original}
+	original, originalClient := http.DefaultTransport, http.DefaultClient
+	base := server.Client().Transport.(*http.Transport).Clone()
+	base.TLSClientConfig.ServerName = "127.0.0.1"
+	base.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
+	}
+	http.DefaultTransport, http.DefaultClient = base, &http.Client{}
+	t.Setenv("PIXIV_ACCESS_TOKEN", "access")
+	t.Setenv("PIXIV_REFRESH_TOKEN", "refresh")
+	t.Setenv("PIXIV_TOKEN_DEADLINE", "3600")
+	app, err := setupPixivClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard := &instantNetworkGuard{target: target, base: base}
 	http.DefaultTransport = guard
-	defer func() { _ = db.Close(); http.DefaultTransport = original; server.Close() }()
+	defer func() {
+		_ = db.Close()
+		http.DefaultClient.Transport.(*pixivTransport).pixiv.CloseIdleConnections()
+		http.DefaultTransport = original
+		http.DefaultClient = originalClient
+		base.CloseIdleConnections()
+		server.Close()
+	}()
 	bot, err := tgbotapi.NewBotAPIWithClient("token", server.URL+"/bot%s/%s", server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &instantSettingsScenario{t: t, db: db, bot: bot, api: api, network: guard}
+	s := &instantSettingsScenario{t: t, db: db, bot: bot, api: api, network: guard, app: app}
 	verifyInstantSettingsMenu(t, s)
 	verifyInstantInlineQueries(t, s)
 	verifyInstantInlineSelection(t, s)
@@ -285,17 +343,18 @@ func verifyInstantInlineSelection(t *testing.T, s *instantSettingsScenario) {
 	t.Helper()
 	link := "https://x.com/u/status/777"
 	s.expectThumbnail(1, link, false)
+	before := s.network.attempts.Load()
 	s.network.selected.Store(true)
 	chosen := &tgbotapi.ChosenInlineResult{
 		From: &tgbotapi.User{ID: 1}, ResultID: inlineResultID, InlineMessageID: "inline", Query: link,
 	}
 	queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})
-	handleChosenInlineResult(s.bot, nil, s.db, chosen, "@cache", queue)
-	if attempts, edits := s.network.attempts.Load(), s.api.snapshot().mediaEdits; attempts != 1 || edits != 1 {
+	handleChosenInlineResult(s.bot, nil, s.db, chosen, "@cache", queue, nil)
+	if attempts, edits := s.network.attempts.Load(), s.api.snapshot().mediaEdits; attempts != before+1 || edits != 1 {
 		t.Fatalf("selection: upstream requests %d, media edits %d", attempts, edits)
 	}
 	result := s.inline(1, link)
-	if result["type"] != "photo" || !strings.HasPrefix(result["photo_url"].(string), "https://preview.example.com/thumbnail?") {
+	if result["type"] != "photo" || result["photo_file_id"] != "file" {
 		t.Fatalf("cached result: %#v", result)
 	}
 }

@@ -205,7 +205,7 @@ func fetchArtPhotos(app *pixiv.AppPixivAPI, link *url.URL, metadata *artwork) ([
 	return mergeArtPhotos(photos), nil
 }
 
-func processLink(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, message *tgbotapi.Message, link *url.URL) error {
+func processLink(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, message *tgbotapi.Message, link *url.URL, previews *thumbnails) error {
 	if !supportedLink(link) {
 		return nil
 	}
@@ -248,6 +248,8 @@ func processLink(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, messa
 		}
 		if err := saveArtwork(db, message.From.ID, a, false); err != nil {
 			log.Printf("saving chat artwork: %v", err)
+		} else if previews != nil {
+			previews.warmArtwork(inlineLink(a.URL), len(a.Photos))
 		}
 	}
 	return nil
@@ -299,7 +301,7 @@ func messageLinks(message *tgbotapi.Message) []*url.URL {
 	return links
 }
 
-func handleMessage(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, message *tgbotapi.Message, queue *mediaQueue) {
+func handleMessage(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, message *tgbotapi.Message, queue *mediaQueue, previews *thumbnails) {
 	command := message.CommandWithAt()
 	if command == "help" || command == "start" || strings.EqualFold(command, "help@"+bot.Self.UserName) || strings.EqualFold(command, "start@"+bot.Self.UserName) {
 		reply := tgbotapi.NewMessage(message.Chat.ID, "Just send me x.com / pixiv.net link with media in it. Or use me inline")
@@ -354,7 +356,7 @@ func handleMessage(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, mes
 			return
 		}
 	}
-	processMessageLinks(bot, app, db, message, queue)
+	processMessageLinks(bot, app, db, message, queue, previews)
 }
 
 func reactToMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message) {
@@ -369,7 +371,7 @@ func reactToMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message) {
 	}
 }
 
-func processMessageLinks(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, message *tgbotapi.Message, queue *mediaQueue) {
+func processMessageLinks(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, message *tgbotapi.Message, queue *mediaQueue, previews *thumbnails) {
 	links := messageLinks(message)
 	if len(links) > 0 {
 		reactToMessage(bot, message)
@@ -379,7 +381,7 @@ func processMessageLinks(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.D
 	rejected := make(map[error]int)
 	for _, link := range links {
 		result, err := queue.submit(message.From.ID, func() error {
-			return processLink(bot, app, db, message, link)
+			return processLink(bot, app, db, message, link, previews)
 		})
 		if err != nil {
 			rejected[err]++
@@ -438,6 +440,8 @@ func main() {
 		log.Panicf("starting thumbnails: %v", err)
 	}
 
+	go previews.backfillHistory()
+
 	updates := bot.GetUpdatesChan(*u)
 
 	for update := range updates {
@@ -445,16 +449,17 @@ func main() {
 			go handleInlineQuery(bot, db, update.InlineQuery, previews)
 		}
 		if update.ChosenInlineResult != nil {
-			go handleChosenInlineResult(bot, pApp, db, update.ChosenInlineResult, os.Getenv("INLINE_CACHE_CHAT_ID"), queue)
+			cacheChat := os.Getenv("INLINE_CACHE_CHAT_ID")
+			go handleChosenInlineResult(bot, pApp, db, update.ChosenInlineResult, cacheChat, queue, previews)
 		}
 		if update.CallbackQuery != nil {
 			go handleCallback(bot, db, update.CallbackQuery)
 		}
 		if update.Message != nil {
-			go handleMessage(bot, pApp, db, update.Message, queue)
+			go handleMessage(bot, pApp, db, update.Message, queue, previews)
 		}
 		if update.ChannelPost != nil {
-			go handleMessage(bot, pApp, db, update.ChannelPost, queue)
+			go handleMessage(bot, pApp, db, update.ChannelPost, queue, previews)
 		}
 	}
 }

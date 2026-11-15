@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/url"
 	"strconv"
 	"strings"
@@ -16,6 +17,7 @@ const thumbnailRenderVersion = 7
 type artwork struct {
 	ID, URL, Author, Text, Caption string
 	Photos, Types                  []string
+	PreviewWidth, PreviewHeight    int
 }
 
 func artworkID(link *url.URL) string {
@@ -35,7 +37,7 @@ func openArtworkDB(path string) (*sql.DB, error) {
 	}
 	// One connection keeps in-memory databases shared and serializes SQLite writes.
 	db.SetMaxOpenConns(1)
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS artwork (id TEXT PRIMARY KEY, url TEXT NOT NULL, author TEXT NOT NULL, text TEXT NOT NULL, caption TEXT NOT NULL, photos TEXT NOT NULL);
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS artwork (id TEXT PRIMARY KEY, url TEXT NOT NULL, author TEXT NOT NULL, text TEXT NOT NULL, caption TEXT NOT NULL, photos TEXT NOT NULL, preview_width INTEGER NOT NULL DEFAULT 0, preview_height INTEGER NOT NULL DEFAULT 0);
  CREATE TABLE IF NOT EXISTS history (sequence INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, artwork_id TEXT NOT NULL, UNIQUE(user_id, artwork_id));
  CREATE TABLE IF NOT EXISTS history_opt_out (user_id INTEGER PRIMARY KEY);
  CREATE TABLE IF NOT EXISTS history_chat_hidden (user_id INTEGER PRIMARY KEY);
@@ -81,6 +83,19 @@ func openArtworkDB(path string) (*sql.DB, error) {
 		if _, err := db.Exec(`ALTER TABLE artwork ADD COLUMN media_types TEXT NOT NULL DEFAULT '[]'`); err != nil {
 			_ = db.Close()
 			return nil, err
+		}
+	}
+	for _, column := range []string{"preview_width", "preview_height"} {
+		var exists int
+		if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info('artwork') WHERE name=?`, column).Scan(&exists); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		if exists == 0 {
+			if _, err := db.Exec(`ALTER TABLE artwork ADD COLUMN ` + column + ` INTEGER NOT NULL DEFAULT 0`); err != nil {
+				_ = db.Close()
+				return nil, err
+			}
 		}
 	}
 	var hasThumbnailVersion int
@@ -223,7 +238,7 @@ func deleteHistory(db *sql.DB, user int64) error {
 func scanArtwork(rows *sql.Rows) (artwork, error) {
 	var a artwork
 	var photos, types string
-	if err := rows.Scan(&a.ID, &a.URL, &a.Author, &a.Text, &a.Caption, &photos, &types); err != nil {
+	if err := rows.Scan(&a.ID, &a.URL, &a.Author, &a.Text, &a.Caption, &photos, &types, &a.PreviewWidth, &a.PreviewHeight); err != nil {
 		return a, err
 	}
 	if err := json.Unmarshal([]byte(photos), &a.Photos); err != nil {
@@ -248,7 +263,8 @@ func scanArtwork(rows *sql.Rows) (artwork, error) {
 }
 
 func findArtwork(db *sql.DB, id string) (*artwork, error) {
-	rows, err := db.Query(`SELECT id,url,author,text,caption,photos,media_types FROM artwork WHERE id = ?`, id)
+	rows, err := db.Query(`SELECT id,url,author,text,caption,photos,media_types,preview_width,preview_height
+        FROM artwork WHERE id = ?`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -261,7 +277,7 @@ func findArtwork(db *sql.DB, id string) (*artwork, error) {
 }
 
 func artworkHistory(db *sql.DB, user int64, offset int) ([]artwork, error) {
-	rows, err := db.Query(`SELECT a.id,a.url,a.author,a.text,a.caption,a.photos,a.media_types
+	rows, err := db.Query(`SELECT a.id,a.url,a.author,a.text,a.caption,a.photos,a.media_types,a.preview_width,a.preview_height
         FROM history h JOIN artwork a ON a.id=h.artwork_id
         WHERE h.user_id=? AND (h.inline_origin=1 OR NOT EXISTS (SELECT 1 FROM history_chat_hidden WHERE user_id=h.user_id))
         ORDER BY CASE WHEN EXISTS (SELECT 1 FROM history_first_saved WHERE user_id=h.user_id)
@@ -279,4 +295,31 @@ func artworkHistory(db *sql.DB, user int64, offset int) ([]artwork, error) {
 		result = append(result, a)
 	}
 	return result, rows.Err()
+}
+
+func savePreviewDimensions(db *sql.DB, id string, width, height int) error {
+	_, err := db.Exec(`UPDATE artwork SET preview_width=?, preview_height=? WHERE id=?`, width, height, id)
+	return err
+}
+
+func historyMissingPreviews(db *sql.DB) ([]artwork, int, error) {
+	rows, err := db.Query(`SELECT DISTINCT a.id,a.url,a.author,a.text,a.caption,a.photos,a.media_types,a.preview_width,a.preview_height
+		FROM artwork a JOIN history h ON h.artwork_id=a.id WHERE a.preview_width=0 OR a.preview_height=0 OR NOT EXISTS
+        (SELECT 1 FROM thumbnail_cache c WHERE c.artwork_id=a.id AND c.media_count=json_array_length(a.photos) AND c.render_version=? AND c.file_id<>'')`, thumbnailRenderVersion)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { _ = rows.Close() }()
+	var result []artwork
+	failures := 0
+	for rows.Next() {
+		a, err := scanArtwork(rows)
+		if err != nil {
+			log.Printf("backfill artwork: %v", err)
+			failures++
+			continue
+		}
+		result = append(result, a)
+	}
+	return result, failures, rows.Err()
 }

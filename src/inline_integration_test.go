@@ -135,7 +135,7 @@ func TestInlineTelegramFlow(t *testing.T) {
 			chosen := &tgbotapi.ChosenInlineResult{
 				From: &tgbotapi.User{ID: 1}, ResultID: inlineResultID, InlineMessageID: "inline", Query: query.Query,
 			}
-			handleChosenInlineResult(bot, nil, db, chosen, cacheChat, queue)
+			handleChosenInlineResult(bot, nil, db, chosen, cacheChat, queue, nil)
 			method := "editMessageMedia"
 			if count == 2 {
 				method = "editMessageText"
@@ -162,7 +162,7 @@ func checkCachedInlineFlow(t *testing.T, bot *tgbotapi.BotAPI, db *sql.DB, query
 	query.Query = "https://vxtwitter.com/another/status/1?ref=2"
 	handleInlineQuery(bot, db, query, testPreviews(t, db, bot))
 	cached := (*answer)[0]
-	if cached["type"] != "photo" || cached["id"] != "x:1" || !strings.HasPrefix(cached["photo_url"].(string), "https://preview.example.com/thumbnail?") || cached["title"] != "Artist" || cached["description"] != "A real post" {
+	if cached["type"] != "photo" || cached["id"] != "x:1" || cached["photo_file_id"] != "large1" || cached["title"] != "Artist" || cached["description"] != "A real post" {
 		t.Fatalf("cached result: %#v", cached)
 	}
 	rich := cached["input_message_content"].(map[string]any)["rich_message"].(map[string]any)
@@ -183,7 +183,7 @@ func checkCachedInlineFlow(t *testing.T, bot *tgbotapi.BotAPI, db *sql.DB, query
 	before := len(*calls)
 	handleChosenInlineResult(bot, nil, db, &tgbotapi.ChosenInlineResult{
 		From: &tgbotapi.User{ID: 2}, ResultID: cached["id"].(string),
-	}, cacheChat, queue)
+	}, cacheChat, queue, nil)
 	if len(*calls) != before {
 		t.Fatalf("cached selection made requests: %v", (*calls)[before:])
 	}
@@ -239,11 +239,10 @@ func checkCachedInlineFlow(t *testing.T, bot *tgbotapi.BotAPI, db *sql.DB, query
 
 func checkInlineAnswer(t *testing.T, result map[string]any) {
 	t.Helper()
-	uncachedThumbnailURLs(t, result)
 	content := result["input_message_content"].(map[string]any)
 	keyboard := result["reply_markup"].(map[string]any)["inline_keyboard"].([]any)
 	button := keyboard[0].([]any)[0].(map[string]any)
-	if result["type"] != "photo" || result["id"] != inlineResultID || !strings.HasPrefix(result["photo_url"].(string), "https://preview.example.com/thumbnail?") || content["message_text"] != "Loading artwork…" || content["disable_web_page_preview"] != true || button["text"] != "Please wait…" || button["disabled"] == nil {
+	if result["type"] != "photo" || result["id"] != inlineResultID || !strings.HasSuffix(result["photo_url"].(string), "thumbnail-placeholder-x.jpg") || content["message_text"] != "Loading artwork…" || content["disable_web_page_preview"] != true || button["text"] != "Please wait…" || button["disabled"] == nil {
 		t.Fatalf("answer: %#v", result)
 	}
 }
@@ -340,8 +339,8 @@ func TestInlinePixivThumbnail(t *testing.T) {
 		}
 		if len(results) != 1 {
 			t.Errorf("results: %#v", results)
-		} else {
-			uncachedThumbnailURLs(t, results[0])
+		} else if results[0]["photo_url"] != "https://preview.example.com/thumbnail-placeholder-pixiv.jpg" {
+			t.Errorf("result: %#v", results[0])
 		}
 		_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
 	}))
@@ -421,16 +420,16 @@ func TestInlineChosenFailures(t *testing.T) {
 			chosen := &tgbotapi.ChosenInlineResult{
 				From: &tgbotapi.User{ID: 1}, ResultID: inlineResultID, InlineMessageID: "inline", Query: query,
 			}
-			handleChosenInlineResult(bot, nil, db, chosen, "@cache", queue)
+			handleChosenInlineResult(bot, nil, db, chosen, "@cache", queue, nil)
 			if edits != 1 {
 				t.Fatalf("edits: %d", edits)
 			}
 
 			chosen.ResultID = "other"
-			handleChosenInlineResult(bot, nil, db, chosen, "@cache", queue)
+			handleChosenInlineResult(bot, nil, db, chosen, "@cache", queue, nil)
 			handleChosenInlineResult(bot, nil, db, &tgbotapi.ChosenInlineResult{
 				From: &tgbotapi.User{ID: 1}, ResultID: inlineResultID, Query: query,
-			}, "@cache", queue)
+			}, "@cache", queue, nil)
 			if edits != 1 {
 				t.Fatalf("unexpected edits: %d", edits)
 			}
@@ -500,7 +499,7 @@ func TestInlineRetryTelegram(t *testing.T) {
 				chosen := &tgbotapi.ChosenInlineResult{From: &tgbotapi.User{ID: 1},
 					ResultID: inlineResultID, InlineMessageID: "inline", Query: "https://x.com/user/status/1",
 				}
-				handleChosenInlineResult(bot, nil, db, chosen, "@cache", queue)
+				handleChosenInlineResult(bot, nil, db, chosen, "@cache", queue, nil)
 				close(done)
 			}()
 			if !failUpload {
@@ -698,7 +697,7 @@ func TestHistoryPreferenceTelegramFlow(t *testing.T) {
 		t.Helper()
 		message := &tgbotapi.Message{MessageID: 42, Chat: &tgbotapi.Chat{ID: 123}, From: &tgbotapi.User{ID: 1}, Text: text,
 			Entities: []tgbotapi.MessageEntity{{Type: "bot_command", Length: len(text)}}}
-		handleMessage(bot, nil, db, message, queue)
+		handleMessage(bot, nil, db, message, queue, nil)
 	}
 	callback := func(user int64, data string) {
 		t.Helper()
@@ -708,14 +707,14 @@ func TestHistoryPreferenceTelegramFlow(t *testing.T) {
 	}
 	selectCached := func(user int64, id string) {
 		chosen := &tgbotapi.ChosenInlineResult{From: &tgbotapi.User{ID: user}, ResultID: id}
-		handleChosenInlineResult(bot, nil, db, chosen, "@cache", queue)
+		handleChosenInlineResult(bot, nil, db, chosen, "@cache", queue, nil)
 	}
 	selectNew := func(id string) {
 		chosen := &tgbotapi.ChosenInlineResult{
 			From: &tgbotapi.User{ID: 1}, ResultID: inlineResultID,
 			InlineMessageID: "inline", Query: "https://x.com/user/status/" + id,
 		}
-		handleChosenInlineResult(bot, nil, db, chosen, "@cache", queue)
+		handleChosenInlineResult(bot, nil, db, chosen, "@cache", queue, nil)
 	}
 	checkHistory := func(user int64, ids ...string) {
 		t.Helper()
@@ -998,7 +997,7 @@ func TestXVideoChatAndInline(t *testing.T) {
 			handleMessage(bot, nil, db, &tgbotapi.Message{
 				MessageID: 42, Chat: &tgbotapi.Chat{ID: 123}, From: &tgbotapi.User{ID: 1}, Text: link,
 				Entities: []tgbotapi.MessageEntity{{Type: "url", Length: len(link)}},
-			}, queue)
+			}, queue, nil)
 			if !reflect.DeepEqual(actions, []string{"typing", "upload_video"}) {
 				t.Fatalf("chat actions: %v", actions)
 			}
@@ -1021,7 +1020,7 @@ func TestXVideoChatAndInline(t *testing.T) {
 			}
 			inlineQuery := &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 1}, Query: link}
 			handleInlineQuery(bot, db, inlineQuery, testPreviews(t, db, bot))
-			if len(answer) != 1 || answer[0]["type"] != "photo" || !strings.HasPrefix(answer[0]["photo_url"].(string), "https://preview.example.com/thumbnail?") {
+			if len(answer) != 1 || answer[0]["type"] != "photo" || answer[0]["photo_url"] != "https://preview.example.com/thumbnail-placeholder-x.jpg" {
 				t.Fatalf("cached: %#v", answer)
 			}
 			rich := answer[0]["input_message_content"].(map[string]any)["rich_message"].(map[string]any)
@@ -1032,7 +1031,7 @@ func TestXVideoChatAndInline(t *testing.T) {
 			// Exercise the uncached chosen-result path even though the chat already stored this artwork.
 			handleChosenInlineResult(bot, nil, db, &tgbotapi.ChosenInlineResult{
 				From: &tgbotapi.User{ID: 2}, ResultID: inlineResultID, InlineMessageID: "inline", Query: link,
-			}, "@cache", queue)
+			}, "@cache", queue, nil)
 			var payload map[string]any
 			field := "media"
 			if len(tc.kinds) > 1 {

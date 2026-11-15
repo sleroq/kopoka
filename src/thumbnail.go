@@ -38,13 +38,19 @@ var xLogo []byte
 var pixivLogo []byte
 
 type thumbnailWork struct {
-	done     chan struct{}
-	data     []byte
-	large    []byte
-	actual   int
-	err      error
-	finished time.Time
-	caching  bool
+	done          chan struct{}
+	cached        chan struct{}
+	data          []byte
+	large         []byte
+	actual        int
+	width, height int
+	err           error
+	finished      time.Time
+}
+
+type previewPhoto struct {
+	fileID, photoURL, thumbnailURL string
+	width, height                  int
 }
 
 type thumbnails struct {
@@ -152,12 +158,51 @@ func (t *thumbnails) cached(link *url.URL, count int) string {
 	return id
 }
 
-func (t *thumbnails) photo(link *url.URL, count int) (fileID, photoURL, thumbnailURL string) {
-	if id := t.cached(link, count); id != "" {
-		return id, "", ""
+func (t *thumbnails) savedPhoto(a artwork) previewPhoto {
+	if link := inlineLink(a.URL); link != nil {
+		count := len(a.Photos)
+		if id := t.cached(link, count); id != "" {
+			return previewPhoto{fileID: id}
+		}
+		t.warmArtwork(link, count)
+		if a.PreviewWidth > 0 && a.PreviewHeight > 0 {
+			return t.urlPhoto(link, count, a.PreviewWidth, a.PreviewHeight)
+		}
 	}
-	thumbnailURL = t.url(link, count)
-	return "", thumbnailURL + "&size=large", thumbnailURL
+	if mediaType(a, 0) == "photo" {
+		return previewPhoto{fileID: a.Photos[0]}
+	}
+	return t.placeholder(strings.HasPrefix(a.ID, "pixiv:"))
+}
+
+func (t *thumbnails) newPhoto(link *url.URL, instant bool) previewPhoto {
+	if id := t.cached(link, 0); id != "" {
+		return previewPhoto{fileID: id}
+	}
+	if !instant {
+		work := t.warmup(link, 0)
+		select {
+		case <-work.done:
+			if work.err == nil {
+				return t.urlPhoto(link, 0, work.width, work.height)
+			}
+		case <-time.After(8 * time.Second):
+		}
+	}
+	return t.placeholder(link.Host == "pixiv.net" || link.Host == "www.pixiv.net")
+}
+
+func (t *thumbnails) urlPhoto(link *url.URL, count, width, height int) previewPhoto {
+	thumbnail := t.url(link, count)
+	return previewPhoto{
+		photoURL: thumbnail + "&size=large", thumbnailURL: thumbnail,
+		width: width, height: height,
+	}
+}
+
+func (t *thumbnails) placeholder(pixiv bool) previewPhoto {
+	address := t.placeholderURL(pixiv)
+	return previewPhoto{photoURL: address, thumbnailURL: address, width: 384, height: 384}
 }
 
 func (t *thumbnails) placeholderURL(pixiv bool) string {
@@ -220,7 +265,15 @@ func (t *thumbnails) start(link *url.URL, count int) *thumbnailWork {
 		data, large, actual, err := t.generate(link)
 		t.mu.Lock()
 		w.data, w.large, w.actual, w.err, w.finished = data, large, actual, err, time.Now()
-		if err != nil {
+		if err == nil {
+			config, decodeErr := jpeg.DecodeConfig(bytes.NewReader(large))
+			if decodeErr != nil {
+				w.err = decodeErr
+			} else {
+				w.width, w.height = config.Width, config.Height
+			}
+		}
+		if w.err != nil {
 			delete(t.work, key)
 		}
 		close(w.done)
@@ -230,37 +283,47 @@ func (t *thumbnails) start(link *url.URL, count int) *thumbnailWork {
 	return w
 }
 
-func (t *thumbnails) cacheWork(link *url.URL, count int, work *thumbnailWork) {
+func (t *thumbnails) cacheWork(link *url.URL, count int, work *thumbnailWork) <-chan struct{} {
 	t.mu.Lock()
-	if work.caching {
+	if work.cached != nil {
+		done := work.cached
 		t.mu.Unlock()
-		return
+		return done
 	}
-	work.caching = true
+	work.cached = make(chan struct{})
+	done := work.cached
 	t.mu.Unlock()
 	go func() {
+		defer close(done)
 		<-work.done
 		if work.err != nil {
+			log.Printf("generating thumbnail for %s: %v", link, work.err)
 			return
 		}
 		t.workers <- struct{}{}
 		if t.cached(link, count) == "" {
-			t.cachePhoto(link, count, work.actual, work.large)
+			if err := t.cachePhoto(link, count, work.actual, work.large); err != nil {
+				log.Printf("caching thumbnail for %s: %v", link, err)
+				t.mu.Lock()
+				work.cached = nil
+				t.mu.Unlock()
+			}
 		}
 		<-t.workers
 	}()
+	return done
 }
 
-func (t *thumbnails) cachePhoto(link *url.URL, count, actual int, data []byte) {
+func (t *thumbnails) cachePhoto(link *url.URL, count, actual int, data []byte) error {
 	photo := tgbotapi.NewInputMediaPhoto(tgbotapi.FileBytes{Name: "thumbnail.jpg", Bytes: data})
 	id, err := cacheInlineMedia(t.bot, t.cacheChat, photo)
 	if err != nil {
-		log.Printf("uploading thumbnail for %s: %v", link, err)
-		return
+		return fmt.Errorf("uploading: %w", err)
 	}
 	if err := saveThumbnail(t.db, artworkID(link), count, actual, id); err != nil {
-		log.Printf("saving thumbnail for %s: %v", link, err)
+		return fmt.Errorf("saving: %w", err)
 	}
+	return nil
 }
 
 func (t *thumbnails) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -320,13 +383,8 @@ func (t *thumbnails) serveThumbnail(w http.ResponseWriter, r *http.Request) {
 		}
 		if work.err != nil {
 			log.Printf("generating thumbnail for %s: %v", link, work.err)
-			art, err := findArtwork(t.db, artworkID(link))
-			if err != nil || art == nil {
-				http.Error(w, "thumbnail generation failed", http.StatusBadGateway)
-				return
-			}
-			pixiv := link.Host == "pixiv.net" || link.Host == "www.pixiv.net"
-			data = t.placeholders[pixiv]
+			http.Error(w, "thumbnail generation failed", http.StatusBadGateway)
+			return
 		}
 		w.Header().Set("Content-Type", "image/jpeg")
 		_, _ = w.Write(data)
@@ -598,4 +656,67 @@ func badgeBackground(dst *image.RGBA, left, right int) {
 	rounded(dst, image.Rect(left+2*4, 17*4, right+2*4, 55*4), 12*4, color.NRGBA{0, 0, 0, 70})
 	rounded(dst, image.Rect(left, 15*4, right, 53*4), 12*4, color.NRGBA{255, 255, 255, 100})
 	rounded(dst, image.Rect(left+1*4, 16*4, right-1*4, 52*4), 11*4, color.NRGBA{20, 22, 27, 235})
+}
+
+func (t *thumbnails) warmup(link *url.URL, count int) *thumbnailWork {
+	work := t.start(link, count)
+	t.cacheWork(link, count, work)
+	return work
+}
+
+func (t *thumbnails) saveGeneratedDimensions(link *url.URL, work *thumbnailWork) error {
+	<-work.done
+	if work.err != nil {
+		return work.err
+	}
+	return savePreviewDimensions(t.db, artworkID(link), work.width, work.height)
+}
+
+func (t *thumbnails) warmArtwork(link *url.URL, count int) {
+	go func() {
+		t.mu.Lock()
+		work := t.work[link.String()+"\n0"]
+		t.mu.Unlock()
+		if work == nil {
+			work = t.warmup(link, count)
+		} else {
+			t.cacheWork(link, 0, work)
+		}
+		if err := t.saveGeneratedDimensions(link, work); err != nil {
+			log.Printf("warming preview for %s: %v", link, err)
+		}
+	}()
+}
+
+func (t *thumbnails) backfillHistory() {
+	artworks, failed, err := historyMissingPreviews(t.db)
+	if err != nil {
+		log.Printf("preview backfill query: %v", err)
+		return
+	}
+	completed := 0
+	for _, a := range artworks {
+		link := inlineLink(a.URL)
+		if link == nil {
+			log.Printf("preview backfill invalid URL for %s", a.ID)
+			failed++
+			continue
+		}
+		count := len(a.Photos)
+		work := t.start(link, count)
+		cached := t.cacheWork(link, count, work)
+		if err := t.saveGeneratedDimensions(link, work); err != nil {
+			log.Printf("preview backfill for %s: %v", a.ID, err)
+			failed++
+			continue
+		}
+		<-cached
+		if t.cached(link, count) == "" {
+			log.Printf("preview backfill for %s: no cached photo", a.ID)
+			failed++
+			continue
+		}
+		completed++
+	}
+	log.Printf("preview backfill: %d complete, %d failed", completed, failed)
 }

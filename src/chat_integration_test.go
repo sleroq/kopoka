@@ -51,7 +51,7 @@ func TestChatJSONCommand(t *testing.T) {
 	if err := json.Unmarshal([]byte(update), &message); err != nil {
 		t.Fatal(err)
 	}
-	handleMessage(bot, nil, nil, &message, queue)
+	handleMessage(bot, nil, nil, &message, queue, nil)
 	if strings.Join(requests, ",") != "getChat,sendMessage" {
 		t.Fatalf("requests: %v", requests)
 	}
@@ -131,7 +131,7 @@ func TestChatFormattedLinks(t *testing.T) {
 			entity("url", "https://x.com/user/status/2?tracking=1"),
 			{Type: "url", Offset: 999, Length: 10},
 		}}
-	handleMessage(bot, nil, nil, message, queue)
+	handleMessage(bot, nil, nil, message, queue, nil)
 	if reactions != 1 {
 		t.Fatalf("reactions: %d", reactions)
 	}
@@ -192,12 +192,12 @@ func TestChatHistorySettingsFlow(t *testing.T) {
 		t.Helper()
 		message := &tgbotapi.Message{MessageID: 42, Chat: &tgbotapi.Chat{ID: 123}, From: &tgbotapi.User{ID: 1}, Text: link,
 			Entities: []tgbotapi.MessageEntity{{Type: "url", Length: len(link)}}}
-		handleMessage(bot, nil, db, message, queue)
+		handleMessage(bot, nil, db, message, queue, nil)
 	}
 	command := func(text string) {
 		message := &tgbotapi.Message{MessageID: 42, Chat: &tgbotapi.Chat{ID: 123}, From: &tgbotapi.User{ID: 1}, Text: text,
 			Entities: []tgbotapi.MessageEntity{{Type: "bot_command", Length: len(text)}}}
-		handleMessage(bot, nil, db, message, queue)
+		handleMessage(bot, nil, db, message, queue, nil)
 	}
 	toggle := func(user int64, action string) {
 		callback = "pending"
@@ -242,7 +242,7 @@ func TestChatHistorySettingsFlow(t *testing.T) {
 	chat("https://x.com/u/status/2")
 	check("x:99")
 	chosen := &tgbotapi.ChosenInlineResult{From: &tgbotapi.User{ID: 1}, ResultID: "x:1"}
-	handleChosenInlineResult(bot, nil, db, chosen, "", queue)
+	handleChosenInlineResult(bot, nil, db, chosen, "", queue, nil)
 	chat("https://x.com/u/status/1")
 	check("x:1", "x:99")
 	command("/historyoff")

@@ -202,19 +202,36 @@ func TestInlineThumbnailFlow(t *testing.T) {
 		close(answered)
 	}()
 	select {
-	case <-answered:
-	case <-time.After(2 * time.Second):
-		t.Fatal("inline query waited for the source")
-	}
-	photoURL, thumbnailURL := uncachedThumbnailURLs(t, (<-s.answers)[0])
-	select {
 	case <-s.started:
 	case <-time.After(2 * time.Second):
 		t.Fatal("thumbnail generation did not start")
 	}
+	select {
+	case <-answered:
+		t.Fatal("answered before generation finished")
+	default:
+	}
+	s.releaseOnce.Do(func() { close(s.release) })
+	select {
+	case <-answered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("answer waited for upload")
+	}
+	result := (<-s.answers)[0]
+	if result["photo_width"] != float64(1280) || result["photo_height"] != float64(800) {
+		t.Fatalf("dimensions: %#v", result)
+	}
+	photoURL, thumbnailURL := uncachedThumbnailURLs(t, result)
 	localURL := previewServer.URL + strings.TrimPrefix(thumbnailURL, "https://preview.example.com")
 	largeURL := previewServer.URL + strings.TrimPrefix(photoURL, "https://preview.example.com")
-	images := awaitThumbnails(t, []string{localURL, largeURL}, func() { s.releaseOnce.Do(func() { close(s.release) }) })
+	var images []image.Image
+	for _, endpoint := range []string{localURL, largeURL} {
+		res, err := http.Get(endpoint)
+		if err != nil {
+			t.Fatal(err)
+		}
+		images = append(images, readThumbnail(t, res))
+	}
 	multi, large := images[0], images[1]
 	if large.Bounds().Size() != image.Pt(1280, 800) {
 		t.Fatalf("landscape photo size: %v", large.Bounds().Size())
@@ -326,11 +343,8 @@ func uncachedThumbnailURLs(t *testing.T, result map[string]any) (string, string)
 	if !reflect.DeepEqual(pq, tq) {
 		t.Fatalf("preview queries differ: %v, %v", pq, tq)
 	}
-	if _, width := result["photo_width"]; width {
-		t.Fatalf("inline result fixes an unknown aspect ratio: %#v", result)
-	}
-	if _, height := result["photo_height"]; height {
-		t.Fatalf("inline result fixes an unknown aspect ratio: %#v", result)
+	if result["photo_width"] == nil || result["photo_height"] == nil {
+		t.Fatalf("missing dimensions: %#v", result)
 	}
 	return photo, thumbnail
 }
@@ -406,12 +420,17 @@ func checkCachedSourceFailure(t *testing.T, db *sql.DB, bot *tgbotapi.BotAPI, pr
 	if result["type"] != "photo" || media["media"] != "saved-photo" {
 		t.Fatalf("cached artwork: %#v", result)
 	}
-	preview := strings.TrimPrefix(result["photo_url"].(string), "https://preview.example.com")
-	res, err := http.Get(server.URL + preview)
+	if result["photo_file_id"] != "saved-photo" {
+		t.Fatalf("fallback: %#v", result)
+	}
+	res, err := http.Get(server.URL + "/thumbnail?url=" + url.QueryEscape(a.URL) + "&size=large")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = readThumbnail(t, res)
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status: %d", res.StatusCode)
+	}
 }
 
 func checkThumbnailFailures(t *testing.T, db *sql.DB, baseURL, sourceURL string, uploads *atomic.Int32) {
@@ -469,41 +488,6 @@ func checkThumbnailFailures(t *testing.T, db *sql.DB, baseURL, sourceURL string,
 	}
 }
 
-func awaitThumbnails(t *testing.T, endpoints []string, release func()) []image.Image {
-	t.Helper()
-	type response struct {
-		index int
-		res   *http.Response
-		err   error
-	}
-	results := make(chan response, len(endpoints))
-	for i, endpoint := range endpoints {
-		go func() { res, err := http.Get(endpoint); results <- response{i, res, err} }()
-	}
-	select {
-	case result := <-results:
-		if result.res != nil {
-			_ = result.res.Body.Close()
-		}
-		t.Fatalf("preview returned before source was ready: %v", result.err)
-	case <-time.After(100 * time.Millisecond):
-	}
-	release()
-	images := make([]image.Image, len(endpoints))
-	for range endpoints {
-		select {
-		case result := <-results:
-			if result.err != nil {
-				t.Fatal(result.err)
-			}
-			images[result.index] = readThumbnail(t, result.res)
-		case <-time.After(5 * time.Second):
-			t.Fatal("preview did not finish")
-		}
-	}
-	return images
-}
-
 func checkCachedThumbnails(t *testing.T, db *sql.DB, bot *tgbotapi.BotAPI, previews *thumbnails, answers <-chan []map[string]any, previewServer *httptest.Server, multi image.Image) {
 	t.Helper()
 	query := &tgbotapi.InlineQuery{ID: "query", From: &tgbotapi.User{ID: 1}, Query: "https://x.com/user/status/1"}
@@ -514,12 +498,18 @@ func checkCachedThumbnails(t *testing.T, db *sql.DB, bot *tgbotapi.BotAPI, previ
 	if err := saveSelection(db, 1, a); err != nil {
 		t.Fatal(err)
 	}
+	if err := savePreviewDimensions(db, a.ID, 1280, 800); err != nil {
+		t.Fatal(err)
+	}
 	handleInlineQuery(bot, db, query, previews)
 	cached := (<-answers)[0]
 	rich := cached["input_message_content"].(map[string]any)["rich_message"].(map[string]any)
 	media := rich["media"].([]any)[0].(map[string]any)["media"].(map[string]any)
 	if cached["type"] != "photo" || cached["id"] != "x:1" || media["type"] != "video" || media["media"] != "video-id" || !strings.Contains(rich["html"].(string), "tg://video?id=0") {
 		t.Fatalf("cached single result: %#v", cached)
+	}
+	if cached["photo_width"] != float64(1280) || cached["photo_height"] != float64(800) {
+		t.Fatalf("cached artwork dimensions: %#v", cached)
 	}
 	cachedURL := cached["thumbnail_url"].(string)
 	if !strings.Contains(cachedURL, "count=1") {
@@ -690,7 +680,8 @@ func TestPixivThumbnailFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	link := inlineLink("https://www.pixiv.net/en/artworks/123")
-	_, photoURL, thumbnailURL := previews.photo(link, 0)
+	thumbnailURL := previews.url(link, 0)
+	photoURL := thumbnailURL + "&size=large"
 	checkPixivPreviews(t, server.Client(), photoURL, thumbnailURL)
 	awaitCachedThumbnail(t, db, "pixiv:123", 0)
 	awaitCachedThumbnail(t, db, "pixiv:123", 12)
@@ -779,8 +770,7 @@ func TestMergedThumbnailSources(t *testing.T) {
 	previews.client = &http.Client{Transport: redirectTransport{target, http.DefaultTransport}}
 
 	link := inlineLink("https://x.com/user/status/10")
-	_, _, _ = previews.photo(link, 0)
-	work := previews.start(link, 0)
+	work := previews.warmup(link, 0)
 	<-work.done
 	if work.err != nil {
 		t.Fatal(work.err)
@@ -800,7 +790,7 @@ func TestMergedThumbnailSources(t *testing.T) {
 
 	awaitCachedThumbnail(t, db, "x:10", 2)
 	before := downloads.Load()
-	id, _, _ := previews.photo(link, 2)
+	id := previews.cached(link, 2)
 	if id != "joined-preview" || downloads.Load() != before || uploads.Load() != 1 {
 		t.Fatal("merged count did not reuse cached preview")
 	}
@@ -1018,8 +1008,7 @@ func TestThumbnailAspectRatios(t *testing.T) {
 			previews.client = &http.Client{Transport: redirectTransport{target, http.DefaultTransport}}
 
 			link := inlineLink("https://x.com/user/status/20")
-			previews.photo(link, 0)
-			work := previews.start(link, 0)
+			work := previews.warmup(link, 0)
 			<-work.done
 			if work.err != nil {
 				t.Fatal(work.err)
@@ -1041,7 +1030,7 @@ func TestThumbnailAspectRatios(t *testing.T) {
 			}
 
 			awaitCachedThumbnail(t, db, "x:20", 1)
-			if id, _, _ := previews.photo(link, 1); id != "aspect" {
+			if id := previews.cached(link, 1); id != "aspect" {
 				t.Fatalf("post-merge cache alias = %q", id)
 			}
 			// A cached artwork can request a preview under its post-merge count before the upload is available.
@@ -1144,5 +1133,62 @@ func checkAspectPreviews(t *testing.T, previews *thumbnails, sourceSize image.Po
 			checkCountBadge(t, previews, data, 2)
 			checkMergeBadge(t, previews, data, 2, true)
 		}
+	}
+}
+
+func TestPreviewMigrationAndBackfill(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = legacy.Exec(`CREATE TABLE artwork (id TEXT PRIMARY KEY, url TEXT NOT NULL, author TEXT NOT NULL, text TEXT NOT NULL, caption TEXT NOT NULL, photos TEXT NOT NULL, media_types TEXT NOT NULL DEFAULT '[]');
+	CREATE TABLE history (sequence INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, artwork_id TEXT NOT NULL, UNIQUE(user_id, artwork_id));
+	CREATE TABLE thumbnail_cache (artwork_id TEXT NOT NULL, media_count INTEGER NOT NULL, file_id TEXT NOT NULL, render_version INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (artwork_id, media_count));
+	INSERT INTO artwork VALUES ('x:1','https://x.com/user/status/1','','','','["media"]','["photo"]');
+	INSERT INTO history(user_id,artwork_id) VALUES (1,'x:1');
+	INSERT INTO thumbnail_cache VALUES ('x:1',1,'existing',7)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := openArtworkDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	a, err := findArtwork(db, "x:1")
+	if err != nil || a.PreviewWidth != 0 || a.PreviewHeight != 0 {
+		t.Fatalf("migrated: %+v, %v", a, err)
+	}
+	if id, err := findThumbnail(db, "x:1", 1); err != nil || id != "existing" {
+		t.Fatalf("cache: %q, %v", id, err)
+	}
+
+	s := newThumbnailTestServer(t)
+	defer s.server.Close()
+	s.releaseOnce.Do(func() { close(s.release) })
+	s.uploadReleaseOnce.Do(func() { close(s.uploadRelease) })
+	target, _ := url.Parse(s.server.URL)
+	previews := testPreviews(t, db, nil)
+	previews.client = &http.Client{Transport: redirectTransport{target, http.DefaultTransport}}
+	previews.backfillHistory()
+	a, err = findArtwork(db, "x:1")
+	if err != nil || a.PreviewWidth != 1280 || a.PreviewHeight != 800 {
+		t.Fatalf("backfilled: %+v, %v", a, err)
+	}
+	if err := saveSelection(db, 1, *a); err != nil {
+		t.Fatal(err)
+	}
+	a, _ = findArtwork(db, "x:1")
+	if a.PreviewWidth != 1280 || a.PreviewHeight != 800 {
+		t.Fatalf("upsert lost dimensions: %+v", a)
+	}
+	previews.backfillHistory()
+	if s.upstream.Load() != 1 {
+		t.Fatalf("backfill repeated: %d", s.upstream.Load())
 	}
 }
