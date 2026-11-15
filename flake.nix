@@ -16,6 +16,11 @@
       system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+        ffmpeg = pkgs.ffmpeg-headless.override {
+          withX265 = false;
+          withAom = false;
+          withSvtav1 = false;
+        };
         renderer = pkgs.rustPlatform.buildRustPackage {
           pname = "kopoka-render";
           version = "0.1.0";
@@ -45,14 +50,14 @@
           ];
           nativeBuildInputs = [ pkgs.makeWrapper ];
           nativeCheckInputs = [
-            pkgs.ffmpeg
+            ffmpeg
             renderer
           ];
           postInstall = ''
             mv $out/bin/src $out/bin/kopoka
             wrapProgram $out/bin/kopoka --prefix PATH : ${
               pkgs.lib.makeBinPath [
-                pkgs.ffmpeg
+                ffmpeg
                 renderer
               ]
             }
