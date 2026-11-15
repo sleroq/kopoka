@@ -461,13 +461,17 @@ func (t *thumbnails) xSource(link *url.URL) (thumbnailSource, error) {
 		return thumbnailSource{}, fmt.Errorf("FxTwitter HTTP %s", res.Status)
 	}
 
+	type fxMedia struct {
+		All    []thumbnailMedia `json:"all"`
+		Photos []thumbnailMedia `json:"photos"`
+	}
 	var response struct {
 		Code  int `json:"code"`
 		Tweet *struct {
-			Media struct {
-				All    []thumbnailMedia `json:"all"`
-				Photos []thumbnailMedia `json:"photos"`
-			} `json:"media"`
+			Media fxMedia `json:"media"`
+			Quote struct {
+				Media fxMedia `json:"media"`
+			} `json:"quote"`
 		} `json:"tweet"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&response); err != nil {
@@ -480,6 +484,12 @@ func (t *thumbnails) xSource(link *url.URL) (thumbnailSource, error) {
 	items := response.Tweet.Media.All
 	if items == nil {
 		items = response.Tweet.Media.Photos
+	}
+	if len(items) == 0 {
+		items = response.Tweet.Quote.Media.All
+		if items == nil {
+			items = response.Tweet.Quote.Media.Photos
+		}
 	}
 	if len(items) == 0 {
 		return thumbnailSource{}, fmt.Errorf("FxTwitter preview missing")

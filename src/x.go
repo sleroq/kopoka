@@ -59,6 +59,11 @@ func fetchXResponse(client *http.Client, link *url.URL, host string, response an
 }
 
 func fetchFxPost(client *http.Client, link *url.URL) (xPost, error) {
+	type fxMedia struct {
+		All    []xMedia `json:"all"`
+		Photos []xMedia `json:"photos"`
+	}
+
 	var response struct {
 		Code    int    `json:"code"`
 		Message string `json:"message"`
@@ -67,10 +72,10 @@ func fetchFxPost(client *http.Client, link *url.URL) (xPost, error) {
 			Author struct {
 				Name string `json:"name"`
 			} `json:"author"`
-			Media struct {
-				All    []xMedia `json:"all"`
-				Photos []xMedia `json:"photos"`
-			} `json:"media"`
+			Media fxMedia `json:"media"`
+			Quote struct {
+				Media fxMedia `json:"media"`
+			} `json:"quote"`
 		} `json:"tweet"`
 	}
 	if err := fetchXResponse(client, link, "api.fxtwitter.com", &response); err != nil {
@@ -82,6 +87,12 @@ func fetchFxPost(client *http.Client, link *url.URL) (xPost, error) {
 	items := response.Tweet.Media.All
 	if items == nil {
 		items = response.Tweet.Media.Photos
+	}
+	if len(items) == 0 {
+		items = response.Tweet.Quote.Media.All
+		if items == nil {
+			items = response.Tweet.Quote.Media.Photos
+		}
 	}
 	post := xPost{Text: response.Tweet.Text, Author: response.Tweet.Author.Name, Media: items}
 	if err := validateXPost(post, "FxTwitter", true); err != nil {
@@ -95,9 +106,15 @@ func fetchVxPost(client *http.Client, link *url.URL) (xPost, error) {
 		Text     string   `json:"text"`
 		UserName string   `json:"user_name"`
 		Media    []xMedia `json:"media_extended"`
+		Quote    struct {
+			Media []xMedia `json:"media_extended"`
+		} `json:"qrt"`
 	}
 	if err := fetchXResponse(client, link, "api.vxtwitter.com", &response); err != nil {
 		return xPost{}, err
+	}
+	if len(response.Media) == 0 {
+		response.Media = response.Quote.Media
 	}
 	for i := range response.Media {
 		switch response.Media[i].Type {

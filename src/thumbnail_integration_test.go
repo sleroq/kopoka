@@ -10,6 +10,7 @@ import (
 	"image/color"
 	"image/draw"
 	"image/png"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1190,5 +1191,39 @@ func TestPreviewMigrationAndBackfill(t *testing.T) {
 	previews.backfillHistory()
 	if s.upstream.Load() != 1 {
 		t.Fatalf("backfill repeated: %d", s.upstream.Load())
+	}
+}
+
+func TestThumbnailXQuotedMedia(t *testing.T) {
+	cases := []struct {
+		name, tweet string
+		want        thumbnailMedia
+	}{
+		{"quote photo", `{"media":{"all":[]},"quote":{"media":{"all":[{"type":"photo","url":"https://media/quote","thumbnail_url":"https://media/preview"}]}}}`, thumbnailMedia{Type: "photo", URL: "https://media/quote", ThumbnailURL: "https://media/preview"}},
+		{"quote video", `{"quote":{"media":{"all":[{"type":"video","url":"https://media/video","thumbnail_url":"https://media/preview"}]}}}`, thumbnailMedia{Type: "video", URL: "https://media/video", ThumbnailURL: "https://media/preview"}},
+		{"outer", `{"media":{"all":[{"type":"photo","url":"https://media/outer"}]},"quote":{"media":{"all":[{"type":"photo","url":"https://media/quote"}]}}}`, thumbnailMedia{Type: "photo", URL: "https://media/outer"}},
+		{"no media", `{}`, thumbnailMedia{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &http.Client{Transport: xPostTransport(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: 200, Status: "OK",
+					Body:   io.NopCloser(strings.NewReader(`{"code":200,"tweet":` + tc.tweet + `}`)),
+					Header: make(http.Header), Request: r,
+				}, nil
+			})}
+			link, _ := url.Parse("https://x.com/user/status/123")
+			source, err := (&thumbnails{client: client}).xSource(link)
+			if tc.want.URL == "" {
+				if err == nil {
+					t.Fatal("expected missing preview error")
+				}
+				return
+			}
+			if err != nil || source.count != 1 || len(source.media) != 1 || source.media[0] != tc.want {
+				t.Fatalf("source = %+v, error = %v", source, err)
+			}
+		})
 	}
 }

@@ -271,6 +271,9 @@ func TestMediaQueueRollingLimits(t *testing.T) {
 
 	// An upstream failure still consumes a link attempt.
 	handleMessage(bot, nil, db, queuedChat(1, 1, 1), queue, nil)
+	if message := queueEvent(t, api.feedback); !strings.Contains(message, "Could not process") {
+		t.Fatalf("upstream failure: %s", message)
+	}
 	handleMessage(bot, nil, db, queuedChat(1, 2, 2), queue, nil)
 	handleChosenInlineResult(bot, nil, db, &tgbotapi.ChosenInlineResult{
 		From: &tgbotapi.User{ID: 1}, ResultID: inlineResultID, InlineMessageID: "limited", Query: "https://x.com/u/status/3",

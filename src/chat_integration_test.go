@@ -224,7 +224,13 @@ func TestChatHistorySettingsFlow(t *testing.T) {
 		t.Fatalf("saved artwork: %#v, %v", a, err)
 	}
 	chat("https://x.com/u/status/3")
+	if !strings.Contains(reply, "Could not process https://x.com/u/status/3") {
+		t.Fatalf("send failure reply: %q", reply)
+	}
 	chat("https://x.com/u/status/4")
+	if !strings.Contains(reply, "Could not process https://x.com/u/status/4") {
+		t.Fatalf("missing media reply: %q", reply)
+	}
 	chat("https://x.com/u/status/invalid")
 	check("x:1", "x:99")
 	command("/settings")

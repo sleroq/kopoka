@@ -223,7 +223,7 @@ func processLink(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, messa
 		return err
 	}
 	if len(photos) == 0 {
-		return nil
+		return fmt.Errorf("no media found")
 	}
 
 	action := tgbotapi.ChatUploadPhoto
@@ -377,16 +377,21 @@ func processMessageLinks(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.D
 		reactToMessage(bot, message)
 	}
 
-	var results []<-chan error
+	type linkResult struct {
+		link   string
+		result <-chan error
+	}
+	var results []linkResult
 	rejected := make(map[error]int)
 	for _, link := range links {
+		linkText := link.String()
 		result, err := queue.submit(message.From.ID, func() error {
 			return processLink(bot, app, db, message, link, previews)
 		})
 		if err != nil {
 			rejected[err]++
 		} else {
-			results = append(results, result)
+			results = append(results, linkResult{linkText, result})
 		}
 	}
 	for _, reason := range []error{errMediaQueueFull, errMediaHourlyLimit, errMediaDailyLimit} {
@@ -400,8 +405,13 @@ func processMessageLinks(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.D
 		}
 	}
 	for _, result := range results {
-		if err := <-result; err != nil {
-			log.Println(err)
+		if err := <-result.result; err != nil {
+			log.Printf("processing %s: %v", result.link, err)
+			reply := tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("Could not process %s. Please try again.", result.link))
+			reply.ReplyToMessageID = message.MessageID
+			if _, err := bot.Send(reply); err != nil {
+				log.Printf("sending processing error: %v", err)
+			}
 		}
 	}
 }

@@ -87,3 +87,55 @@ func TestXProvidersBothFail(t *testing.T) {
 		t.Fatalf("failure changed link or metadata: %s, %+v", link, metadata)
 	}
 }
+
+func TestXQuotedMedia(t *testing.T) {
+	cases := []struct {
+		name, fx, vx, want string
+	}{
+		{"fx quote", `{"code":200,"tweet":{"text":"outer text","author":{"name":"Outer"},"media":{"all":[]},"quote":{"media":{"all":[{"type":"photo","url":"https://media/quote"}]}}}}`, "", "https://media/quote"},
+		{"fx outer", `{"code":200,"tweet":{"text":"outer text","author":{"name":"Outer"},"media":{"all":[{"type":"photo","url":"https://media/outer"}]},"quote":{"media":{"all":[{"type":"photo","url":"https://media/quote"}]}}}}`, "", "https://media/outer"},
+		{"fx no media", `{"code":200,"tweet":{"text":"outer text","author":{"name":"Outer"}}}`, "", ""},
+		{"vx quote", `{}`, `{"text":"outer text","user_name":"Outer","media_extended":[],"qrt":{"media_extended":[{"type":"image","url":"https://media/quote"}]}}`, "https://media/quote"},
+		{"vx outer", `{}`, `{"text":"outer text","user_name":"Outer","media_extended":[{"type":"image","url":"https://media/outer"}],"qrt":{"media_extended":[{"type":"image","url":"https://media/quote"}]}}`, "https://media/outer"},
+		{"vx no media", `{}`, `{"text":"outer text","user_name":"Outer"}`, ""},
+	}
+
+	original := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = original })
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			http.DefaultTransport = xPostTransport(func(r *http.Request) (*http.Response, error) {
+				body := tc.fx
+				if r.URL.Host == "api.vxtwitter.com" {
+					body = tc.vx
+				}
+				return &http.Response{
+					StatusCode: 200, Status: "OK", Body: io.NopCloser(strings.NewReader(body)),
+					Header: make(http.Header), Request: r,
+				}, nil
+			})
+			link, _ := url.Parse("https://x.com/user/status/123")
+			metadata := &artwork{}
+			media, err := handleXLink(link, metadata)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if metadata.Author != "Outer" || metadata.Text != "outer text" || link.String() != "https://fxtwitter.com/user/status/123" {
+				t.Fatalf("metadata = %+v, link = %s", metadata, link)
+			}
+			if tc.want == "" {
+				if len(media) != 0 {
+					t.Fatalf("media = %v", media)
+				}
+				return
+			}
+			if len(media) != 1 {
+				t.Fatalf("media = %v", media)
+			}
+			photo, ok := media[0].(tgbotapi.InputMediaPhoto)
+			if !ok || photo.Media != tgbotapi.FileURL(tc.want) || photo.Caption != `<a href="https://fxtwitter.com/user/status/123">Outer</a>` {
+				t.Fatalf("media = %+v", media[0])
+			}
+		})
+	}
+}
