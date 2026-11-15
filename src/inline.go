@@ -288,7 +288,11 @@ func inlineArtworkResult(db *sql.DB, link *url.URL, previews *thumbnails, instan
 		return cachedInlineResult(*a, previews)
 	}
 
-	result := inlinePhoto(previews.newPhoto(link, instant))
+	photo, ok := previews.newPhoto(link, instant)
+	if !ok {
+		return nil
+	}
+	result := inlinePhoto(photo)
 	result["id"], result["title"] = inlineResultID, "Artwork"
 	result["input_message_content"] = map[string]any{
 		"message_text": "Loading artwork…", "disable_web_page_preview": true,
@@ -330,7 +334,10 @@ func inlineArtworkResults(db *sql.DB, user int64, link *url.URL, previews *thumb
 		log.Printf("loading instant inline settings: %v", err)
 	}
 	if explicit {
-		return []any{inlineArtworkResult(db, link, previews, instant)}
+		if result := inlineArtworkResult(db, link, previews, instant); result != nil {
+			return []any{result}
+		}
+		return nil
 	}
 	normal := make(chan map[string]any, 1)
 	merged := make(chan map[string]any, 1)
@@ -344,7 +351,10 @@ func inlineArtworkResults(db *sql.DB, user int64, link *url.URL, previews *thumb
 		postImages = inlinePostImageResults(db, user, link, previews, instant)
 	}
 
-	results := []any{<-normal}
+	var results []any
+	if result := <-normal; result != nil {
+		results = append(results, result)
+	}
 	if result := <-merged; result != nil {
 		results = append(results, result)
 	}

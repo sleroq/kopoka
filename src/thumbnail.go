@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -227,21 +228,26 @@ func (t *thumbnails) savedPhoto(a artwork) previewPhoto {
 	return t.placeholder(strings.HasPrefix(a.ID, "pixiv:"))
 }
 
-func (t *thumbnails) newPhoto(link *url.URL, instant bool) previewPhoto {
+var errNoXMedia = errors.New("FxTwitter post has no media")
+
+func (t *thumbnails) newPhoto(link *url.URL, instant bool) (previewPhoto, bool) {
 	if id := t.cached(link, 0); id != "" {
-		return previewPhoto{fileID: id}
+		return previewPhoto{fileID: id}, true
 	}
 	if !instant {
 		work := t.warmup(link, 0)
 		select {
 		case <-work.done:
+			if errors.Is(work.err, errNoXMedia) {
+				return previewPhoto{}, false
+			}
 			if work.err == nil {
-				return t.urlPhoto(link, 0, work.width, work.height)
+				return t.urlPhoto(link, 0, work.width, work.height), true
 			}
 		case <-time.After(8 * time.Second):
 		}
 	}
-	return t.placeholder(link.Host == "pixiv.net" || link.Host == "www.pixiv.net")
+	return t.placeholder(link.Host == "pixiv.net" || link.Host == "www.pixiv.net"), true
 }
 
 func (t *thumbnails) urlPhoto(link *url.URL, count, width, height int) previewPhoto {
@@ -303,7 +309,7 @@ func (t *thumbnails) mergedPhotoVariant(link *url.URL, instant, bars bool) (prev
 	}
 	select {
 	case <-done:
-		if work.sourceOK && work.photoCount < 2 {
+		if errors.Is(variant.err, errNoXMedia) || work.sourceOK && work.photoCount < 2 {
 			return previewPhoto{}, false
 		}
 		if variant.err == nil {
@@ -730,7 +736,7 @@ func (t *thumbnails) xSource(link *url.URL) (thumbnailSource, error) {
 		}
 	}
 	if len(items) == 0 {
-		return thumbnailSource{}, fmt.Errorf("FxTwitter preview missing")
+		return thumbnailSource{}, errNoXMedia
 	}
 	count := len(items)
 	selected := xPhotoIndex(link)

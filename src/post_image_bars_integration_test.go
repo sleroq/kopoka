@@ -92,4 +92,27 @@ func TestPostImageBarsInlineResults(t *testing.T) {
 			t.Fatalf("id=%s instant=%v bars=%d results=%v", tc.id, tc.instant, found, results)
 		}
 	}
+
+	for _, tc := range []struct {
+		id      string
+		user    int64
+		artwork int
+	}{
+		{"3", 1, 0}, {"1", 1, 1}, {"2", 1, 3}, {"3", 2, 3},
+	} {
+		link := inlineLink("https://x.com/user/status/" + tc.id)
+		results := inlineArtworkResults(db, tc.user, link, previews, false)
+		artwork, postImages := 0, 0
+		for _, item := range results {
+			id := item.(map[string]any)["id"].(string)
+			if strings.HasPrefix(id, "post-image:") {
+				postImages++
+			} else {
+				artwork++
+			}
+		}
+		if artwork != tc.artwork || postImages < 2 {
+			t.Fatalf("id=%s user=%d artwork=%d postImages=%d results=%v", tc.id, tc.user, artwork, postImages, results)
+		}
+	}
 }
