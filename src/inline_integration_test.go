@@ -128,10 +128,13 @@ func TestInlineTelegramFlow(t *testing.T) {
 				From: &tgbotapi.User{ID: 1}, ID: "query", Query: " https://x.com/user/status/1?tracking=1 ",
 			}
 			handleInlineQuery(bot, db, query, testPreviews(t, db, bot))
-			if strings.Join(calls, ",") != "answer" || len(answer) != 1 {
+			if strings.Join(calls, ",") != "answer" || len(answer) != 2 {
 				t.Fatalf("calls: %v, answer: %#v", calls, answer)
 			}
 			checkInlineAnswer(t, answer[0])
+			if answer[1]["id"] != inlineMergedResultID || answer[1]["title"] != "Merged" {
+				t.Fatalf("merged result: %#v", answer[1])
+			}
 			chosen := &tgbotapi.ChosenInlineResult{
 				From: &tgbotapi.User{ID: 1}, ResultID: inlineResultID, InlineMessageID: "inline", Query: query.Query,
 			}
@@ -161,6 +164,9 @@ func checkCachedInlineFlow(t *testing.T, bot *tgbotapi.BotAPI, db *sql.DB, query
 	// The same status under another host and user resolves to the cached artwork.
 	query.Query = "https://vxtwitter.com/another/status/1?ref=2"
 	handleInlineQuery(bot, db, query, testPreviews(t, db, bot))
+	if len(*answer) != 2 || (*answer)[1]["id"] != inlineMergedResultID {
+		t.Fatalf("cached results: %#v", *answer)
+	}
 	cached := (*answer)[0]
 	if cached["type"] != "photo" || cached["id"] != "x:1" || cached["photo_file_id"] != "large1" || cached["title"] != "Artist" || cached["description"] != "A real post" {
 		t.Fatalf("cached result: %#v", cached)
@@ -337,7 +343,7 @@ func TestInlinePixivThumbnail(t *testing.T) {
 		if err := json.Unmarshal([]byte(r.FormValue("results")), &results); err != nil {
 			t.Fatal(err)
 		}
-		if len(results) != 1 {
+		if len(results) != 2 {
 			t.Errorf("results: %#v", results)
 		} else if results[0]["photo_url"] != "https://preview.example.com/thumbnail-placeholder-pixiv.jpg" {
 			t.Errorf("result: %#v", results[0])
@@ -1020,7 +1026,7 @@ func TestXVideoChatAndInline(t *testing.T) {
 			}
 			inlineQuery := &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 1}, Query: link}
 			handleInlineQuery(bot, db, inlineQuery, testPreviews(t, db, bot))
-			if len(answer) != 1 || answer[0]["type"] != "photo" || answer[0]["photo_url"] != "https://preview.example.com/thumbnail-placeholder-x.jpg" {
+			if len(answer) != 2 || answer[0]["type"] != "photo" || answer[0]["photo_url"] != "https://preview.example.com/thumbnail-placeholder-x.jpg" {
 				t.Fatalf("cached: %#v", answer)
 			}
 			rich := answer[0]["input_message_content"].(map[string]any)["rich_message"].(map[string]any)

@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"image"
+	"image/color"
 	_ "image/gif"
 	"image/jpeg"
 	_ "image/png"
@@ -41,6 +43,7 @@ func mergeArtPhotos(photos []any) []any {
 					start++
 					continue
 				}
+
 				end := start + 1
 				for end < len(photos) {
 					if _, ok := photos[end].(tgbotapi.InputMediaPhoto); !ok {
@@ -86,6 +89,66 @@ func mergeArtPhotos(photos []any) []any {
 		merged = append(merged, photo)
 	}
 	return merged
+}
+
+func forceMergeArtPhotos(photos []any) ([]any, error) {
+	client := &http.Client{Timeout: 10 * time.Second}
+	result := make([]any, 0, len(photos))
+
+	for start := 0; start < len(photos); {
+		if _, ok := photos[start].(tgbotapi.InputMediaPhoto); !ok {
+			result = append(result, photos[start])
+			start++
+			continue
+		}
+		end := start + 1
+		for end < len(photos) {
+			if _, ok := photos[end].(tgbotapi.InputMediaPhoto); !ok {
+				break
+			}
+			end++
+		}
+		if end == start+1 {
+			result = append(result, photos[start])
+			start = end
+			continue
+		}
+
+		images := make([]image.Image, 0, end-start)
+		width, height := 0, 0
+		for _, item := range photos[start:end] {
+			img, err := downloadArtPhoto(client, item.(tgbotapi.InputMediaPhoto).Media)
+			if err != nil {
+				return nil, fmt.Errorf("downloading photo for merge: %w", err)
+			}
+			images = append(images, img)
+			width += img.Bounds().Dx()
+			height = max(height, img.Bounds().Dy())
+		}
+
+		canvas := image.NewRGBA(image.Rect(0, 0, width, height))
+		draw.Draw(canvas, canvas.Bounds(), image.NewUniform(color.White), image.Point{}, draw.Src)
+		x := 0
+		for _, img := range images {
+			size := img.Bounds().Size()
+			draw.Draw(canvas, image.Rect(x, 0, x+size.X, size.Y), img, img.Bounds().Min, draw.Over)
+			x += size.X
+		}
+
+		file, err := mergedPhotoFile(canvas)
+		if err != nil {
+			return nil, fmt.Errorf("encoding merged photos: %w", err)
+		}
+		if file.Bytes == nil {
+			return nil, fmt.Errorf("merged photo exceeds Telegram's 10 MB limit")
+		}
+
+		photo := photos[start].(tgbotapi.InputMediaPhoto)
+		photo.Media = file
+		result = append(result, photo)
+		start = end
+	}
+	return result, nil
 }
 
 func mergedPhotoFile(img image.Image) (tgbotapi.FileBytes, error) {

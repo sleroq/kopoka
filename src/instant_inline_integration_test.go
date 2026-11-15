@@ -183,7 +183,7 @@ func (s *instantSettingsScenario) inline(user int64, link string) map[string]any
 	previews.client = &http.Client{Transport: s.network}
 	handleInlineQuery(s.bot, s.db, query, previews)
 	results := s.api.snapshot().results
-	if len(results) != 1 {
+	if len(results) != 2 {
 		s.t.Fatalf("inline results: %#v", results)
 	}
 	return results[0]

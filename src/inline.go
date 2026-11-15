@@ -15,6 +15,7 @@ import (
 )
 
 const inlineResultID = "artwork"
+const inlineMergedResultID = "artwork:merged"
 
 func inlineLink(text string) *url.URL {
 	link, err := url.Parse(strings.TrimSpace(text))
@@ -239,6 +240,18 @@ func inlineArtworkResult(db *sql.DB, user int64, link *url.URL, previews *thumbn
 	return result
 }
 
+func inlineMergedResult(link *url.URL, previews *thumbnails) map[string]any {
+	result := inlinePhoto(previews.placeholder(link.Host == "pixiv.net" || link.Host == "www.pixiv.net"))
+	result["id"], result["title"] = inlineMergedResultID, "Merged"
+	result["input_message_content"] = map[string]any{
+		"message_text": "Loading merged artwork…", "disable_web_page_preview": true,
+		"entities": []any{map[string]any{"type": "text_link", "offset": 0, "length": 23, "url": link.String()}},
+	}
+	wait := map[string]any{"text": "Please wait…", "disabled": map[string]any{}}
+	result["reply_markup"] = map[string]any{"inline_keyboard": []any{[]any{wait}}}
+	return result
+}
+
 func handleInlineQuery(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.InlineQuery, previews *thumbnails) {
 	results := []any{}
 	nextOffset := ""
@@ -250,7 +263,10 @@ func handleInlineQuery(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.InlineQ
 		if err != nil {
 			log.Printf("loading photo preference: %v", err)
 		} else {
-			results = append(results, inlineArtworkResult(db, query.From.ID, link, previews))
+			normal := make(chan map[string]any, 1)
+			go func() { normal <- inlineArtworkResult(db, query.From.ID, link, previews) }()
+			merged := inlineMergedResult(link, previews)
+			results = append(results, <-normal, merged)
 		}
 	}
 	encoded, err := json.Marshal(results)
@@ -268,7 +284,7 @@ func handleInlineQuery(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.InlineQ
 }
 
 func handleChosenInlineResult(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, cacheChat string, queue *mediaQueue, previews *thumbnails) {
-	if chosen.ResultID != inlineResultID {
+	if chosen.ResultID != inlineResultID && chosen.ResultID != inlineMergedResultID {
 		id := chosen.ResultID
 		if parent, index, ok := strings.Cut(id, ":item:"); ok {
 			if n, err := strconv.Atoi(index); err == nil && n >= 0 {
@@ -322,7 +338,11 @@ func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB,
 		return err
 	}
 	a := artwork{ID: artworkID(link), URL: link.String()}
-	photos, err := fetchArtPhotos(app, link, &a)
+	force := chosen.ResultID == inlineMergedResultID
+	if force {
+		a.ID += ":merged"
+	}
+	photos, err := fetchArtPhotos(app, link, &a, force)
 	if err != nil {
 		return err
 	}
@@ -367,7 +387,7 @@ func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB,
 
 	if err := saveSelection(db, chosen.From.ID, a); err != nil {
 		log.Printf("saving inline artwork: %v", err)
-	} else if previews != nil {
+	} else if previews != nil && !force {
 		previews.warmArtwork(inlineLink(a.URL), len(a.Photos))
 	}
 	return nil
