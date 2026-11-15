@@ -125,8 +125,17 @@ func forceMergePanels(photos []any, bars bool) ([]any, error) {
 				return nil, fmt.Errorf("downloading photo for merge: %w", err)
 			}
 			images = append(images, img)
-			width += img.Bounds().Dx()
 			height = max(height, img.Bounds().Dy())
+		}
+		for i, img := range images {
+			size := img.Bounds().Size()
+			if bars && size.Y != height {
+				bounds := image.Rect(0, 0, max(1, (size.X*height+size.Y/2)/size.Y), height)
+				resized := image.NewRGBA(bounds)
+				draw.CatmullRom.Scale(resized, bounds, img, img.Bounds(), draw.Src, nil)
+				images[i] = resized
+			}
+			width += images[i].Bounds().Dx()
 		}
 
 		gap := 0

@@ -150,14 +150,18 @@ func checkBarsSelection(t *testing.T, bot *tgbotapi.BotAPI, db *sql.DB, chosen *
 	t.Helper()
 	chosen.ResultID = inlineBarsResultID
 	handleChosenInlineResult(bot, nil, db, chosen, "@cache", queue, previews)
-	if *merged == nil || (*merged).Bounds().Size() != image.Pt(302, 300) {
+	if *merged == nil || (*merged).Bounds().Size() != image.Pt(502, 300) {
 		t.Fatalf("bars image: %v", merged)
 	}
-	for _, p := range []image.Point{{200, 150}, {201, 150}, {0, 0}, {201, 0}, {250, 250}} {
+	for _, p := range []image.Point{{200, 150}, {201, 150}, {0, 0}, {201, 0}} {
 		r, g, b, _ := (*merged).At(p.X, p.Y).RGBA()
 		if r > 0xa000 || g > 0xa000 || b > 0xa000 {
 			t.Fatalf("expected black at %v: %x %x %x", p, r, g, b)
 		}
+	}
+	r, g, b, _ := (*merged).At(350, 250).RGBA()
+	if r > 0x3000 || g > 0x3000 || b < 0xc000 {
+		t.Fatalf("expected blue at bottom of resized panel: %x %x %x", r, g, b)
 	}
 	bars, err := findArtwork(db, "x:42:merged:bars")
 	if err != nil || bars == nil || len(bars.Photos) != 1 || bars.Photos[0] != "merged-file" {
