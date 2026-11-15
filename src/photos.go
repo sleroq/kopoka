@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -10,6 +11,7 @@ import (
 	_ "image/png"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -249,46 +251,9 @@ func sendPhotosWithIDs(bot *tgbotapi.BotAPI, chatID int64, replyID int, photos [
 			}
 		}
 
-		var messages []tgbotapi.Message
-		if len(batch) == 1 {
-			base := mediaBase(batch[0])
-			var msg tgbotapi.Message
-			var err error
-			switch base.Type {
-			case "animation":
-				animation := tgbotapi.NewAnimation(chatID, base.Media)
-				animation.ReplyToMessageID = replyID
-				animation.Caption = base.Caption
-				animation.ParseMode = base.ParseMode
-				animation.CaptionEntities = base.CaptionEntities
-				msg, err = retryTelegram(func() (tgbotapi.Message, error) { return bot.Send(animation) })
-			case "video":
-				video := tgbotapi.NewVideo(chatID, base.Media)
-				video.ReplyToMessageID = replyID
-				video.Caption = base.Caption
-				video.ParseMode = base.ParseMode
-				video.CaptionEntities = base.CaptionEntities
-				msg, err = retryTelegram(func() (tgbotapi.Message, error) { return bot.Send(video) })
-			default:
-				photo := tgbotapi.NewPhoto(chatID, base.Media)
-				photo.ReplyToMessageID = replyID
-				photo.Caption = base.Caption
-				photo.ParseMode = base.ParseMode
-				photo.CaptionEntities = base.CaptionEntities
-				msg, err = retryTelegram(func() (tgbotapi.Message, error) { return bot.Send(photo) })
-			}
-			if err != nil {
-				return nil, err
-			}
-			messages = []tgbotapi.Message{msg}
-		} else {
-			group := tgbotapi.NewMediaGroup(chatID, batch)
-			group.ReplyToMessageID = replyID
-			var err error
-			messages, err = retryTelegram(func() ([]tgbotapi.Message, error) { return bot.SendMediaGroup(group) })
-			if err != nil {
-				return nil, err
-			}
+		messages, err := sendPhotoBatchWithVideoRetry(bot, chatID, replyID, batch)
+		if err != nil {
+			return nil, err
 		}
 
 		for _, message := range messages {
@@ -303,4 +268,82 @@ func sendPhotosWithIDs(bot *tgbotapi.BotAPI, chatID int64, replyID int, photos [
 		}
 	}
 	return ids, nil
+}
+
+func sendPhotoBatchWithVideoRetry(bot *tgbotapi.BotAPI, chatID int64, replyID int, batch []any) ([]tgbotapi.Message, error) {
+	messages, err := sendPhotoBatch(bot, chatID, replyID, batch)
+	var telegramErr *tgbotapi.Error
+	if !errors.As(err, &telegramErr) || telegramErr.Code != 400 || !strings.Contains(telegramErr.Message, "failed to get HTTP URL content") {
+		return messages, err
+	}
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	downloaded := false
+	for i, item := range batch {
+		video, ok := item.(tgbotapi.InputMediaVideo)
+		if !ok {
+			continue
+		}
+		url, ok := video.Media.(tgbotapi.FileURL)
+		if !ok {
+			continue
+		}
+		file, downloadErr := downloadOriginal(client, string(url), false)
+		if downloadErr != nil {
+			return nil, downloadErr
+		}
+		video.Media = file
+		batch[i] = video
+		downloaded = true
+	}
+	if downloaded {
+		return sendPhotoBatch(bot, chatID, replyID, batch)
+	}
+	return messages, err
+}
+
+func sendPhotoBatch(bot *tgbotapi.BotAPI, chatID int64, replyID int, batch []any) ([]tgbotapi.Message, error) {
+	var messages []tgbotapi.Message
+	if len(batch) == 1 {
+		base := mediaBase(batch[0])
+		var msg tgbotapi.Message
+		var err error
+		switch base.Type {
+		case "animation":
+			animation := tgbotapi.NewAnimation(chatID, base.Media)
+			animation.ReplyToMessageID = replyID
+			animation.Caption = base.Caption
+			animation.ParseMode = base.ParseMode
+			animation.CaptionEntities = base.CaptionEntities
+			msg, err = retryTelegram(func() (tgbotapi.Message, error) { return bot.Send(animation) })
+		case "video":
+			video := tgbotapi.NewVideo(chatID, base.Media)
+			video.ReplyToMessageID = replyID
+			video.Caption = base.Caption
+			video.ParseMode = base.ParseMode
+			video.CaptionEntities = base.CaptionEntities
+			msg, err = retryTelegram(func() (tgbotapi.Message, error) { return bot.Send(video) })
+		default:
+			photo := tgbotapi.NewPhoto(chatID, base.Media)
+			photo.ReplyToMessageID = replyID
+			photo.Caption = base.Caption
+			photo.ParseMode = base.ParseMode
+			photo.CaptionEntities = base.CaptionEntities
+			msg, err = retryTelegram(func() (tgbotapi.Message, error) { return bot.Send(photo) })
+		}
+		if err != nil {
+			return nil, err
+		}
+		messages = []tgbotapi.Message{msg}
+	} else {
+		group := tgbotapi.NewMediaGroup(chatID, batch)
+		group.ReplyToMessageID = replyID
+		var err error
+		messages, err = retryTelegram(func() ([]tgbotapi.Message, error) { return bot.SendMediaGroup(group) })
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return messages, nil
 }
