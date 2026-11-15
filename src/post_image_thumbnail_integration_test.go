@@ -50,7 +50,7 @@ func TestThemePreviewHTTP(t *testing.T) {
 		theme      string
 		background [3]uint32
 	}{
-		{"light", [3]uint32{247, 249, 249}},
+		{"light", [3]uint32{255, 255, 255}},
 		{"warm", [3]uint32{255, 246, 245}},
 		{"dark", [3]uint32{0, 0, 0}},
 		{"dim", [3]uint32{22, 24, 28}},
