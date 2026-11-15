@@ -339,7 +339,7 @@ func TestMergedInlinePreview(t *testing.T) {
 			query := &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 1}, Query: "https://x.com/user/status/" + tc.id}
 			handleInlineQuery(bot, previews.db, query, previews)
 			results := <-f.answers
-			if len(results) != 5 || results[1]["id"] != inlineMergedResultID {
+			if len(results) != 7 || results[1]["id"] != inlineMergedResultID {
 				t.Fatalf("results: %#v", results)
 			}
 
@@ -404,7 +404,7 @@ func TestMergedInlineSingletonAndInstant(t *testing.T) {
 	}
 	query := &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 1}, Query: link.String()}
 	handleInlineQuery(bot, previews.db, query, previews)
-	if results := <-f.answers; len(results) != 3 {
+	if results := <-f.answers; len(results) != 5 {
 		t.Fatalf("cached singleton: %#v", results)
 	}
 	if _, ok := previews.mergedPhoto(link, true); ok {

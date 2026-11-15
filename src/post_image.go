@@ -35,6 +35,7 @@ type postMedia struct {
 	Videos   []postVideo `json:"videos,omitempty"`
 	Mosaic   *postImage  `json:"mosaic,omitempty"`
 	Carousel bool        `json:"carousel,omitempty"`
+	Bars     bool        `json:"bars,omitempty"`
 }
 type postArticle struct {
 	Title       string     `json:"title"`
@@ -219,36 +220,55 @@ func preparePostImage(link *url.URL, theme, zone string) (renderRequest, error) 
 }
 
 func preparePostImageWithClient(client *http.Client, link *url.URL, theme, zone string) (renderRequest, error) {
+	request, bars, err := preparePostImageVariants(client, link, zone, !strings.HasSuffix(theme, "-bars"))
+	if strings.HasSuffix(theme, "-bars") {
+		request = bars
+	}
+	request.Theme = strings.TrimSuffix(theme, "-bars")
+	return request, err
+}
+
+func preparePostImageVariants(client *http.Client, link *url.URL, zone string, mergeMain bool) (renderRequest, renderRequest, error) {
 	location, err := time.LoadLocation(zone)
 	if err != nil {
-		return renderRequest{}, err
+		return renderRequest{}, renderRequest{}, err
 	}
+
 	source, err := fetchRichPost(client, xPostLink(link))
 	if err != nil {
-		return renderRequest{}, err
+		return renderRequest{}, renderRequest{}, err
 	}
 	post, err := source.normalize()
 	if err != nil {
-		return renderRequest{}, err
+		return renderRequest{}, renderRequest{}, err
 	}
 	chain, more, err := source.replyChain(client)
 	if err != nil {
-		return renderRequest{}, err
+		return renderRequest{}, renderRequest{}, err
 	}
 	post = post.inTimezone(location)
 	for i := range chain {
 		chain[i] = chain[i].inTimezone(location)
 	}
-	request := renderRequest{Theme: theme, Post: post, ReplyChain: chain, HasMore: more, Images: map[string][]byte{}}
-	if err := loadPostAssets(client, request.Post, request.Images); err != nil {
-		return request, err
+	request := renderRequest{Post: post, ReplyChain: chain, HasMore: more, Images: map[string][]byte{}}
+	bars := request
+	if request.Post.Media != nil {
+		media := *request.Post.Media
+		if len(media.Photos) > 1 {
+			media.Carousel = true
+			media.Bars = true
+		}
+		bars.Post.Media = &media
+	}
+	if err := loadPostAssets(client, request.Post, request.Images, mergeMain); err != nil {
+		return request, bars, err
 	}
 	for _, p := range request.ReplyChain {
-		if err := loadPostAssets(client, p, request.Images); err != nil {
-			return request, err
+		if err := loadPostAssets(client, p, request.Images, true); err != nil {
+			return request, bars, err
 		}
 	}
-	return request, nil
+	return request, bars, nil
 }
 
 func (p renderPost) inTimezone(location *time.Location) renderPost {
@@ -313,7 +333,7 @@ func (p renderPost) imageURLs() []string {
 	return urls
 }
 
-func loadPostAssets(client *http.Client, p renderPost, images map[string][]byte) error {
+func loadPostAssets(client *http.Client, p renderPost, images map[string][]byte, mergePhotos bool) error {
 	for _, u := range p.imageURLs() {
 		if u == "" {
 			return fmt.Errorf("FxTwitter response missing image URL")
@@ -335,13 +355,13 @@ func loadPostAssets(client *http.Client, p renderPost, images map[string][]byte)
 		}
 		images[u] = data
 	}
-	if p.Media != nil {
+	if p.Media != nil && mergePhotos {
 		if err := p.Media.preparePhotos(images); err != nil {
 			return err
 		}
 	}
 	if p.Quote != nil {
-		return loadPostAssets(client, *p.Quote, images)
+		return loadPostAssets(client, *p.Quote, images, true)
 	}
 	return nil
 }
@@ -383,7 +403,7 @@ func postImageID(link *url.URL, theme string) string {
 	return "post-image:" + theme + ":" + strings.TrimPrefix(artworkID(xPostLink(link)), "x:")
 }
 func postImageTheme(id string, link *url.URL) string {
-	for _, theme := range []string{"light", "dark"} {
+	for _, theme := range []string{"light", "dark", "light-bars", "dark-bars"} {
 		if id == postImageID(link, theme) || id == postImageID(link, theme)+":cached" {
 			return theme
 		}
@@ -413,7 +433,11 @@ func postImageResult(db *sql.DB, link *url.URL, theme, zone string, previews *th
 	}
 	result := inlinePhoto(photo)
 	result["id"] = postImageID(link, theme)
-	result["title"] = "Post image · " + strings.ToUpper(theme[:1]) + theme[1:]
+	baseTheme := strings.TrimSuffix(theme, "-bars")
+	result["title"] = "Post image · " + strings.ToUpper(baseTheme[:1]) + baseTheme[1:]
+	if baseTheme != theme {
+		result["title"] = result["title"].(string) + " · Bars"
+	}
 	if file != "" {
 		result["id"] = postImageID(link, theme) + ":cached"
 		result["caption"] = caption

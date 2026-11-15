@@ -45,6 +45,7 @@ struct Media {
     videos: Option<Vec<Video>>,
     mosaic: Option<Image>,
     carousel: Option<bool>,
+    bars: Option<bool>,
 }
 #[derive(Deserialize)]
 struct Image {
@@ -144,7 +145,14 @@ impl Card<'_> {
         let height = width * source_height as f32 / source_width as f32;
         Ok(Self::image_node(bytes, width, height, 12.0))
     }
-    fn photos(&self, photos: &[Image], width: f32, compact: bool, carousel: bool) -> Result<Node> {
+    fn photos(
+        &self,
+        photos: &[Image],
+        width: f32,
+        compact: bool,
+        carousel: bool,
+        bars: bool,
+    ) -> Result<Node> {
         if carousel || photos.len() > 4 {
             let height = (width * 0.8).min(400.0);
             let mut items = Vec::new();
@@ -158,7 +166,12 @@ impl Card<'_> {
             let viewport = if compact { width } else { width + 24.0 };
             let radius = if compact { "12px" } else { "12px 0 0 12px" };
             let arrow = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>"#;
-            let mut nodes = vec![row(items, "gap:4px")];
+            let row_style = if bars {
+                format!("gap:4px;width:{drawn_width}px;flex-shrink:0;background:black")
+            } else {
+                "gap:4px".to_string()
+            };
+            let mut nodes = vec![row(items, &row_style)];
             if drawn_width > viewport {
                 nodes.push(styled(
                     Node::image(arrow.as_bytes().to_vec()),
@@ -249,7 +262,13 @@ impl Card<'_> {
             } else if let Some(photos) = &media.photos
                 && !photos.is_empty()
             {
-                nodes.push(self.photos(photos, width, compact, media.carousel.unwrap_or(false))?);
+                nodes.push(self.photos(
+                    photos,
+                    width,
+                    compact,
+                    media.carousel.unwrap_or(false),
+                    media.bars.unwrap_or(false),
+                )?);
             }
             for video in media.videos.as_deref().unwrap_or_default() {
                 nodes.push(column(

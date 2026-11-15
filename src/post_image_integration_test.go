@@ -94,11 +94,11 @@ func testPostImageInlineFlow(t *testing.T, realRenderer string) {
 	previews := testPreviews(t, db, bot)
 	query := &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 1}, Query: "https://x.com/user/status/42/photo/2"}
 	handleInlineQuery(bot, db, query, previews)
-	if len(results) != 3 || results[1]["id"] != "post-image:light:42" || results[2]["id"] != "post-image:dark:42" || strings.Join(calls, ",") != "answer" {
+	if len(results) != 5 || results[1]["id"] != "post-image:light:42" || results[2]["id"] != "post-image:dark:42" || results[3]["id"] != "post-image:light-bars:42" || results[4]["id"] != "post-image:dark-bars:42" || results[3]["photo_file_id"] != nil || strings.Join(calls, ",") != "answer" {
 		t.Fatalf("results %v calls %v", results, calls)
 	}
 	queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})
-	for _, theme := range []string{"light", "dark"} {
+	for _, theme := range []string{"light", "dark", "light-bars", "dark-bars"} {
 		chosen := &tgbotapi.ChosenInlineResult{
 			From: query.From, ResultID: "post-image:" + theme + ":42",
 			InlineMessageID: "inline", Query: query.Query,
@@ -112,18 +112,22 @@ func testPostImageInlineFlow(t *testing.T, realRenderer string) {
 		if err = json.Unmarshal(data, &request); err != nil {
 			t.Fatal(err)
 		}
-		if request.Theme != theme || request.Post.Quote == nil || request.Post.Quote.Text != "quote" || len(request.Post.Media.Photos) != 2 || len(request.Images) != 2 {
+		if request.Theme != strings.TrimSuffix(theme, "-bars") || request.Post.Media.Carousel != strings.HasSuffix(theme, "-bars") || request.Post.Media.Bars != strings.HasSuffix(theme, "-bars") || request.Post.Quote == nil || request.Post.Quote.Text != "quote" || len(request.Post.Media.Photos) != 2 || len(request.Images) != 2 {
 			t.Fatalf("request: %+v", request)
 		}
 	}
+	var cached int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM post_image_cache`).Scan(&cached); err != nil || cached != 4 {
+		t.Fatalf("cached variants: %d, %v", cached, err)
+	}
 	before := len(calls)
 	handleInlineQuery(bot, db, query, previews)
-	if len(calls) != before+1 || results[1]["photo_file_id"] != "card" || results[2]["photo_file_id"] != "card" || !strings.Contains(results[1]["caption"].(string), "/status/42") {
+	if len(calls) != before+1 || results[1]["photo_file_id"] != "card" || results[2]["photo_file_id"] != "card" || results[3]["photo_file_id"] != "card" || results[4]["photo_file_id"] != "card" || !strings.Contains(results[1]["caption"].(string), "/status/42") {
 		t.Fatalf("cached results %v calls %v", results, calls)
 	}
 	before = len(calls)
 	handleChosenInlineResult(bot, nil, db, &tgbotapi.ChosenInlineResult{
-		From: query.From, ResultID: results[2]["id"].(string), Query: query.Query,
+		From: query.From, ResultID: results[4]["id"].(string), Query: query.Query,
 	}, "@cache", queue, previews)
 	if len(calls) != before {
 		t.Fatalf("cached selection made requests: %v", calls[before:])
@@ -439,6 +443,7 @@ func checkPostPanels(t *testing.T, req renderRequest, tc postPanelFixture, serve
 func TestPostImageOriginalPanels(t *testing.T) {
 	t.Setenv("KOPOKA_RENDERER", testPostImageRenderer(t))
 	widths := []int{28, 27, 28, 27, 28, 28, 27, 28, 27, 28, 28, 27, 28, 27, 28, 28, 27, 28, 27, 28}
+
 	for _, tc := range []postPanelFixture{
 		{name: "streetysnail", widths: widths, height: 552},
 		{name: "streetysnail", widths: widths, height: 552, unrelated: true},
@@ -466,6 +471,35 @@ func TestPostImageOriginalPanels(t *testing.T) {
 				t.Fatal(err)
 			}
 			checkPostPanels(t, req, tc, server)
+			link := inlineLink("https://x.com/artist/status/42")
+			normal, bars, err := preparePostImageVariants(client, link, defaultTimezone, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkPostPanels(t, normal, tc, server)
+			singleServer := postPanelServer(t, assets[:1])
+			defer singleServer.Close()
+			singleTarget, _ := url.Parse(singleServer.URL)
+			singleClient := &http.Client{Transport: redirectTransport{singleTarget, http.DefaultTransport}}
+			single, err := preparePostImageWithClient(singleClient, link, "dark-bars", defaultTimezone)
+			if err != nil || single.Post.Media.Carousel || single.Post.Media.Bars || len(single.Post.Media.Photos) != 1 {
+				t.Fatalf("single photo bars: %+v, %v", single.Post.Media, err)
+			}
+			if !bars.Post.Media.Carousel || !bars.Post.Media.Bars || len(bars.Post.Media.Photos) != len(assets) {
+				t.Fatalf("bars media: %+v", bars.Post.Media)
+			}
+			for i, photo := range bars.Post.Media.Photos {
+				if photo.URL != fmt.Sprintf("%s/panel/%d", server.URL, i) || !bytes.Equal(bars.Images[photo.URL], assets[i]) {
+					t.Fatalf("bars panel %d: %s", i, photo.URL)
+				}
+			}
+			if len(bars.Post.Quote.Media.Photos) != len(normal.Post.Quote.Media.Photos) || len(bars.ReplyChain[0].Media.Photos) != len(normal.ReplyChain[0].Media.Photos) {
+				t.Fatal("bars changed quoted or reply media")
+			}
+			bars.Theme = "light"
+			if _, err := renderPostImage(bars); err != nil {
+				t.Fatal(err)
+			}
 			for _, theme := range []string{"light", "dark"} {
 				req.Theme = theme
 				if _, err := renderPostImage(req); err != nil {

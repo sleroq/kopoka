@@ -263,6 +263,7 @@ func inlineMergedResult(link *url.URL, previews *thumbnails, instant bool, bars 
 func inlineArtworkResults(db *sql.DB, user int64, link *url.URL, previews *thumbnails) []any {
 	settings, err := loadInstantInlineSettings(db, user)
 	instant := settings.X
+
 	if link.Host == "pixiv.net" || link.Host == "www.pixiv.net" {
 		instant = settings.Pixiv
 	}
@@ -276,17 +277,21 @@ func inlineArtworkResults(db *sql.DB, user int64, link *url.URL, previews *thumb
 	go func() { normal <- inlineArtworkResult(db, link, previews, instant) }()
 	go func() { merged <- inlineMergedResult(link, previews, instant, false) }()
 	go func() { bars <- inlineMergedResult(link, previews, instant, true) }()
-	var light, dark chan map[string]any
+
+	var postImages []chan map[string]any
 	if xLinkHosts[strings.ToLower(link.Host)] {
 		zone, err := loadUserTimezone(db, user)
 		if err != nil {
 			log.Printf("loading post image timezone: %v", err)
 		} else {
-			light, dark = make(chan map[string]any, 1), make(chan map[string]any, 1)
-			go func() { light <- postImageResult(db, link, "light", zone, previews, instant) }()
-			go func() { dark <- postImageResult(db, link, "dark", zone, previews, instant) }()
+			for _, theme := range []string{"light", "dark", "light-bars", "dark-bars"} {
+				result := make(chan map[string]any, 1)
+				postImages = append(postImages, result)
+				go func() { result <- postImageResult(db, link, theme, zone, previews, instant) }()
+			}
 		}
 	}
+
 	results := []any{<-normal}
 	if result := <-merged; result != nil {
 		results = append(results, result)
@@ -294,8 +299,8 @@ func inlineArtworkResults(db *sql.DB, user int64, link *url.URL, previews *thumb
 	if result := <-bars; result != nil {
 		results = append(results, result)
 	}
-	if light != nil {
-		results = append(results, <-light, <-dark)
+	for _, result := range postImages {
+		results = append(results, <-result)
 	}
 	return results
 }

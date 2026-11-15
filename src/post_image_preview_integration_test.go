@@ -42,8 +42,9 @@ func testPostImagePreviewFlow(t *testing.T, renderer string) {
 	script := `#!/bin/sh
 input=$(cat)
 case "$input" in *'"theme":"light"'*) theme=light;; *) theme=dark;; esac
+case "$input" in *'"carousel":true'*) theme="$theme-bars";; esac
 printf '%s' "$input" > "$PREVIEW_TEST_DIR/$theme.json"
-while [ ! -f "$PREVIEW_TEST_DIR/light.json" ] || [ ! -f "$PREVIEW_TEST_DIR/dark.json" ]; do sleep 0.01; done
+while [ ! -f "$PREVIEW_TEST_DIR/light.json" ] || [ ! -f "$PREVIEW_TEST_DIR/dark.json" ] || [ ! -f "$PREVIEW_TEST_DIR/light-bars.json" ] || [ ! -f "$PREVIEW_TEST_DIR/dark-bars.json" ]; do sleep 0.01; done
 if [ -n "$PREVIEW_TEST_RENDERER" ]; then exec "$PREVIEW_TEST_RENDERER" < "$PREVIEW_TEST_DIR/$theme.json"; fi
 cat "$PREVIEW_TEST_IMAGE"
 `
@@ -59,8 +60,11 @@ cat "$PREVIEW_TEST_IMAGE"
 		switch {
 		case r.URL.Path == "/user/status/42":
 			sources.Add(1)
-			response := `{"code":200,"tweet":{"text":"hello","author":{"name":"Artist","screen_name":"user","avatar_url":%q}}}`
-			_, _ = fmt.Fprintf(w, response, server.URL+"/asset")
+			asset := server.URL + "/asset"
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "tweet": map[string]any{
+				"text": "hello", "author": map[string]string{"name": "Artist", "screen_name": "user", "avatar_url": asset},
+				"media": map[string]any{"photos": []postImage{{URL: asset}, {URL: asset}}},
+			}})
 		case r.URL.Path == "/asset":
 			assets.Add(1)
 			_, _ = w.Write(imageData.Bytes())
@@ -89,9 +93,9 @@ cat "$PREVIEW_TEST_IMAGE"
 	previews.client = &http.Client{Transport: redirectTransport{target, http.DefaultTransport}}
 	link := inlineLink("https://x.com/user/status/42/photo/2?foo=bar")
 
-	for _, theme := range []string{"light", "dark"} {
+	for _, theme := range []string{"light", "dark", "light-bars", "dark-bars"} {
 		result := postImageResult(db, link, theme, defaultTimezone, previews, true)
-		if !strings.Contains(result["photo_url"].(string), "placeholder-"+theme) {
+		if !strings.Contains(result["photo_url"].(string), "placeholder-"+strings.TrimSuffix(theme, "-bars")) {
 			t.Fatalf("instant: %v", result)
 		}
 	}
@@ -99,8 +103,8 @@ cat "$PREVIEW_TEST_IMAGE"
 		t.Fatal("instant preview started work")
 	}
 
-	results := make(chan map[string]any, 2)
-	for _, theme := range []string{"light", "dark"} {
+	results := make(chan map[string]any, 4)
+	for _, theme := range []string{"light", "dark", "light-bars", "dark-bars"} {
 		go func(theme string) { results <- postImageResult(db, link, theme, defaultTimezone, previews, false) }(theme)
 	}
 	checkPostImagePreviewResponses(t, previews, results)
@@ -110,7 +114,7 @@ cat "$PREVIEW_TEST_IMAGE"
 	}
 
 	t.Setenv("KOPOKA_RENDERER", filepath.Join(dir, "missing-renderer"))
-	for _, theme := range []string{"light", "dark"} {
+	for _, theme := range []string{"light", "dark", "light-bars", "dark-bars"} {
 		data, err := os.ReadFile(filepath.Join(dir, theme+".json"))
 		if err != nil {
 			t.Fatal(err)
@@ -119,7 +123,7 @@ cat "$PREVIEW_TEST_IMAGE"
 		if err := json.Unmarshal(data, &request); err != nil {
 			t.Fatal(err)
 		}
-		if request.Theme != theme || request.Post.Text != "hello" || request.Post.AuthorName != "Artist" || len(request.Images) != 1 {
+		if request.Theme != strings.TrimSuffix(theme, "-bars") || request.Post.Media.Carousel != strings.HasSuffix(theme, "-bars") || request.Post.Media.Bars != strings.HasSuffix(theme, "-bars") || request.Post.Text != "hello" || request.Post.AuthorName != "Artist" || len(request.Images) != 1 {
 			t.Fatalf("request: %+v", request)
 		}
 		chosen := &tgbotapi.ChosenInlineResult{From: &tgbotapi.User{ID: 1}, InlineMessageID: "inline"}
@@ -131,18 +135,22 @@ cat "$PREVIEW_TEST_IMAGE"
 			t.Fatalf("cached: %v", result)
 		}
 	}
-	if sources.Load() != 1 || assets.Load() != 1 || uploads.Load() != 2 || edits.Load() != 2 {
+	if sources.Load() != 1 || assets.Load() != 1 || uploads.Load() != 4 || edits.Load() != 4 {
 		t.Fatalf("sources=%d assets=%d uploads=%d edits=%d", sources.Load(), assets.Load(), uploads.Load(), edits.Load())
 	}
 }
 
 func checkPostImagePreviewResponses(t *testing.T, previews *thumbnails, results <-chan map[string]any) {
 	t.Helper()
-	for range 2 {
+	for range 4 {
 		result := <-results
 		address, err := url.Parse(result["photo_url"].(string))
-		if err != nil || address.Path != "/post-image-preview" || address.Query().Get("url") != "https://x.com/user/status/42" || address.Query().Get("v") != fmt.Sprint(postImageVersion) {
+		if err != nil || address.Path != "/post-image-preview" || address.Query().Get("url") != "https://x.com/user/status/42" {
 			t.Fatalf("preview URL: %v", result)
+		}
+		theme := strings.Split(result["id"].(string), ":")[1]
+		if address.Query().Get("theme") != theme || address.Query().Get("tz") != defaultTimezone || address.Query().Get("v") != fmt.Sprint(postImageVersion) {
+			t.Fatalf("preview variant: %v", result)
 		}
 		for _, size := range []string{"large", ""} {
 			q := address.Query()

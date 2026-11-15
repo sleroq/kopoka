@@ -38,6 +38,7 @@ func postImagePreviewLink(link *url.URL) *url.URL {
 func (t *thumbnails) startPostImagePreview(link *url.URL, zone string) *postImagePreviewWork {
 	link = postImagePreviewLink(link)
 	key := artworkID(xPostLink(link)) + ":" + zone
+
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for k, work := range t.postImageWork {
@@ -50,25 +51,34 @@ func (t *thumbnails) startPostImagePreview(link *url.URL, zone string) *postImag
 	}
 	work := &postImagePreviewWork{variants: map[string]*postImagePreviewVariant{
 		"light": {done: make(chan struct{})}, "dark": {done: make(chan struct{})},
+		"light-bars": {done: make(chan struct{})}, "dark-bars": {done: make(chan struct{})},
 	}}
 	t.postImageWork[key] = work
+
 	go func() {
 		t.workers <- struct{}{}
 		defer func() { <-t.workers }()
-		request, err := preparePostImageWithClient(t.client, link, "light", zone)
+		request, bars, err := preparePostImageVariants(t.client, link, zone, true)
 		var wg sync.WaitGroup
 		for theme, variant := range work.variants {
 			wg.Add(1)
 			go func(theme string, variant *postImagePreviewVariant) {
 				defer wg.Done()
-				variant.render(link, request, theme, err)
+				selected := request
+				if strings.HasSuffix(theme, "-bars") {
+					selected = bars
+				}
+				variant.render(link, selected, theme, err)
 			}(theme, variant)
 		}
 		wg.Wait()
 		t.mu.Lock()
 		work.finished = time.Now()
-		if work.variants["light"].err != nil || work.variants["dark"].err != nil {
-			delete(t.postImageWork, key)
+		for _, variant := range work.variants {
+			if variant.err != nil {
+				delete(t.postImageWork, key)
+				break
+			}
 		}
 		t.mu.Unlock()
 	}()
@@ -81,7 +91,7 @@ func (variant *postImagePreviewVariant) render(link *url.URL, request renderRequ
 	if prepareErr != nil {
 		return
 	}
-	request.Theme = theme
+	request.Theme = strings.TrimSuffix(theme, "-bars")
 	variant.caption = postImageCaption(link, request)
 	variant.data, variant.err = renderPostImage(request)
 	if variant.err != nil {
@@ -106,7 +116,7 @@ func (variant *postImagePreviewVariant) render(link *url.URL, request renderRequ
 
 func (t *thumbnails) postImagePreview(link *url.URL, theme, zone string, instant bool) previewPhoto {
 	if instant {
-		return t.postImagePlaceholder(theme)
+		return t.postImagePlaceholder(strings.TrimSuffix(theme, "-bars"))
 	}
 	link = postImagePreviewLink(link)
 	variant := t.startPostImagePreview(link, zone).variants[theme]
@@ -125,7 +135,7 @@ func (t *thumbnails) postImagePreview(link *url.URL, theme, zone string, instant
 		log.Printf("generating post image preview for %s (%s): %v", link, theme, variant.err)
 	case <-time.After(8 * time.Second):
 	}
-	return t.postImagePlaceholder(theme)
+	return t.postImagePlaceholder(strings.TrimSuffix(theme, "-bars"))
 }
 
 func (t *thumbnails) existingPostImagePreview(link *url.URL, theme, zone string) *postImagePreviewVariant {
@@ -164,7 +174,7 @@ func (t *thumbnails) servePostImagePreview(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "invalid timezone", http.StatusBadRequest)
 		return
 	}
-	if link == nil || !xLinkHosts[strings.ToLower(link.Host)] || (theme != "light" && theme != "dark") {
+	if link == nil || !xLinkHosts[strings.ToLower(link.Host)] || (theme != "light" && theme != "dark" && theme != "light-bars" && theme != "dark-bars") {
 		http.Error(w, "invalid URL or theme", http.StatusBadRequest)
 		return
 	}

@@ -183,7 +183,7 @@ func (s *instantSettingsScenario) inline(user int64, link string, merged bool) m
 	previews.client = &http.Client{Transport: s.network}
 	handleInlineQuery(s.bot, s.db, query, previews)
 	results := s.api.snapshot().results
-	want := 5
+	want := 7
 	if strings.Contains(link, "pixiv.net") {
 		want = 3
 	}
