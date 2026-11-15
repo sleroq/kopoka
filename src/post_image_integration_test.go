@@ -7,12 +7,15 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -288,6 +291,124 @@ func TestPostImageOptionalCardHTTP(t *testing.T) {
 				}
 			} else if request.Post.Card == nil || request.Post.Card.Image != nil || request.Post.Text != "Post" {
 				t.Fatalf("text-only card: %+v", request.Post)
+			}
+		})
+	}
+}
+
+type postPanelFixture struct {
+	name      string
+	widths    []int
+	height    int
+	carousel  bool
+	unrelated bool
+}
+
+func postPanelServer(t *testing.T, assets [][]byte) *httptest.Server {
+	t.Helper()
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if index, ok := strings.CutPrefix(r.URL.Path, "/panel/"); ok {
+			i, err := strconv.Atoi(index)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			_, _ = w.Write(assets[i])
+			return
+		}
+		if r.URL.Path == "/bad-mosaic" {
+			t.Error("fetched remote mosaic")
+			http.Error(w, "bad mosaic", 500)
+			return
+		}
+		photos := make([]postImage, len(assets))
+		for i := range photos {
+			photos[i].URL = fmt.Sprintf("%s/panel/%d", server.URL, i)
+		}
+		mosaic := map[string]any{"formats": map[string]string{"jpeg": server.URL + "/bad-mosaic"}}
+		media := map[string]any{"photos": photos, "mosaic": mosaic}
+		author := map[string]string{"name": "Artist", "screen_name": "artist"}
+		post := map[string]any{"author": author, "media": media}
+		if r.URL.Path == "/artist/status/42" {
+			post["quote"] = map[string]any{"author": author, "media": media}
+			post["replying_to_status"] = "41"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "tweet": post})
+	}))
+	return server
+}
+
+func checkPostPanels(t *testing.T, req renderRequest, tc postPanelFixture, server *httptest.Server) {
+	t.Helper()
+	for _, post := range []*renderPost{&req.Post, req.Post.Quote, &req.ReplyChain[0]} {
+		m := post.Media
+		if m.Carousel != tc.carousel {
+			t.Fatalf("carousel: %+v", m)
+		}
+		if tc.carousel {
+			if len(m.Photos) != 20 {
+				t.Fatalf("photos %d", len(m.Photos))
+			}
+			for i, photo := range m.Photos {
+				if photo.URL != fmt.Sprintf("%s/panel/%d", server.URL, i) {
+					t.Fatal("panel order", i, photo.URL)
+				}
+			}
+			continue
+		}
+		want := 1
+		if tc.unrelated {
+			want = 2
+		}
+		if len(m.Photos) != want {
+			t.Fatalf("photos %d", len(m.Photos))
+		}
+		cfg, _, err := image.DecodeConfig(bytes.NewReader(req.Images[m.Photos[0].URL]))
+		if err != nil || cfg.Width != 552 || cfg.Height != 552 {
+			t.Fatalf("merged size %+v: %v", cfg, err)
+		}
+		if tc.unrelated && m.Photos[1].URL != server.URL+"/panel/20" {
+			t.Fatal("unrelated photo reordered")
+		}
+	}
+}
+
+func TestPostImageOriginalPanels(t *testing.T) {
+	t.Setenv("KOPOKA_RENDERER", testPostImageRenderer(t))
+	widths := []int{28, 27, 28, 27, 28, 28, 27, 28, 27, 28, 28, 27, 28, 27, 28, 28, 27, 28, 27, 28}
+	for _, tc := range []postPanelFixture{
+		{name: "streetysnail", widths: widths, height: 552},
+		{name: "streetysnail", widths: widths, height: 552, unrelated: true},
+		{name: "reyforn-panorama", widths: slices.Repeat([]int{1080}, 20), height: 1440, carousel: true},
+	} {
+		t.Run(fmt.Sprintf("%s-unrelated-%t", tc.name, tc.unrelated), func(t *testing.T) {
+			fixtures := artFixturePhotos(t, tc.name, tc.widths, tc.height)
+			assets := make([][]byte, len(fixtures))
+			for i, item := range fixtures {
+				assets[i] = item.(tgbotapi.InputMediaPhoto).Media.(tgbotapi.FileBytes).Bytes
+			}
+			if tc.unrelated {
+				var data bytes.Buffer
+				if err := png.Encode(&data, artScene(image.Rect(0, 0, 200, 552), 2)); err != nil {
+					t.Fatal(err)
+				}
+				assets = append(assets, data.Bytes())
+			}
+			server := postPanelServer(t, assets)
+			defer server.Close()
+			target, _ := url.Parse(server.URL)
+			client := &http.Client{Transport: redirectTransport{target, http.DefaultTransport}}
+			req, err := preparePostImageWithClient(client, inlineLink("https://x.com/artist/status/42"), "light")
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkPostPanels(t, req, tc, server)
+			for _, theme := range []string{"light", "dark"} {
+				req.Theme = theme
+				if _, err := renderPostImage(req); err != nil {
+					t.Fatal(err)
+				}
 			}
 		})
 	}

@@ -21,7 +21,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-const postImageVersion = 3
+const postImageVersion = 4
 const defaultPostImageTheme = "dark"
 
 type postImage struct {
@@ -31,9 +31,10 @@ type postVideo struct {
 	ThumbnailURL string `json:"thumbnail_url"`
 }
 type postMedia struct {
-	Photos []postImage `json:"photos,omitempty"`
-	Videos []postVideo `json:"videos,omitempty"`
-	Mosaic *postImage  `json:"mosaic,omitempty"`
+	Photos   []postImage `json:"photos,omitempty"`
+	Videos   []postVideo `json:"videos,omitempty"`
+	Mosaic   *postImage  `json:"mosaic,omitempty"`
+	Carousel bool        `json:"carousel,omitempty"`
 }
 type postArticle struct {
 	Title       string     `json:"title"`
@@ -156,19 +157,13 @@ func (m *fxRichMedia) normalize() *postMedia {
 		return nil
 	}
 	out := &postMedia{}
-	if m.Mosaic != nil && m.Mosaic.Formats.JPEG != "" {
-		image := m.Mosaic.image()
-		image.URL = m.Mosaic.Formats.JPEG
-		out.Mosaic = &image
-	} else {
-		for _, image := range m.Photos {
-			out.Photos = append(out.Photos, image.image())
-		}
+	for _, image := range m.Photos {
+		out.Photos = append(out.Photos, image.image())
 	}
 	for _, video := range m.Videos {
 		out.Videos = append(out.Videos, postVideo{ThumbnailURL: video.ThumbnailURL})
 	}
-	if len(m.Photos) == 0 && len(m.Videos) == 0 && out.Mosaic == nil {
+	if len(m.Photos) == 0 && len(m.Videos) == 0 {
 		for _, image := range m.All {
 			switch image.Type {
 			case "photo", "":
@@ -177,6 +172,9 @@ func (m *fxRichMedia) normalize() *postMedia {
 				out.Videos = append(out.Videos, postVideo{ThumbnailURL: image.ThumbnailURL})
 			}
 		}
+	}
+	if len(out.Photos) == 0 && m.Mosaic != nil && m.Mosaic.Formats.JPEG != "" {
+		out.Mosaic = &postImage{URL: m.Mosaic.Formats.JPEG}
 	}
 	if out.Mosaic == nil && len(out.Photos) == 0 && len(out.Videos) == 0 {
 		return nil
@@ -316,6 +314,11 @@ func loadPostAssets(client *http.Client, p renderPost, images map[string][]byte)
 			return fmt.Errorf("fetching image %s: HTTP %s, %d bytes", u, res.Status, len(data))
 		}
 		images[u] = data
+	}
+	if p.Media != nil {
+		if err := p.Media.preparePhotos(images); err != nil {
+			return err
+		}
 	}
 	if p.Quote != nil {
 		return loadPostAssets(client, *p.Quote, images)

@@ -74,3 +74,43 @@ fn cli_preserves_media_aspect_and_includes_all_posters() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("video2"));
 }
+
+#[test]
+fn cli_carousel_clips_at_card_edge_with_arrow() {
+    let images =
+        json!({"red": asset(30, 40, [220, 30, 30]), "green": asset(30, 40, [30, 220, 30])});
+    let output = render(
+        json!({"carousel": true, "photos": [{"url":"red"},{"url":"green"}]}),
+        images,
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let img = image::load_from_memory(&output.stdout).unwrap().to_rgb8();
+    // Locate the red row, then check its height, next panel and overlay at the right edge.
+    let red = |p: &Rgb<u8>| p[0] > 180 && p[1] < 80;
+    let ys: Vec<_> = (0..img.height())
+        .filter(|&y| red(img.get_pixel(100, y)))
+        .collect();
+    assert!(!ys.is_empty());
+    let top = ys[0];
+    let bottom = *ys.last().unwrap();
+    assert!(
+        (790..=805).contains(&(bottom - top)),
+        "row height {}",
+        bottom - top
+    );
+    let middle = (top + bottom) / 2;
+    assert!(red(img.get_pixel(200, middle)));
+    let green = img.get_pixel(1000, middle - 100);
+    assert!(green[1] > 180 && green[0] < 80, "next panel {green:?}");
+    let edge = img.get_pixel(1098, middle - 100);
+    assert!(edge[1] > 180 && edge[0] < 80, "right edge {edge:?}");
+    let overlay = img.get_pixel(1036, middle);
+    assert!(
+        overlay[1] < 180 || overlay[0] > 100,
+        "arrow overlay {overlay:?}"
+    );
+}

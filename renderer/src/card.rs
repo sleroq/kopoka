@@ -45,6 +45,7 @@ struct Media {
     photos: Option<Vec<Image>>,
     videos: Option<Vec<Video>>,
     mosaic: Option<Image>,
+    carousel: Option<bool>,
 }
 #[derive(Deserialize)]
 struct Image {
@@ -144,6 +145,50 @@ impl Card<'_> {
         let height = width * source_height as f32 / source_width as f32;
         Ok(Self::image_node(bytes, width, height, 12.0))
     }
+    fn photos(&self, photos: &[Image], width: f32, compact: bool, carousel: bool) -> Result<Node> {
+        if carousel || photos.len() > 4 {
+            let height = (width * 0.8).min(400.0);
+            let mut items = Vec::new();
+            for photo in photos {
+                let (bytes, w, h) = self.asset(&photo.url)?;
+                items.push(Self::image_node(
+                    bytes,
+                    height * w as f32 / h as f32,
+                    height,
+                    12.0,
+                ));
+            }
+            let viewport = if compact { width } else { width + 24.0 };
+            let radius = if compact { "12px" } else { "12px 0 0 12px" };
+            let arrow = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>"#;
+            return Ok(column(
+                vec![
+                    row(items, "gap:4px"),
+                    styled(
+                        Node::image(arrow.as_bytes().to_vec()),
+                        "position:absolute;right:16px;top:50%;margin-top:-16px;width:32px;height:32px;padding:4px;background:rgba(0,0,0,0.6);border-radius:50%",
+                    ),
+                ],
+                &format!(
+                    "position:relative;width:{viewport}px;height:{height}px;overflow:hidden;border-radius:{radius};flex-shrink:0"
+                ),
+            ));
+        }
+        let mut rows = Vec::new();
+        for pair in photos.chunks(2) {
+            let item_width = if photos.len() == 1 {
+                width
+            } else {
+                (width - 4.0) / 2.0
+            };
+            let mut items = Vec::new();
+            for image in pair {
+                items.push(self.photo(&image.url, item_width)?);
+            }
+            rows.push(row(items, "gap:4px"));
+        }
+        Ok(column(rows, "gap:4px"))
+    }
     fn avatar(&self, post: &Post, size: f32) -> Result<Node> {
         if post.author_avatar_url.is_empty() {
             return Ok(column(
@@ -206,20 +251,7 @@ impl Card<'_> {
             } else if let Some(photos) = &media.photos
                 && !photos.is_empty()
             {
-                let mut rows = Vec::new();
-                for pair in photos.chunks(2) {
-                    let item_width = if photos.len() == 1 {
-                        width
-                    } else {
-                        (width - 4.0) / 2.0
-                    };
-                    let mut items = Vec::new();
-                    for image in pair {
-                        items.push(self.photo(&image.url, item_width)?);
-                    }
-                    rows.push(row(items, "gap:4px"));
-                }
-                nodes.push(column(rows, "gap:4px"));
+                nodes.push(self.photos(photos, width, compact, media.carousel.unwrap_or(false))?);
             }
             for video in media.videos.as_deref().unwrap_or_default() {
                 nodes.push(column(
