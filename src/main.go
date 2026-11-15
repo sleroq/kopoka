@@ -450,8 +450,6 @@ func main() {
 		log.Panicf("starting thumbnails: %v", err)
 	}
 
-	go previews.backfillHistory()
-
 	updates := telegramUpdates(bot, *u)
 
 	for update := range updates {

@@ -1137,7 +1137,7 @@ func checkAspectPreviews(t *testing.T, previews *thumbnails, sourceSize image.Po
 	}
 }
 
-func TestPreviewMigrationAndBackfill(t *testing.T) {
+func TestPreviewDimensionsMigration(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "old.db")
 	legacy, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -1169,28 +1169,15 @@ func TestPreviewMigrationAndBackfill(t *testing.T) {
 		t.Fatalf("cache: %q, %v", id, err)
 	}
 
-	s := newThumbnailTestServer(t)
-	defer s.server.Close()
-	s.releaseOnce.Do(func() { close(s.release) })
-	s.uploadReleaseOnce.Do(func() { close(s.uploadRelease) })
-	target, _ := url.Parse(s.server.URL)
-	previews := testPreviews(t, db, nil)
-	previews.client = &http.Client{Transport: redirectTransport{target, http.DefaultTransport}}
-	previews.backfillHistory()
-	a, err = findArtwork(db, "x:1")
-	if err != nil || a.PreviewWidth != 1280 || a.PreviewHeight != 800 {
-		t.Fatalf("backfilled: %+v, %v", a, err)
+	if err := savePreviewDimensions(db, "x:1", 1280, 800); err != nil {
+		t.Fatal(err)
 	}
 	if err := saveSelection(db, 1, *a); err != nil {
 		t.Fatal(err)
 	}
-	a, _ = findArtwork(db, "x:1")
-	if a.PreviewWidth != 1280 || a.PreviewHeight != 800 {
-		t.Fatalf("upsert lost dimensions: %+v", a)
-	}
-	previews.backfillHistory()
-	if s.upstream.Load() != 1 {
-		t.Fatalf("backfill repeated: %d", s.upstream.Load())
+	a, err = findArtwork(db, "x:1")
+	if err != nil || a.PreviewWidth != 1280 || a.PreviewHeight != 800 {
+		t.Fatalf("upsert lost dimensions: %+v, %v", a, err)
 	}
 }
 

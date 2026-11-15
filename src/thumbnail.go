@@ -39,7 +39,7 @@ var pixivLogo []byte
 
 type thumbnailWork struct {
 	done          chan struct{}
-	cached        chan struct{}
+	caching       bool
 	data          []byte
 	large         []byte
 	actual        int
@@ -283,18 +283,15 @@ func (t *thumbnails) start(link *url.URL, count int) *thumbnailWork {
 	return w
 }
 
-func (t *thumbnails) cacheWork(link *url.URL, count int, work *thumbnailWork) <-chan struct{} {
+func (t *thumbnails) cacheWork(link *url.URL, count int, work *thumbnailWork) {
 	t.mu.Lock()
-	if work.cached != nil {
-		done := work.cached
+	if work.caching {
 		t.mu.Unlock()
-		return done
+		return
 	}
-	work.cached = make(chan struct{})
-	done := work.cached
+	work.caching = true
 	t.mu.Unlock()
 	go func() {
-		defer close(done)
 		<-work.done
 		if work.err != nil {
 			log.Printf("generating thumbnail for %s: %v", link, work.err)
@@ -305,13 +302,12 @@ func (t *thumbnails) cacheWork(link *url.URL, count int, work *thumbnailWork) <-
 			if err := t.cachePhoto(link, count, work.actual, work.large); err != nil {
 				log.Printf("caching thumbnail for %s: %v", link, err)
 				t.mu.Lock()
-				work.cached = nil
+				work.caching = false
 				t.mu.Unlock()
 			}
 		}
 		<-t.workers
 	}()
-	return done
 }
 
 func (t *thumbnails) cachePhoto(link *url.URL, count, actual int, data []byte) error {
@@ -696,37 +692,4 @@ func (t *thumbnails) warmArtwork(link *url.URL, count int) {
 			log.Printf("warming preview for %s: %v", link, err)
 		}
 	}()
-}
-
-func (t *thumbnails) backfillHistory() {
-	artworks, failed, err := historyMissingPreviews(t.db)
-	if err != nil {
-		log.Printf("preview backfill query: %v", err)
-		return
-	}
-	completed := 0
-	for _, a := range artworks {
-		link := inlineLink(a.URL)
-		if link == nil {
-			log.Printf("preview backfill invalid URL for %s", a.ID)
-			failed++
-			continue
-		}
-		count := len(a.Photos)
-		work := t.start(link, count)
-		cached := t.cacheWork(link, count, work)
-		if err := t.saveGeneratedDimensions(link, work); err != nil {
-			log.Printf("preview backfill for %s: %v", a.ID, err)
-			failed++
-			continue
-		}
-		<-cached
-		if t.cached(link, count) == "" {
-			log.Printf("preview backfill for %s: no cached photo", a.ID)
-			failed++
-			continue
-		}
-		completed++
-	}
-	log.Printf("preview backfill: %d complete, %d failed", completed, failed)
 }

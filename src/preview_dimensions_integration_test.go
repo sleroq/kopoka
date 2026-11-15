@@ -27,9 +27,10 @@ type previewFlowServer struct {
 	sourceOnce                   sync.Once
 	uploadStarted                chan struct{}
 	uploadRelease                chan struct{}
+	uploadFailed                 chan struct{}
 	uploadOnce, releaseOnce      sync.Once
-	fail, failUpload             atomic.Bool
-	source3, source5, source6    atomic.Int32
+	failUpload                   atomic.Bool
+	source3                      atomic.Int32
 }
 
 func newPreviewFlowServer(t *testing.T) *previewFlowServer {
@@ -42,7 +43,7 @@ func newPreviewFlowServer(t *testing.T) *previewFlowServer {
 		return b.Bytes()
 	}
 	scene := artScene(image.Rect(0, 0, 400, 320), 0)
-	f := &previewFlowServer{t: t, answers: make(chan []map[string]any, 10), sourceStarted: make(chan struct{}), sourceRelease: make(chan struct{}), uploadStarted: make(chan struct{}), uploadRelease: make(chan struct{}), images: map[string][]byte{
+	f := &previewFlowServer{t: t, answers: make(chan []map[string]any, 10), sourceStarted: make(chan struct{}), sourceRelease: make(chan struct{}), uploadStarted: make(chan struct{}), uploadRelease: make(chan struct{}), uploadFailed: make(chan struct{}), images: map[string][]byte{
 		"/portrait": thumbnailFixture(t, 1000, 1600),
 		"/panel0":   encode(scene.SubImage(image.Rect(0, 0, 200, 320))),
 		"/panel1":   encode(scene.SubImage(image.Rect(200, 0, 400, 320))),
@@ -70,17 +71,6 @@ func (f *previewFlowServer) serve(w http.ResponseWriter, r *http.Request) {
 		if id == "3" {
 			f.source3.Add(1)
 		}
-		if id == "5" {
-			f.source5.Add(1)
-			if f.fail.Load() {
-				http.Error(w, "unavailable", http.StatusServiceUnavailable)
-				return
-			}
-		}
-
-		if id == "6" {
-			f.source6.Add(1)
-		}
 
 		paths := []string{"/portrait"}
 		if id == "2" {
@@ -107,6 +97,7 @@ func (f *previewFlowServer) serve(w http.ResponseWriter, r *http.Request) {
 			f.uploadOnce.Do(func() { close(f.uploadStarted) })
 			<-f.uploadRelease
 			if f.failUpload.Load() {
+				close(f.uploadFailed)
 				w.WriteHeader(http.StatusBadRequest)
 				_, _ = fmt.Fprint(w, `{"ok":false,"error_code":400,"description":"upload failed"}`)
 				return
@@ -273,83 +264,32 @@ func TestPreviewWarmupAfterSave(t *testing.T) {
 	}
 }
 
-func TestPreviewBackfillRetry(t *testing.T) {
+func TestPreviewUploadRetry(t *testing.T) {
 	f := newPreviewFlowServer(t)
-	previews, bot := f.setup(t)
+	previews, _ := f.setup(t)
 	f.release()
-	for _, id := range []string{"5", "6"} {
-		a := artwork{ID: "x:" + id, URL: "https://x.com/user/status/" + id, Photos: []string{"art"}}
-		if err := saveSelection(previews.db, 1, a); err != nil {
+	link := inlineLink("https://x.com/user/status/8")
+	f.failUpload.Store(true)
+	previews.warmup(link, 1)
+	select {
+	case <-f.uploadFailed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("failed upload did not start")
+	}
+	f.failUpload.Store(false)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		previews.warmup(link, 1)
+		id, err := findThumbnail(previews.db, "x:8", 1)
+		if err != nil {
 			t.Fatal(err)
 		}
+		if id == "preview-file" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	if err := savePreviewDimensions(previews.db, "x:6", 800, 1280); err != nil {
-		t.Fatal(err)
-	}
-	if err := saveThumbnail(previews.db, "x:6", 1, 1, "existing"); err != nil {
-		t.Fatal(err)
-	}
-	f.fail.Store(true)
-	previews.backfillHistory()
-	a, err := findArtwork(previews.db, "x:5")
-	if err != nil || a.PreviewWidth != 0 {
-		t.Fatalf("failed entry: %+v %v", a, err)
-	}
-	if f.source5.Load() != 1 || f.source6.Load() != 0 {
-		t.Fatalf("first backfill: failed=%d completed=%d", f.source5.Load(), f.source6.Load())
-	}
-	f.fail.Store(false)
-	previews.backfillHistory()
-	a, err = findArtwork(previews.db, "x:5")
-	if err != nil || a.PreviewWidth != 800 || a.PreviewHeight != 1280 {
-		t.Fatalf("retried entry: %+v %v", a, err)
-	}
-	awaitCachedThumbnail(t, previews.db, "x:5", 1)
-	if f.source5.Load() != 2 || f.source6.Load() != 0 {
-		t.Fatalf("retry: failed=%d completed=%d", f.source5.Load(), f.source6.Load())
-	}
-	if id, err := findThumbnail(previews.db, "x:6", 1); err != nil || id != "existing" {
-		t.Fatalf("existing ID: %q %v", id, err)
-	}
-	checkBackfillUploadRetry(t, f, previews, bot)
-}
-
-func checkBackfillUploadRetry(t *testing.T, f *previewFlowServer, previews *thumbnails, bot *tgbotapi.BotAPI) {
-	t.Helper()
-	a := artwork{ID: "x:8", URL: "https://x.com/user/status/8", Photos: []string{"art"}}
-	if err := saveSelection(previews.db, 1, a); err != nil {
-		t.Fatal(err)
-	}
-	f.failUpload.Store(true)
-	previews.backfillHistory()
-	stored, err := findArtwork(previews.db, a.ID)
-	if err != nil || stored.PreviewWidth != 800 || stored.PreviewHeight != 1280 {
-		t.Fatalf("dimensions after failed upload: %+v %v", stored, err)
-	}
-	if id, err := findThumbnail(previews.db, a.ID, 1); err != nil || id != "" {
-		t.Fatalf("failed upload cached: %q %v", id, err)
-	}
-	f.failUpload.Store(false)
-	previews.backfillHistory()
-	if id, err := findThumbnail(previews.db, a.ID, 1); err != nil || id != "preview-file" {
-		t.Fatalf("upload retry: %q %v", id, err)
-	}
-
-	a = artwork{ID: "x:9", URL: "https://x.com/user/status/9", Photos: []string{"art"}}
-	if err := saveSelection(previews.db, 1, a); err != nil {
-		t.Fatal(err)
-	}
-	f.failUpload.Store(true)
-	previews.backfillHistory()
-	f.failUpload.Store(false)
-	restarted, err := newThumbnails("https://preview.example.com", nil, bot, previews.db, "@cache")
-	if err != nil {
-		t.Fatal(err)
-	}
-	restarted.backfillHistory()
-	if id, err := findThumbnail(previews.db, a.ID, 1); err != nil || id != "preview-file" {
-		t.Fatalf("upload after restart: %q %v", id, err)
-	}
+	t.Fatal("preview upload was not retried")
 }
 
 func TestPreviewInlineTimeoutCompletesInBackground(t *testing.T) {

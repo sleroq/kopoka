@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/url"
 	"strconv"
 	"strings"
@@ -309,26 +308,4 @@ func artworkHistory(db *sql.DB, user int64, offset int) ([]artwork, error) {
 func savePreviewDimensions(db *sql.DB, id string, width, height int) error {
 	_, err := db.Exec(`UPDATE artwork SET preview_width=?, preview_height=? WHERE id=?`, width, height, id)
 	return err
-}
-
-func historyMissingPreviews(db *sql.DB) ([]artwork, int, error) {
-	rows, err := db.Query(`SELECT DISTINCT a.id,a.url,a.author,a.text,a.caption,a.photos,a.media_types,a.preview_width,a.preview_height
-		FROM artwork a JOIN history h ON h.artwork_id=a.id WHERE a.preview_width=0 OR a.preview_height=0 OR NOT EXISTS
-        (SELECT 1 FROM thumbnail_cache c WHERE c.artwork_id=a.id AND c.media_count=json_array_length(a.photos) AND c.render_version=? AND c.file_id<>'')`, thumbnailRenderVersion)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer func() { _ = rows.Close() }()
-	var result []artwork
-	failures := 0
-	for rows.Next() {
-		a, err := scanArtwork(rows)
-		if err != nil {
-			log.Printf("backfill artwork: %v", err)
-			failures++
-			continue
-		}
-		result = append(result, a)
-	}
-	return result, failures, rows.Err()
 }
