@@ -21,7 +21,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-const postImageVersion = 8
+const postImageVersion = 9
 const defaultPostImageTheme = "dark"
 
 type postImage struct {
@@ -403,9 +403,11 @@ func postImageID(link *url.URL, theme string) string {
 	return "post-image:" + theme + ":" + strings.TrimPrefix(artworkID(xPostLink(link)), "x:")
 }
 func postImageTheme(id string, link *url.URL) string {
-	for _, theme := range []string{"light", "dark", "light-bars", "dark-bars"} {
-		if id == postImageID(link, theme) || id == postImageID(link, theme)+":cached" {
-			return theme
+	for _, option := range postImageThemeCatalog {
+		for _, theme := range []string{option.ID, option.ID + "-bars"} {
+			if id == postImageID(link, theme) || id == postImageID(link, theme)+":cached" {
+				return theme
+			}
 		}
 	}
 	return ""
@@ -420,6 +422,42 @@ func findPostImage(db *sql.DB, id, theme, zone string) (string, string, error) {
 	}
 	return file, caption, err
 }
+func inlinePostImageResults(db *sql.DB, user int64, link *url.URL, previews *thumbnails, instant bool) []any {
+	zone, err := loadUserTimezone(db, user)
+	if err != nil {
+		log.Printf("loading post image timezone: %v", err)
+		return nil
+	}
+	themes, err := loadPostImageThemes(db, user)
+	if err != nil {
+		log.Printf("loading post image themes: %v", err)
+		return nil
+	}
+
+	var barsAvailable chan bool
+	if !instant {
+		work := previews.startPostImagePreview(link, zone, themes.Light, themes.Dark)
+		barsAvailable = make(chan bool, 1)
+		go func() { barsAvailable <- work.postImageHasBars() }()
+	}
+	var postImages []chan map[string]any
+	for _, theme := range []string{themes.Light, themes.Dark, themes.Light + "-bars", themes.Dark + "-bars"} {
+		result := make(chan map[string]any, 1)
+		postImages = append(postImages, result)
+		go func() { result <- postImageResult(db, link, theme, zone, previews, instant) }()
+	}
+
+	showBars := barsAvailable == nil || <-barsAvailable
+	var results []any
+	for i, result := range postImages {
+		image := <-result
+		if i < 2 || showBars {
+			results = append(results, image)
+		}
+	}
+	return results
+}
+
 func postImageResult(db *sql.DB, link *url.URL, theme, zone string, previews *thumbnails, instant bool) map[string]any {
 	file, caption, err := findPostImage(db, artworkID(xPostLink(link)), theme, zone)
 	if err != nil {

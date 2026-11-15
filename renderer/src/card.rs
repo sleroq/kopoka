@@ -14,7 +14,9 @@ const LIKE_ICON: &str = r#"<path d="M2 9.5a5.5 5.5 0 0 1 9.591-3.676a.56.56 0 0 
 #[serde(rename_all = "lowercase")]
 enum Theme {
     Light,
+    Warm,
     Dark,
+    Dim,
 }
 #[derive(Deserialize)]
 pub struct Request {
@@ -428,7 +430,9 @@ pub fn render(request: Request) -> Result<Vec<u8>> {
     let empty = HashMap::new();
     let (background, text_color, secondary, border) = match request.theme {
         Theme::Light => ("#f7f9f9", "#0f1419", "#536471", "#cfd9de"),
-        Theme::Dark => ("#16181c", "#e7e9ea", "#7c8186", "#3e4144"),
+        Theme::Warm => ("#fff6f5", "#21191a", "#785f62", "#e9d6d5"),
+        Theme::Dark => ("#000000", "#e7e9ea", "#71767b", "#2f3336"),
+        Theme::Dim => ("#16181c", "#e7e9ea", "#7c8186", "#3e4144"),
     };
     let card = Card {
         images: request.images.as_ref().unwrap_or(&empty),

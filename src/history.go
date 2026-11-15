@@ -103,6 +103,7 @@ func settingsView(user int64) (string, tgbotapi.InlineKeyboardMarkup) {
 		tgbotapi.NewInlineKeyboardRow(button("Configure history", "history-menu")),
 		tgbotapi.NewInlineKeyboardRow(button("Instant inline query", "instant")),
 		tgbotapi.NewInlineKeyboardRow(button("Specific photo links", "photo-menu")),
+		tgbotapi.NewInlineKeyboardRow(button("Post image themes", "theme-menu")),
 		tgbotapi.NewInlineKeyboardRow(tgbotapi.InlineKeyboardButton{Text: "Timezone", SwitchInlineQueryCurrentChat: &query}),
 	)
 }
@@ -220,7 +221,7 @@ func handleSettingsCallback(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.Ca
 
 	view := parts[1]
 	switch parts[1] {
-	case "instant", "history-menu", "photo-menu":
+	case "instant", "history-menu", "photo-menu", "theme-menu":
 	case "photo-toggle":
 		view = "photo-menu"
 		err = togglePhotoLinks(db, user)
@@ -250,6 +251,8 @@ func handleSettingsCallback(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.Ca
 	var text string
 	var keyboard tgbotapi.InlineKeyboardMarkup
 	switch view {
+	case "theme-menu":
+		text, keyboard = themeSettingsView(user)
 	case "photo-menu":
 		text, keyboard, err = photoSettingsView(db, user)
 	case "instant":

@@ -77,6 +77,8 @@ type thumbnails struct {
 	barsPlaceholder   []byte
 	client            *http.Client
 	mu                sync.Mutex
+	themePreviewMu    sync.Mutex
+	themePreviews     map[string]themePreviewImages
 	work              map[string]*thumbnailWork
 	postImageWork     map[string]*postImagePreviewWork
 	workers           chan struct{}
@@ -185,7 +187,7 @@ func newThumbnails(baseURL string, app *pixiv.AppPixivAPI, bot *tgbotapi.BotAPI,
 	}
 	return &thumbnails{
 		base: base, app: app, bot: bot, db: db, cacheChat: cacheChat, placeholders: placeholders, postImages: postImages, mergedPlaceholder: mergedPlaceholder.Bytes(), barsPlaceholder: barsPlaceholder.Bytes(), client: &http.Client{Timeout: 15 * time.Second},
-		work: make(map[string]*thumbnailWork), postImageWork: make(map[string]*postImagePreviewWork), workers: make(chan struct{}, 6),
+		work: make(map[string]*thumbnailWork), postImageWork: make(map[string]*postImagePreviewWork), themePreviews: make(map[string]themePreviewImages), workers: make(chan struct{}, 6),
 		logos: logos, font: bold,
 	}, nil
 }
@@ -334,25 +336,29 @@ func renderPostImagePlaceholders(bold *opentype.Font) (map[string][]byte, error)
 	}
 	defer func() { _ = face.Close() }()
 
-	images := make(map[string][]byte, 2)
-	for _, theme := range []string{"light", "dark"} {
-		background, foreground, title := color.White, color.Black, "Light"
-		if theme == "dark" {
-			background, foreground, title = color.Black, color.White, "Dark"
-		}
+	images := make(map[string][]byte, 4)
+	for _, theme := range []struct {
+		id, title              string
+		background, foreground color.Color
+	}{
+		{"light", "Light", color.White, color.Black},
+		{"warm", "Warm", color.NRGBA{255, 246, 245, 255}, color.Black},
+		{"dark", "Dark", color.Black, color.White},
+		{"dim", "Dim", color.NRGBA{22, 24, 28, 255}, color.White},
+	} {
 		canvas := image.NewRGBA(image.Rect(0, 0, 384, 384))
-		draw.Draw(canvas, canvas.Bounds(), image.NewUniform(background), image.Point{}, draw.Src)
-		drawer := font.Drawer{Dst: canvas, Src: image.NewUniform(foreground), Face: face}
+		draw.Draw(canvas, canvas.Bounds(), image.NewUniform(theme.background), image.Point{}, draw.Src)
+		drawer := font.Drawer{Dst: canvas, Src: image.NewUniform(theme.foreground), Face: face}
 		drawer.Dot = fixed.P((384-drawer.MeasureString("Post image").Ceil())/2, 180)
 		drawer.DrawString("Post image")
 		drawer.Src = image.NewUniform(color.NRGBA{29, 155, 240, 255})
-		drawer.Dot = fixed.P((384-drawer.MeasureString(title).Ceil())/2, 222)
-		drawer.DrawString(title)
+		drawer.Dot = fixed.P((384-drawer.MeasureString(theme.title).Ceil())/2, 222)
+		drawer.DrawString(theme.title)
 		var out bytes.Buffer
 		if err := jpeg.Encode(&out, canvas, &jpeg.Options{Quality: 90}); err != nil {
 			return nil, err
 		}
-		images[theme] = out.Bytes()
+		images[theme.id] = out.Bytes()
 	}
 	return images, nil
 }
@@ -537,6 +543,13 @@ func (t *thumbnails) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		placeholder = t.postImages["light"]
 	case strings.HasSuffix(r.URL.Path, "/post-image-placeholder-dark.jpg"):
 		placeholder = t.postImages["dark"]
+	case strings.HasSuffix(r.URL.Path, "/post-image-placeholder-warm.jpg"):
+		placeholder = t.postImages["warm"]
+	case strings.HasSuffix(r.URL.Path, "/post-image-placeholder-dim.jpg"):
+		placeholder = t.postImages["dim"]
+	case strings.HasSuffix(r.URL.Path, "/theme-preview"):
+		t.serveThemePreview(w, r)
+		return
 	case strings.HasSuffix(r.URL.Path, "/post-image-preview"):
 		t.servePostImagePreview(w, r)
 		return

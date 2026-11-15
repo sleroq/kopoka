@@ -202,7 +202,7 @@ func TestPostImagePreviewRetryAfterFailure(t *testing.T) {
 	previews := testPreviews(t, testArtworkDB(t), nil)
 	previews.client = &http.Client{Transport: redirectTransport{target, http.DefaultTransport}}
 	link := inlineLink("https://x.com/user/status/42")
-	work := previews.startPostImagePreview(link, defaultTimezone)
+	work := previews.startPostImagePreview(link, defaultTimezone, "light", "dark")
 	<-work.variants["light"].done
 	<-work.variants["dark"].done
 	if work.variants["light"].err == nil || work.variants["dark"].err == nil {
@@ -236,6 +236,39 @@ func TestPostImagePreviewRetryAfterFailure(t *testing.T) {
 	}
 }
 
+func TestPostImagePreviewSelectedThemes(t *testing.T) {
+	t.Setenv("KOPOKA_RENDERER", testPostImageRenderer(t))
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		_, _ = fmt.Fprint(w, `{"code":200,"tweet":{"text":"Hello","author":{"name":"Artist","screen_name":"user"}}}`)
+	}))
+	defer server.Close()
+	target, _ := url.Parse(server.URL)
+	previews := testPreviews(t, testArtworkDB(t), nil)
+	previews.client = &http.Client{Transport: redirectTransport{target, http.DefaultTransport}}
+	link := inlineLink("https://x.com/user/status/42")
+	work := previews.startPostImagePreview(link, defaultTimezone, "warm", "dim")
+	for _, theme := range []string{"warm", "dim", "warm-bars", "dim-bars"} {
+		photo := previews.postImagePreview(link, theme, defaultTimezone, false)
+		address, err := url.Parse(photo.photoURL)
+		if err != nil || address.Query().Get("theme") != theme {
+			t.Fatalf("%s preview: %+v %v", theme, photo, err)
+		}
+		response := httptest.NewRecorder()
+		previews.ServeHTTP(response, httptest.NewRequest("GET", address.RequestURI(), nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s preview: %d", theme, response.Code)
+		}
+	}
+	previews.mu.Lock()
+	variants := len(work.variants)
+	previews.mu.Unlock()
+	if calls.Load() != 1 || variants != 4 {
+		t.Fatalf("fetches=%d variants=%d", calls.Load(), variants)
+	}
+}
+
 func TestPostImagePreviewTimezones(t *testing.T) {
 	t.Setenv("KOPOKA_RENDERER", testPostImageRenderer(t))
 
@@ -255,11 +288,11 @@ func TestPostImagePreviewTimezones(t *testing.T) {
 	previews.client = &http.Client{Transport: redirectTransport{target, http.DefaultTransport}}
 	link := inlineLink("https://x.com/user/status/42")
 	alias := inlineLink("https://twitter.com/other/status/42/photo/2")
-	first := previews.startPostImagePreview(link, defaultTimezone)
-	if first != previews.startPostImagePreview(alias, defaultTimezone) {
+	first := previews.startPostImagePreview(link, defaultTimezone, "light", "dark")
+	if first != previews.startPostImagePreview(alias, defaultTimezone, "light", "dark") {
 		t.Fatal("same post and zone did not share work")
 	}
-	if first == previews.startPostImagePreview(link, "UTC") {
+	if first == previews.startPostImagePreview(link, "UTC", "light", "dark") {
 		t.Fatal("different zones shared work")
 	}
 	var images [][]byte

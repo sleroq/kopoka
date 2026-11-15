@@ -287,24 +287,9 @@ func inlineArtworkResults(db *sql.DB, user int64, link *url.URL, previews *thumb
 	go func() { merged <- inlineMergedResult(link, previews, instant, false) }()
 	go func() { bars <- inlineMergedResult(link, previews, instant, true) }()
 
-	var postImages []chan map[string]any
-	var barsAvailable chan bool
+	var postImages []any
 	if xLinkHosts[strings.ToLower(link.Host)] {
-		zone, err := loadUserTimezone(db, user)
-		if err != nil {
-			log.Printf("loading post image timezone: %v", err)
-		} else {
-			if !instant {
-				work := previews.startPostImagePreview(link, zone)
-				barsAvailable = make(chan bool, 1)
-				go func() { barsAvailable <- work.postImageHasBars() }()
-			}
-			for _, theme := range []string{"light", "dark", "light-bars", "dark-bars"} {
-				result := make(chan map[string]any, 1)
-				postImages = append(postImages, result)
-				go func() { result <- postImageResult(db, link, theme, zone, previews, instant) }()
-			}
-		}
+		postImages = inlinePostImageResults(db, user, link, previews, instant)
 	}
 
 	results := []any{<-normal}
@@ -314,32 +299,32 @@ func inlineArtworkResults(db *sql.DB, user int64, link *url.URL, previews *thumb
 	if result := <-bars; result != nil {
 		results = append(results, result)
 	}
-	showBars := barsAvailable == nil || <-barsAvailable
-	for i, result := range postImages {
-		image := <-result
-		if i < 2 || showBars {
-			results = append(results, image)
-		}
-	}
-	return results
+	return append(results, postImages...)
 }
 
-func handleInlineQuery(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.InlineQuery, previews *thumbnails) {
-	results := []any{}
-	nextOffset := ""
-
+func inlineQueryResults(db *sql.DB, query *tgbotapi.InlineQuery, previews *thumbnails) ([]any, string) {
+	if family, filter, ok := themeQuery(query.Query); ok {
+		return themeResults(db, query.From.ID, family, filter, previews), ""
+	}
 	if _, ok := timezoneQuery(query.Query); ok {
-		results, nextOffset = timezoneResults(query)
-	} else if text := strings.TrimSpace(query.Query); text == "" || text == "." || text == "x" || text == "p" {
-		results, nextOffset = inlineHistoryView(db, query, previews)
-	} else if link := inlineQueryLink(query.Query); link != nil {
+		return timezoneResults(query)
+	}
+	if text := strings.TrimSpace(query.Query); text == "" || text == "." || text == "x" || text == "p" {
+		return inlineHistoryView(db, query, previews)
+	}
+	if link := inlineQueryLink(query.Query); link != nil {
 		link, err := preferredPhotoLink(db, query.From.ID, link)
 		if err != nil {
 			log.Printf("loading photo preference: %v", err)
-		} else {
-			results = append(results, inlineArtworkResults(db, query.From.ID, link, previews)...)
+			return []any{}, ""
 		}
+		return inlineArtworkResults(db, query.From.ID, link, previews), ""
 	}
+	return []any{}, ""
+}
+
+func handleInlineQuery(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.InlineQuery, previews *thumbnails) {
+	results, nextOffset := inlineQueryResults(db, query, previews)
 	encoded, err := json.Marshal(results)
 	if err != nil {
 		log.Printf("encoding inline results: %v", err)
@@ -355,6 +340,10 @@ func handleInlineQuery(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.InlineQ
 }
 
 func handleChosenInlineResult(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, cacheChat string, queue *mediaQueue, previews *thumbnails) {
+	if strings.HasPrefix(chosen.ResultID, "theme:") {
+		handleThemeSelection(bot, db, chosen)
+		return
+	}
 	if strings.HasPrefix(chosen.ResultID, "timezone:") {
 		handleTimezoneSelection(bot, db, chosen)
 		return
@@ -448,7 +437,11 @@ func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB,
 	}
 	if len(photos) == 0 {
 		if xLinkHosts[strings.ToLower(link.Host)] {
-			return editInlinePostImage(bot, db, chosen, cacheChat, link, defaultPostImageTheme, previews)
+			themes, err := loadPostImageThemes(db, chosen.From.ID)
+			if err != nil {
+				return err
+			}
+			return editInlinePostImage(bot, db, chosen, cacheChat, link, themes.Dark, previews)
 		}
 		return fmt.Errorf("artwork has no photos")
 	}

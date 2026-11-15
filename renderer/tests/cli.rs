@@ -49,6 +49,35 @@ fn height(output: &Output) -> u32 {
 }
 
 #[test]
+fn cli_renders_theme_palettes() {
+    for (theme, background) in [
+        ("light", [247, 249, 249]),
+        ("warm", [255, 246, 245]),
+        ("dark", [0, 0, 0]),
+        ("dim", [22, 24, 28]),
+    ] {
+        let output = render_request(json!({
+            "theme": theme,
+            "post": {"author_name": "A", "author_username": "a", "author_avatar_url": "", "text": "Hello"}
+        }));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let image = image::load_from_memory(&output.stdout).unwrap().to_rgb8();
+        let pixel = image.get_pixel(4, 4).0;
+        assert!(
+            pixel
+                .iter()
+                .zip(background)
+                .all(|(actual, expected)| actual.abs_diff(expected) <= 3),
+            "{theme}: {pixel:?}"
+        );
+    }
+}
+
+#[test]
 fn cli_preserves_media_aspect_and_includes_all_posters() {
     let images = json!({"tall": asset(10, 30, [220, 30, 30]), "wide": asset(30, 3, [30, 220, 30]), "video1": asset(10, 10, [30, 30, 220]), "video2": asset(10, 10, [220, 220, 30])});
     let empty_height = height(&render(json!(null), images.clone()));
