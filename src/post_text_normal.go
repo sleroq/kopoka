@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"html"
 	"strings"
 	"unicode/utf16"
@@ -29,7 +28,7 @@ func xPostAuthorHTML(post *fxRichPost) string {
 	return xPostLinkHTML(post, post.Author.Name)
 }
 
-func normalXPost(post *fxRichPost, parents []*fxRichPost, more bool, attachments []xMedia) (text string, useCaption bool) {
+func normalXPost(post *fxRichPost, parents []*fxRichPost, more, hasMedia bool) string {
 	var parts []normalPostPart
 	add := func(markup, plain string) { parts = append(parts, normalPostPart{html: markup, text: plain}) }
 	addText := func(value string) { parts = append(parts, normalPostPart{text: value, postText: true}) }
@@ -67,13 +66,11 @@ func normalXPost(post *fxRichPost, parents []*fxRichPost, more bool, attachments
 		add("</blockquote>", "")
 	}
 
-	if len(attachments) > 0 && normalPostLength(parts)+normalPostLength(normalAttachmentParts(attachments, 1)) <= 1024 {
-		useCaption = true
-		parts = append(parts, normalAttachmentParts(attachments, 1)...)
-	} else {
-		parts = append(parts, normalAttachmentParts(attachments, 0)...)
+	limit := 4096
+	if hasMedia {
+		limit = 1024
 	}
-	return normalPostHTML(parts), useCaption
+	return normalPostHTML(parts, limit)
 }
 
 func normalPostLength(parts []normalPostPart) int {
@@ -84,9 +81,9 @@ func normalPostLength(parts []normalPostPart) int {
 	return n
 }
 
-func normalPostHTML(parts []normalPostPart) string {
+func normalPostHTML(parts []normalPostPart, limit int) string {
 	// Preserve markup and links; remove excess from post bodies, starting with ancestors.
-	excess := normalPostLength(parts) - 4096
+	excess := normalPostLength(parts) - limit
 	for i := range parts {
 		if excess <= 0 {
 			break
@@ -121,17 +118,4 @@ func normalPostHTML(parts []normalPostPart) string {
 		}
 	}
 	return out.String()
-}
-
-func normalAttachmentParts(attachments []xMedia, start int) []normalPostPart {
-	var links []normalPostPart
-	for i := start; i < len(attachments); i++ {
-		label := fmt.Sprintf("Attachment %d", i+1)
-		part := normalPostPart{
-			html: "\n" + `<a href="` + html.EscapeString(attachments[i].URL) + `">` + label + `</a>`,
-			text: "\n" + label,
-		}
-		links = append(links, part)
-	}
-	return links
 }

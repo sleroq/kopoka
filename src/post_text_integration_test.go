@@ -90,6 +90,21 @@ func (s *postTextServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"author": map[string]string{"name": "Long", "screen_name": "user"}, "text": strings.Repeat("a", 20000),
 			"quote": map[string]any{"author": map[string]string{"name": "Quoted", "screen_name": "q"}, "text": strings.Repeat("b", 20000)},
 		}})
+	case "/user/status/10":
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "tweet": map[string]any{
+			"author": map[string]string{"name": "Long", "screen_name": "user"}, "text": strings.Repeat("😀", 2100),
+		}})
+	case "/user/status/11":
+		_, _ = fmt.Fprint(w, `{
+			"code": 200,
+			"tweet": {
+				"author": {"name": "Author", "screen_name": "user"},
+				"quote": {
+					"id": "12", "author": {"name": "Quoted", "screen_name": "quoted"},
+					"media": {"videos": [{"url": "https://media.example/quoted.mp4"}]}
+				}
+			}
+		}`)
 	case "/i/status/99":
 		http.Error(w, "unavailable", http.StatusNotFound)
 	default:
@@ -283,7 +298,7 @@ func testXPostOrdinaryFormat(t *testing.T, api *postTextServer, choose func(int6
 	caption := media["caption"].(string)
 	if media["type"] != "photo" || media["media"] != "file1" || media["show_caption_above_media"] != true ||
 		strings.Count(caption, "<blockquote expandable>") != 3 || !strings.Contains(caption, `<blockquote><a href="https://x.com/quoted/status/9">Quoted</a>`) ||
-		!strings.Contains(caption, `href="https://media.example/main.mp4"`) || !strings.Contains(caption, `href="https://media.example/quote.jpg"`) {
+		strings.Contains(caption, "Attachment ") || strings.Contains(caption, "media.example") {
 		t.Fatalf("normal caption: %#v", media)
 	}
 	if len(api.uploads) != 1 || api.uploads[0] != "https://media.example/main.jpg" {
@@ -294,13 +309,38 @@ func testXPostOrdinaryFormat(t *testing.T, api *postTextServer, choose func(int6
 	if textOnly.Get("parse_mode") != "HTML" || !strings.Contains(textOnly.Get("text"), "Text only") || textOnly.Get("media") != "" {
 		t.Fatalf("text-only post: %v", textOnly)
 	}
-	long := choose(1, "https://x.com/user/status/7")
-	visible := html.UnescapeString(regexp.MustCompile(`<[^>]*>`).ReplaceAllString(long.Get("text"), ""))
-	if len(utf16.Encode([]rune(visible))) > 4096 || !strings.Contains(visible, "…") || !strings.Contains(long.Get("text"), `href="https://media.example/long.jpg"`) || long.Get("media") != "" {
-		t.Fatalf("long post: %d units, %s", len(utf16.Encode([]rune(visible))), long.Get("text"))
+	testXPostOrdinaryLimits(t, choose)
+	quoted := choose(1, "https://x.com/user/status/11")
+	if err := json.Unmarshal([]byte(quoted.Get("media")), &media); err != nil {
+		t.Fatal(err)
+	}
+	if media["type"] != "video" || media["media"] != "file3" ||
+		!strings.Contains(media["caption"].(string), `href="https://x.com/quoted/status/12"`) ||
+		len(api.uploads) != 3 || api.uploads[1] != "https://media.example/long.jpg" || api.uploads[2] != "https://media.example/quoted.mp4" {
+		t.Fatalf("quoted attachment: %#v, uploads %v", media, api.uploads)
 	}
 	partial := choose(1, "https://x.com/user/status/8")
 	if !strings.Contains(partial.Get("text"), "Still here") || !strings.Contains(partial.Get("text"), "…") {
 		t.Fatalf("inaccessible parent: %v", partial)
+	}
+}
+
+func testXPostOrdinaryLimits(t *testing.T, choose func(int64, string) url.Values) {
+	t.Helper()
+	long := choose(1, "https://x.com/user/status/7")
+	var media map[string]any
+	if err := json.Unmarshal([]byte(long.Get("media")), &media); err != nil {
+		t.Fatal(err)
+	}
+	caption := media["caption"].(string)
+	visible := html.UnescapeString(regexp.MustCompile(`<[^>]*>`).ReplaceAllString(caption, ""))
+	if media["type"] != "photo" || media["media"] != "file2" || media["show_caption_above_media"] != true ||
+		len(utf16.Encode([]rune(visible))) > 1024 || !strings.Contains(visible, "…") || strings.Contains(caption, "Attachment ") {
+		t.Fatalf("long caption: %d units, %#v", len(utf16.Encode([]rune(visible))), media)
+	}
+	longText := choose(1, "https://x.com/user/status/10")
+	visible = html.UnescapeString(regexp.MustCompile(`<[^>]*>`).ReplaceAllString(longText.Get("text"), ""))
+	if len(utf16.Encode([]rune(visible))) > 4096 || !strings.Contains(visible, "…") || longText.Get("media") != "" {
+		t.Fatalf("long text: %d units, %s", len(utf16.Encode([]rune(visible))), longText.Get("text"))
 	}
 }

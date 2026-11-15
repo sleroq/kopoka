@@ -241,8 +241,8 @@ func editInlinePostText(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.Chose
 		}
 		params["rich_message"] = string(payload)
 	} else {
-		text, caption := normalXPost(post, parents, more, attachments)
-		if caption {
+		text := normalXPost(post, parents, more, len(attachments) > 0)
+		if len(attachments) > 0 {
 			cached, err := cachePostMedia(bot, cacheChat, attachments[:1])
 			if err != nil {
 				return err
