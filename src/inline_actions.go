@@ -137,9 +137,11 @@ func handleIncomingMessage(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql
 	if link == nil {
 		reply.Text += "\n\nCould not find the artwork link."
 	} else {
+		inlineQuery := link.String()
 		reply.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
 			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("remove from the history", artworkActionData("remove", message.From.ID, link))),
 			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("get full-res version", artworkActionData("original", message.From.ID, link))),
+			tgbotapi.NewInlineKeyboardRow(tgbotapi.InlineKeyboardButton{Text: "switch preview", SwitchInlineQueryCurrentChat: &inlineQuery}),
 		)
 	}
 	if _, err := bot.Send(reply); err != nil {

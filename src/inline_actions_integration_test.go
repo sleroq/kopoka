@@ -103,12 +103,17 @@ func TestInlineArtworkActions(t *testing.T) {
 		t.Fatalf("question unexpectedly contains links: %v", entities)
 	}
 	var keyboard tgbotapi.InlineKeyboardMarkup
-	if err := json.Unmarshal([]byte(question.Get("reply_markup")), &keyboard); err != nil || len(keyboard.InlineKeyboard) != 2 {
+	if err := json.Unmarshal([]byte(question.Get("reply_markup")), &keyboard); err != nil || len(keyboard.InlineKeyboard) != 3 {
 		t.Fatalf("keyboard: %s, %v", question.Get("reply_markup"), err)
 	}
 	remove, originalButton := keyboard.InlineKeyboard[0][0], keyboard.InlineKeyboard[1][0]
+	switchPreview := keyboard.InlineKeyboard[2][0]
 	if remove.Text != "remove from the history" || originalButton.Text != "get full-res version" {
 		t.Fatalf("buttons: %+v, %+v", remove, originalButton)
+	}
+	if switchPreview.Text != "switch preview" || switchPreview.SwitchInlineQueryCurrentChat == nil ||
+		*switchPreview.SwitchInlineQueryCurrentChat != "https://fxtwitter.com/artist/status/123" {
+		t.Fatalf("switch preview: %+v", switchPreview)
 	}
 	if len(*remove.CallbackData) > 64 || len(*originalButton.CallbackData) > 64 {
 		t.Fatalf("callback data exceeds Telegram's limit: %s, %s", *remove.CallbackData, *originalButton.CallbackData)
