@@ -148,26 +148,25 @@ impl Card<'_> {
         if carousel || photos.len() > 4 {
             let height = (width * 0.8).min(400.0);
             let mut items = Vec::new();
+            let mut drawn_width = 4.0 * (photos.len() - 1) as f32;
             for photo in photos {
                 let (bytes, w, h) = self.asset(&photo.url)?;
-                items.push(Self::image_node(
-                    bytes,
-                    height * w as f32 / h as f32,
-                    height,
-                    12.0,
-                ));
+                let photo_width = height * w as f32 / h as f32;
+                drawn_width += photo_width;
+                items.push(Self::image_node(bytes, photo_width, height, 12.0));
             }
             let viewport = if compact { width } else { width + 24.0 };
             let radius = if compact { "12px" } else { "12px 0 0 12px" };
             let arrow = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>"#;
+            let mut nodes = vec![row(items, "gap:4px")];
+            if drawn_width > viewport {
+                nodes.push(styled(
+                    Node::image(arrow.as_bytes().to_vec()),
+                    "position:absolute;right:16px;top:50%;margin-top:-16px;width:32px;height:32px;padding:4px;background:rgba(0,0,0,0.6);border-radius:50%",
+                ));
+            }
             return Ok(column(
-                vec![
-                    row(items, "gap:4px"),
-                    styled(
-                        Node::image(arrow.as_bytes().to_vec()),
-                        "position:absolute;right:16px;top:50%;margin-top:-16px;width:32px;height:32px;padding:4px;background:rgba(0,0,0,0.6);border-radius:50%",
-                    ),
-                ],
+                nodes,
                 &format!(
                     "position:relative;width:{viewport}px;height:{height}px;overflow:hidden;border-radius:{radius};flex-shrink:0"
                 ),

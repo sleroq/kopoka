@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/draw"
 	"image/jpeg"
 	"image/png"
 	"net/http"
@@ -204,6 +205,67 @@ func TestPostImageRendererTextOnly(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPostImageRendererCarouselArrow(t *testing.T) {
+	t.Setenv("KOPOKA_RENDERER", testPostImageRenderer(t))
+
+	for _, tc := range []struct {
+		name    string
+		width   int
+		compact bool
+		arrow   bool
+	}{
+		{"fits", 20, false, false},
+		{"fits-noncompact-viewport", 25, false, false},
+		{"overflows-compact-viewport", 25, true, true},
+		{"overflows", 30, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			img := image.NewRGBA(image.Rect(0, 0, tc.width, 100))
+			draw.Draw(img, img.Bounds(), image.White, image.Point{}, draw.Src)
+			var asset bytes.Buffer
+			if err := png.Encode(&asset, img); err != nil {
+				t.Fatal(err)
+			}
+			post := renderPost{AuthorName: "Artist", AuthorUsername: "artist", Media: &postMedia{
+				Photos: slices.Repeat([]postImage{{URL: "photo"}}, 5),
+			}}
+			request := renderRequest{Theme: "light", Post: post, Images: map[string][]byte{"photo": asset.Bytes()}}
+			if tc.compact {
+				request.Post = renderPost{AuthorName: "Artist", AuthorUsername: "artist"}
+				request.ReplyChain = []renderPost{post}
+			}
+			data, err := renderPostImage(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			picture, err := jpeg.Decode(bytes.NewReader(data))
+			if err != nil {
+				t.Fatal(err)
+			}
+			x := 1036
+			if tc.compact {
+				x -= 48
+			}
+			if arrow := carouselArrowVisible(picture, x); arrow != tc.arrow {
+				t.Fatalf("arrow = %t, want %t", arrow, tc.arrow)
+			}
+		})
+	}
+}
+
+func carouselArrowVisible(picture image.Image, x int) bool {
+	dark := 0
+	for y := 250; y < 700; y++ {
+		for dx := -20; dx <= 20; dx++ {
+			r, g, b, _ := picture.At(x+dx, y).RGBA()
+			if r < 40000 && g < 40000 && b < 40000 {
+				dark++
+			}
+		}
+	}
+	return dark > 100
 }
 
 func TestPostImageRendererFailure(t *testing.T) {
