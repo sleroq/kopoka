@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +17,71 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
+
+func TestSendPhotosRetryNarrowImages(t *testing.T) {
+	asset := image.NewRGBA(image.Rect(0, 0, 40, 1200))
+	for y := range 1200 {
+		for x := range 40 {
+			asset.Set(x, y, color.RGBA{R: 255, A: 255})
+		}
+	}
+
+	var data bytes.Buffer
+	if err := jpeg.Encode(&data, asset, nil); err != nil {
+		t.Fatal(err)
+	}
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(data.Bytes())
+	}))
+	defer source.Close()
+
+	calls := 0
+	telegram := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/getMe") {
+			_, _ = io.WriteString(w, `{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`)
+			return
+		}
+		calls++
+		if calls == 1 {
+			w.WriteHeader(400)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": false, "error_code": 400,
+				"description": `Bad Request: failed to send message #2 with the error message "WEBPAGE_CURL_FAILED"`,
+			})
+			return
+		}
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Error(err)
+			return
+		}
+		defer func() { _ = r.MultipartForm.RemoveAll() }()
+		for _, name := range []string{"file-0", "file-1"} {
+			file, _, err := r.FormFile(name)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			img, _, err := image.Decode(file)
+			_ = file.Close()
+			if err != nil || img.Bounds().Size() != image.Pt(60, 1200) {
+				t.Errorf("uploaded image: %v %v", img, err)
+			}
+		}
+		_, _ = io.WriteString(w, `{"ok":true,"result":[`+
+			`{"message_id":1,"photo":[{"file_id":"one"}]},`+
+			`{"message_id":2,"photo":[{"file_id":"two"}]}]}`)
+	}))
+	defer telegram.Close()
+	bot, err := tgbotapi.NewBotAPIWithAPIEndpoint("token", telegram.URL+"/bot%s/%s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	photo := tgbotapi.NewInputMediaPhoto(tgbotapi.FileURL(source.URL + "/image.jpg"))
+	ids, err := sendPhotosWithIDs(bot, 42, 7, []any{photo, photo})
+	if err != nil || !reflect.DeepEqual(ids, []string{"one", "two"}) || calls != 2 {
+		t.Fatalf("ids=%v calls=%d error=%v", ids, calls, err)
+	}
+}
 
 type videoRetryCase struct {
 	name                                              string

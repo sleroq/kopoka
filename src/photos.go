@@ -282,7 +282,13 @@ func sendPhotosWithIDs(bot *tgbotapi.BotAPI, chatID int64, replyID int, photos [
 func sendPhotoBatchWithVideoRetry(bot *tgbotapi.BotAPI, chatID int64, replyID int, batch []any) ([]tgbotapi.Message, error) {
 	messages, err := sendPhotoBatch(bot, chatID, replyID, batch)
 	var telegramErr *tgbotapi.Error
-	if !errors.As(err, &telegramErr) || telegramErr.Code != 400 || !strings.Contains(telegramErr.Message, "failed to get HTTP URL content") {
+	if !errors.As(err, &telegramErr) || telegramErr.Code != 400 {
+		return messages, err
+	}
+	if strings.Contains(telegramErr.Message, "WEBPAGE_CURL_FAILED") {
+		return retryPhotoURLs(bot, chatID, replyID, batch, err)
+	}
+	if !strings.Contains(telegramErr.Message, "failed to get HTTP URL content") {
 		return messages, err
 	}
 
@@ -297,6 +303,9 @@ func sendPhotoBatchWithVideoRetry(bot *tgbotapi.BotAPI, chatID int64, replyID in
 		if !ok {
 			continue
 		}
+		if !downloaded {
+			log.Printf("Warning: Telegram rejected video URLs; retrying batch with uploads: %v", err)
+		}
 		file, downloadErr := downloadOriginal(client, string(url), false)
 		if downloadErr != nil {
 			return nil, downloadErr
@@ -308,7 +317,56 @@ func sendPhotoBatchWithVideoRetry(bot *tgbotapi.BotAPI, chatID int64, replyID in
 	if downloaded {
 		return sendPhotoBatch(bot, chatID, replyID, batch)
 	}
-	return messages, err
+	return retryPhotoURLs(bot, chatID, replyID, batch, err)
+}
+
+func retryPhotoURLs(bot *tgbotapi.BotAPI, chatID int64, replyID int, batch []any, originalErr error) ([]tgbotapi.Message, error) {
+	client := &http.Client{Timeout: 30 * time.Second}
+	downloaded := false
+
+	for i, item := range batch {
+		photo, ok := item.(tgbotapi.InputMediaPhoto)
+		if !ok {
+			continue
+		}
+		url, ok := photo.Media.(tgbotapi.FileURL)
+		if !ok {
+			continue
+		}
+		if !downloaded {
+			log.Printf("Warning: Telegram rejected photo URLs; retrying batch with uploads: %v", originalErr)
+		}
+		file, err := downloadArtFile(client, url)
+		if err != nil {
+			return nil, err
+		}
+		img, _, err := image.Decode(bytes.NewReader(file.Bytes))
+		if err != nil {
+			return nil, err
+		}
+		size := img.Bounds().Size()
+		if max(size.X, size.Y) > 20*min(size.X, size.Y) {
+			width, height := max(size.X, (size.Y+19)/20), max(size.Y, (size.X+19)/20)
+			canvas := image.NewRGBA(image.Rect(0, 0, width, height))
+			draw.Draw(canvas, canvas.Bounds(), image.White, image.Point{}, draw.Src)
+			offset := image.Pt((width-size.X)/2, (height-size.Y)/2)
+			draw.Draw(canvas, image.Rectangle{Min: offset, Max: offset.Add(size)}, img, img.Bounds().Min, draw.Src)
+			file, err = mergedPhotoFile(canvas)
+			if err != nil {
+				return nil, err
+			}
+			if file.Bytes == nil {
+				return nil, fmt.Errorf("padded photo exceeds Telegram's 10 MB limit")
+			}
+		}
+		photo.Media = file
+		batch[i] = photo
+		downloaded = true
+	}
+	if !downloaded {
+		return nil, originalErr
+	}
+	return sendPhotoBatch(bot, chatID, replyID, batch)
 }
 
 func sendPhotoBatch(bot *tgbotapi.BotAPI, chatID int64, replyID int, batch []any) ([]tgbotapi.Message, error) {
