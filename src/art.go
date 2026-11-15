@@ -99,7 +99,10 @@ func artGridMatches(images []image.Image, columns int) (image.Point, bool) {
 		// Check every original tile seam independently: a good match in one
 		// column must never conceal an unrelated tile in another column.
 		if column > 0 && !artSeamIsDistinct(images[i-1], img, true) {
-			return image.Point{}, false
+			if columns != len(images) || !artRowMatches(images) {
+				return image.Point{}, false
+			}
+			break
 		}
 		if row > 0 && !artSeamIsDistinct(images[i-columns], img, false) {
 			return image.Point{}, false
@@ -109,25 +112,52 @@ func artGridMatches(images []image.Image, columns int) (image.Point, bool) {
 	return size, max(size.X, size.Y) <= 20*min(size.X, size.Y)
 }
 
+// Repeated interior edges need directional seams at both ends of the row.
+func artRowMatches(images []image.Image) bool {
+	for i := 1; i < len(images); i++ {
+		forward := artSeamScore(images[i-1], images[i], true, true)
+		if math.IsInf(forward, 1) {
+			return false
+		}
+		if i == 1 || i == len(images)-1 {
+			reverse := artSeamScore(images[i], images[i-1], true, true)
+			if forward >= reverse || forward > 0.5*reverse {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func artSeamIsDistinct(a, b image.Image, horizontal bool) bool {
-	// Shared decorative borders often match in both directions without being
-	// adjoining art. The intended direction must be unambiguous too.
-	return artSeamMatches(a, b, horizontal) && !artSeamMatches(b, a, horizontal)
+	forward := artSeamScore(a, b, horizontal, false)
+	if math.IsInf(forward, 1) {
+		return false
+	}
+	reverse := artSeamScore(b, a, horizontal, false)
+	return forward < reverse && forward <= 0.5*reverse
 }
 
 type edgeColor [3]float64
 
-// A low color difference alone would join unrelated pictures with white borders
-// or a shared palette. The aligned edge must also match much better than the
-// same edge displaced along the seam, demonstrating spatial continuity.
 func artSeamMatches(a, b image.Image, horizontal bool) bool {
+	return !math.IsInf(artSeamScore(a, b, horizontal, false), 1)
+}
+
+// The aligned edge must also beat displacement along the seam, demonstrating
+// spatial continuity rather than just a shared palette or border.
+func artSeamScore(a, b image.Image, horizontal, relaxed bool) float64 {
 	left := artEdgeProfile(a, horizontal, true)
 	right := artEdgeProfile(b, horizontal, false)
 	if len(left) < 16 || len(left) != len(right) {
-		return false
+		return math.Inf(1)
 	}
+	mean := edgeDifference(left, right, 0, false)
 	for _, trimmed := range []bool{false, true} {
-		aligned := edgeDifference(left, right, 0, trimmed)
+		aligned := mean
+		if trimmed {
+			aligned = edgeDifference(left, right, 0, true)
+		}
 		if aligned > 10 {
 			continue
 		}
@@ -139,13 +169,13 @@ func artSeamMatches(a, b image.Image, horizontal bool) bool {
 				edgeDifference(left, right, len(left)-shift, trimmed),
 			)
 		}
-		// Nearly uniform textured seams have much smaller absolute differences.
 		if displaced-aligned >= 8 && aligned <= 0.4*displaced ||
-			!trimmed && aligned <= 3 && displaced-aligned >= 0.4 && aligned <= 0.8*displaced {
-			return true
+			!trimmed && aligned <= 3 && displaced-aligned >= 0.4 && aligned <= 0.8*displaced ||
+			relaxed && !trimmed && displaced-aligned >= 3 && aligned <= (2.0/3)*displaced {
+			return mean
 		}
 	}
-	return false
+	return math.Inf(1)
 }
 
 // Average four pixels along the touching edge to tolerate JPEG noise. Do not
