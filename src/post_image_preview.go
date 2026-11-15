@@ -35,9 +35,9 @@ func postImagePreviewLink(link *url.URL) *url.URL {
 	return post
 }
 
-func (t *thumbnails) startPostImagePreview(link *url.URL) *postImagePreviewWork {
+func (t *thumbnails) startPostImagePreview(link *url.URL, zone string) *postImagePreviewWork {
 	link = postImagePreviewLink(link)
-	key := link.String()
+	key := artworkID(xPostLink(link)) + ":" + zone
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for k, work := range t.postImageWork {
@@ -55,7 +55,7 @@ func (t *thumbnails) startPostImagePreview(link *url.URL) *postImagePreviewWork 
 	go func() {
 		t.workers <- struct{}{}
 		defer func() { <-t.workers }()
-		request, err := preparePostImageWithClient(t.client, link, "light")
+		request, err := preparePostImageWithClient(t.client, link, "light", zone)
 		var wg sync.WaitGroup
 		for theme, variant := range work.variants {
 			wg.Add(1)
@@ -104,18 +104,21 @@ func (variant *postImagePreviewVariant) render(link *url.URL, request renderRequ
 	variant.thumbnail = out.Bytes()
 }
 
-func (t *thumbnails) postImagePreview(link *url.URL, theme string, instant bool) previewPhoto {
+func (t *thumbnails) postImagePreview(link *url.URL, theme, zone string, instant bool) previewPhoto {
 	if instant {
 		return t.postImagePlaceholder(theme)
 	}
 	link = postImagePreviewLink(link)
-	variant := t.startPostImagePreview(link).variants[theme]
+	variant := t.startPostImagePreview(link, zone).variants[theme]
 	select {
 	case <-variant.done:
 		if variant.err == nil {
 			address := *t.base
 			address.Path += "/post-image-preview"
-			address.RawQuery = url.Values{"url": {link.String()}, "theme": {theme}, "v": {strconv.Itoa(postImageVersion)}}.Encode()
+			address.RawQuery = url.Values{
+				"url": {link.String()}, "theme": {theme},
+				"tz": {zone}, "v": {strconv.Itoa(postImageVersion)},
+			}.Encode()
 			u := address.String()
 			return previewPhoto{photoURL: u + "&size=large", thumbnailURL: u, width: variant.width, height: variant.height}
 		}
@@ -125,10 +128,10 @@ func (t *thumbnails) postImagePreview(link *url.URL, theme string, instant bool)
 	return t.postImagePlaceholder(theme)
 }
 
-func (t *thumbnails) existingPostImagePreview(link *url.URL, theme string) *postImagePreviewVariant {
+func (t *thumbnails) existingPostImagePreview(link *url.URL, theme, zone string) *postImagePreviewVariant {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if work := t.postImageWork[postImagePreviewLink(link).String()]; work != nil {
+	if work := t.postImageWork[artworkID(xPostLink(link))+":"+zone]; work != nil {
 		return work.variants[theme]
 	}
 	return nil
@@ -153,11 +156,19 @@ func (t *thumbnails) servePostImagePreview(w http.ResponseWriter, r *http.Reques
 	}
 	link := inlineLink(r.URL.Query().Get("url"))
 	theme := r.URL.Query().Get("theme")
+	zone := r.URL.Query().Get("tz")
+	if zone == "" {
+		zone = defaultTimezone
+	}
+	if _, err := time.LoadLocation(zone); err != nil {
+		http.Error(w, "invalid timezone", http.StatusBadRequest)
+		return
+	}
 	if link == nil || !xLinkHosts[strings.ToLower(link.Host)] || (theme != "light" && theme != "dark") {
 		http.Error(w, "invalid URL or theme", http.StatusBadRequest)
 		return
 	}
-	variant := t.startPostImagePreview(link).variants[theme]
+	variant := t.startPostImagePreview(link, zone).variants[theme]
 	select {
 	case <-r.Context().Done():
 		return

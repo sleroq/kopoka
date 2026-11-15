@@ -21,7 +21,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-const postImageVersion = 4
+const postImageVersion = 5
 const defaultPostImageTheme = "dark"
 
 type postImage struct {
@@ -51,7 +51,8 @@ type renderPost struct {
 	AuthorUsername   string       `json:"author_username"`
 	AuthorAvatarURL  string       `json:"author_avatar_url"`
 	Text             string       `json:"text"`
-	CreatedTimestamp int64        `json:"created_timestamp,omitempty"`
+	CreatedTimestamp int64        `json:"-"`
+	CreatedAt        string       `json:"created_at,omitempty"`
 	Likes            uint64       `json:"likes,omitempty"`
 	Retweets         uint64       `json:"retweets,omitempty"`
 	Replies          uint64       `json:"replies,omitempty"`
@@ -213,11 +214,15 @@ func fetchRichPost(client *http.Client, link *url.URL) (*fxRichPost, error) {
 	}
 	return response.Tweet, nil
 }
-func preparePostImage(link *url.URL, theme string) (renderRequest, error) {
-	return preparePostImageWithClient(&http.Client{Timeout: 10 * time.Second}, link, theme)
+func preparePostImage(link *url.URL, theme, zone string) (renderRequest, error) {
+	return preparePostImageWithClient(&http.Client{Timeout: 10 * time.Second}, link, theme, zone)
 }
 
-func preparePostImageWithClient(client *http.Client, link *url.URL, theme string) (renderRequest, error) {
+func preparePostImageWithClient(client *http.Client, link *url.URL, theme, zone string) (renderRequest, error) {
+	location, err := time.LoadLocation(zone)
+	if err != nil {
+		return renderRequest{}, err
+	}
 	source, err := fetchRichPost(client, xPostLink(link))
 	if err != nil {
 		return renderRequest{}, err
@@ -230,6 +235,10 @@ func preparePostImageWithClient(client *http.Client, link *url.URL, theme string
 	if err != nil {
 		return renderRequest{}, err
 	}
+	post = post.inTimezone(location)
+	for i := range chain {
+		chain[i] = chain[i].inTimezone(location)
+	}
 	request := renderRequest{Theme: theme, Post: post, ReplyChain: chain, HasMore: more, Images: map[string][]byte{}}
 	if err := loadPostAssets(client, request.Post, request.Images); err != nil {
 		return request, err
@@ -240,6 +249,17 @@ func preparePostImageWithClient(client *http.Client, link *url.URL, theme string
 		}
 	}
 	return request, nil
+}
+
+func (p renderPost) inTimezone(location *time.Location) renderPost {
+	if p.CreatedTimestamp != 0 {
+		p.CreatedAt = time.Unix(p.CreatedTimestamp, 0).In(location).Format("3:04 PM · Jan 2, 2006 UTC-07:00")
+	}
+	if p.Quote != nil {
+		quote := p.Quote.inTimezone(location)
+		p.Quote = &quote
+	}
+	return p
 }
 
 func (p *fxRichPost) replyChain(client *http.Client) ([]renderPost, bool, error) {
@@ -370,18 +390,18 @@ func postImageTheme(id string, link *url.URL) string {
 	}
 	return ""
 }
-func findPostImage(db *sql.DB, id, theme string) (string, string, error) {
+func findPostImage(db *sql.DB, id, theme, zone string) (string, string, error) {
 	var file, caption string
-	row := db.QueryRow(`SELECT file_id,caption FROM post_image_cache WHERE artwork_id=? AND theme=? AND render_version=?`,
-		id, theme, postImageVersion)
+	row := db.QueryRow(`SELECT file_id,caption FROM post_image_cache WHERE artwork_id=? AND theme=? AND timezone=? AND render_version=?`,
+		id, theme, zone, postImageVersion)
 	err := row.Scan(&file, &caption)
 	if err == sql.ErrNoRows {
 		return "", "", nil
 	}
 	return file, caption, err
 }
-func postImageResult(db *sql.DB, link *url.URL, theme string, previews *thumbnails, instant bool) map[string]any {
-	file, caption, err := findPostImage(db, artworkID(xPostLink(link)), theme)
+func postImageResult(db *sql.DB, link *url.URL, theme, zone string, previews *thumbnails, instant bool) map[string]any {
+	file, caption, err := findPostImage(db, artworkID(xPostLink(link)), theme, zone)
 	if err != nil {
 		log.Printf("loading cached post image: %v", err)
 	}
@@ -389,7 +409,7 @@ func postImageResult(db *sql.DB, link *url.URL, theme string, previews *thumbnai
 	if file != "" {
 		photo = previewPhoto{fileID: file}
 	} else {
-		photo = previews.postImagePreview(link, theme, instant)
+		photo = previews.postImagePreview(link, theme, zone, instant)
 	}
 	result := inlinePhoto(photo)
 	result["id"] = postImageID(link, theme)
@@ -407,8 +427,8 @@ func postImageResult(db *sql.DB, link *url.URL, theme string, previews *thumbnai
 	result["reply_markup"] = map[string]any{"inline_keyboard": []any{[]any{wait}}}
 	return result
 }
-func postImagePhoto(db *sql.DB, link *url.URL, theme string, previews *thumbnails) (tgbotapi.InputMediaPhoto, error) {
-	file, caption, err := findPostImage(db, artworkID(xPostLink(link)), theme)
+func postImagePhoto(db *sql.DB, link *url.URL, theme, zone string, previews *thumbnails) (tgbotapi.InputMediaPhoto, error) {
+	file, caption, err := findPostImage(db, artworkID(xPostLink(link)), theme, zone)
 	if err != nil {
 		return tgbotapi.InputMediaPhoto{}, err
 	}
@@ -418,7 +438,7 @@ func postImagePhoto(db *sql.DB, link *url.URL, theme string, previews *thumbnail
 		return photo, nil
 	}
 	if previews != nil {
-		if variant := previews.existingPostImagePreview(link, theme); variant != nil {
+		if variant := previews.existingPostImagePreview(link, theme, zone); variant != nil {
 			photo, err := variant.photo()
 			if err == nil {
 				return photo, nil
@@ -426,7 +446,7 @@ func postImagePhoto(db *sql.DB, link *url.URL, theme string, previews *thumbnail
 			log.Printf("reusing post image preview for %s (%s): %v", link, theme, err)
 		}
 	}
-	request, err := preparePostImage(link, theme)
+	request, err := preparePostImage(link, theme, zone)
 	if err != nil {
 		return tgbotapi.InputMediaPhoto{}, err
 	}
@@ -445,15 +465,19 @@ func postImageCaption(link *url.URL, request renderRequest) string {
 		html.EscapeString(xPostLink(link).String()), html.EscapeString(request.Post.AuthorName))
 }
 
-func savePostImage(db *sql.DB, link *url.URL, theme, fileID, caption string) error {
-	_, err := db.Exec(`INSERT INTO post_image_cache(artwork_id,theme,render_version,file_id,caption) VALUES(?,?,?,?,?)
- ON CONFLICT(artwork_id,theme,render_version) DO UPDATE SET file_id=excluded.file_id,caption=excluded.caption`,
-		artworkID(xPostLink(link)), theme, postImageVersion, fileID, caption)
+func savePostImage(db *sql.DB, link *url.URL, theme, zone, fileID, caption string) error {
+	_, err := db.Exec(`INSERT INTO post_image_cache(artwork_id,theme,timezone,render_version,file_id,caption) VALUES(?,?,?,?,?,?)
+ ON CONFLICT(artwork_id,theme,timezone,render_version) DO UPDATE SET file_id=excluded.file_id,caption=excluded.caption`,
+		artworkID(xPostLink(link)), theme, zone, postImageVersion, fileID, caption)
 	return err
 }
 
 func sendPostImage(bot *tgbotapi.BotAPI, db *sql.DB, message *tgbotapi.Message, link *url.URL, theme string) error {
-	photo, err := postImagePhoto(db, link, theme, nil)
+	zone, err := loadUserTimezone(db, message.From.ID)
+	if err != nil {
+		return err
+	}
+	photo, err := postImagePhoto(db, link, theme, zone, nil)
 	if err != nil {
 		return err
 	}
@@ -462,7 +486,7 @@ func sendPostImage(bot *tgbotapi.BotAPI, db *sql.DB, message *tgbotapi.Message, 
 		return err
 	}
 	if len(ids) == 1 {
-		if err := savePostImage(db, link, theme, ids[0], photo.Caption); err != nil {
+		if err := savePostImage(db, link, theme, zone, ids[0], photo.Caption); err != nil {
 			log.Printf("saving chat post image: %v", err)
 		}
 	}
@@ -470,7 +494,11 @@ func sendPostImage(bot *tgbotapi.BotAPI, db *sql.DB, message *tgbotapi.Message, 
 }
 
 func editInlinePostImage(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, cacheChat string, link *url.URL, theme string, previews *thumbnails) error {
-	photo, err := postImagePhoto(db, link, theme, previews)
+	zone, err := loadUserTimezone(db, chosen.From.ID)
+	if err != nil {
+		return err
+	}
+	photo, err := postImagePhoto(db, link, theme, zone, previews)
 	if err != nil {
 		return err
 	}
@@ -480,7 +508,7 @@ func editInlinePostImage(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.Chos
 		if err != nil {
 			return err
 		}
-		if err := savePostImage(db, link, theme, id, photo.Caption); err != nil {
+		if err := savePostImage(db, link, theme, zone, id, photo.Caption); err != nil {
 			return err
 		}
 		file = tgbotapi.FileID(id)

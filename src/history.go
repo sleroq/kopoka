@@ -98,10 +98,12 @@ func settingsView(user int64) (string, tgbotapi.InlineKeyboardMarkup) {
 	button := func(text, action string) tgbotapi.InlineKeyboardButton {
 		return tgbotapi.NewInlineKeyboardButtonData(text, fmt.Sprintf("settings:%s:%d", action, user))
 	}
+	query := "tz "
 	return "Settings", tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(button("Configure history", "history-menu")),
 		tgbotapi.NewInlineKeyboardRow(button("Instant inline query", "instant")),
 		tgbotapi.NewInlineKeyboardRow(button("Specific photo links", "photo-menu")),
+		tgbotapi.NewInlineKeyboardRow(tgbotapi.InlineKeyboardButton{Text: "Timezone", SwitchInlineQueryCurrentChat: &query}),
 	)
 }
 

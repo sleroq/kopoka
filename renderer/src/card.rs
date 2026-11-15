@@ -2,7 +2,6 @@ use std::collections::HashMap;
 
 use anyhow::{Context, Result, bail};
 use base64::{Engine, engine::general_purpose::STANDARD};
-use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use takumi::{measure, prelude::*, write_image};
 
@@ -31,7 +30,7 @@ struct Post {
     author_username: String,
     author_avatar_url: String,
     text: String,
-    created_timestamp: Option<i64>,
+    created_at: Option<String>,
     likes: Option<u64>,
     retweets: Option<u64>,
     replies: Option<u64>,
@@ -213,7 +212,7 @@ impl Card<'_> {
     fn post(&self, post: &Post, width: f32, compact: bool) -> Result<Node> {
         let size = if compact { 24.0 } else { 48.0 };
         let timestamp = if compact {
-            format_timestamp(post.created_timestamp)?
+            post.created_at.clone().unwrap_or_default()
         } else {
             String::new()
         };
@@ -312,14 +311,6 @@ impl Card<'_> {
     }
 }
 
-fn format_timestamp(timestamp: Option<i64>) -> Result<String> {
-    Ok(timestamp
-        .map(|t| DateTime::<Utc>::from_timestamp(t, 0).context("invalid UTC timestamp"))
-        .transpose()?
-        .map(|d| d.format("%-I:%M %p · %b %-d, %Y UTC").to_string())
-        .unwrap_or_default())
-}
-
 fn format_count(count: Option<u64>) -> String {
     let count = count.unwrap_or(0);
     if count >= 1_000_000 {
@@ -352,7 +343,7 @@ pub fn render(request: Request) -> Result<Vec<u8>> {
         nodes.push(card.post(reply, 502.0, true)?);
     }
     nodes.push(card.post(&request.post, 502.0, false)?);
-    let date = format_timestamp(request.post.created_timestamp)?;
+    let date = request.post.created_at.as_deref().unwrap_or_default();
     nodes.push(row(
         vec![
             text(date, &format!("color:{secondary};font-size:13px")),

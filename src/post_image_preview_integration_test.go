@@ -90,7 +90,7 @@ cat "$PREVIEW_TEST_IMAGE"
 	link := inlineLink("https://x.com/user/status/42/photo/2?foo=bar")
 
 	for _, theme := range []string{"light", "dark"} {
-		result := postImageResult(db, link, theme, previews, true)
+		result := postImageResult(db, link, theme, defaultTimezone, previews, true)
 		if !strings.Contains(result["photo_url"].(string), "placeholder-"+theme) {
 			t.Fatalf("instant: %v", result)
 		}
@@ -101,7 +101,7 @@ cat "$PREVIEW_TEST_IMAGE"
 
 	results := make(chan map[string]any, 2)
 	for _, theme := range []string{"light", "dark"} {
-		go func(theme string) { results <- postImageResult(db, link, theme, previews, false) }(theme)
+		go func(theme string) { results <- postImageResult(db, link, theme, defaultTimezone, previews, false) }(theme)
 	}
 	checkPostImagePreviewResponses(t, previews, results)
 
@@ -126,7 +126,7 @@ cat "$PREVIEW_TEST_IMAGE"
 		if err := editInlinePostImage(bot, db, chosen, "@cache", link, theme, previews); err != nil {
 			t.Fatal(err)
 		}
-		result := postImageResult(db, link, theme, previews, false)
+		result := postImageResult(db, link, theme, defaultTimezone, previews, false)
 		if result["photo_file_id"] != "card" || result["id"] != postImageID(link, theme)+":cached" || !strings.Contains(result["caption"].(string), "Artist") {
 			t.Fatalf("cached: %v", result)
 		}
@@ -194,7 +194,7 @@ func TestPostImagePreviewRetryAfterFailure(t *testing.T) {
 	previews := testPreviews(t, testArtworkDB(t), nil)
 	previews.client = &http.Client{Transport: redirectTransport{target, http.DefaultTransport}}
 	link := inlineLink("https://x.com/user/status/42")
-	work := previews.startPostImagePreview(link)
+	work := previews.startPostImagePreview(link, defaultTimezone)
 	<-work.variants["light"].done
 	<-work.variants["dark"].done
 	if work.variants["light"].err == nil || work.variants["dark"].err == nil {
@@ -220,10 +220,55 @@ func TestPostImagePreviewRetryAfterFailure(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "ready"), nil, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if photo := previews.postImagePreview(link, "light", false); !strings.Contains(photo.photoURL, "/post-image-preview?") {
+	if photo := previews.postImagePreview(link, "light", defaultTimezone, false); !strings.Contains(photo.photoURL, "/post-image-preview?") {
 		t.Fatalf("retry: %+v", photo)
 	}
 	if calls.Load() != 2 {
 		t.Fatalf("metadata requests: %d", calls.Load())
+	}
+}
+
+func TestPostImagePreviewTimezones(t *testing.T) {
+	t.Setenv("KOPOKA_RENDERER", testPostImageRenderer(t))
+
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"code": 200, "tweet": map[string]any{
+				"created_timestamp": 1704065400,
+				"author":            map[string]string{"name": "Artist", "screen_name": "user"},
+			},
+		})
+	}))
+	defer server.Close()
+	target, _ := url.Parse(server.URL)
+	previews := testPreviews(t, testArtworkDB(t), nil)
+	previews.client = &http.Client{Transport: redirectTransport{target, http.DefaultTransport}}
+	link := inlineLink("https://x.com/user/status/42")
+	alias := inlineLink("https://twitter.com/other/status/42/photo/2")
+	first := previews.startPostImagePreview(link, defaultTimezone)
+	if first != previews.startPostImagePreview(alias, defaultTimezone) {
+		t.Fatal("same post and zone did not share work")
+	}
+	if first == previews.startPostImagePreview(link, "UTC") {
+		t.Fatal("different zones shared work")
+	}
+	var images [][]byte
+	for _, zone := range []string{defaultTimezone, "UTC"} {
+		photo := previews.postImagePreview(link, "light", zone, false)
+		address, err := url.Parse(photo.photoURL)
+		if err != nil || address.Query().Get("tz") != zone {
+			t.Fatalf("URL %q: %v", photo.photoURL, err)
+		}
+		response := httptest.NewRecorder()
+		previews.ServeHTTP(response, httptest.NewRequest("GET", address.RequestURI(), nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("preview: %d", response.Code)
+		}
+		images = append(images, response.Body.Bytes())
+	}
+	if bytes.Equal(images[0], images[1]) || calls.Load() != 2 {
+		t.Fatalf("images equal=%v fetches=%d", bytes.Equal(images[0], images[1]), calls.Load())
 	}
 }

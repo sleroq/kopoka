@@ -250,7 +250,7 @@ func TestPostImageReplyChainAndCard(t *testing.T) {
 	http.DefaultTransport = redirectTransport{target, original}
 	defer func() { http.DefaultTransport = original }()
 	link, _ := url.Parse("https://x.com/user/status/5/photo/2")
-	request, err := preparePostImage(link, "light")
+	request, err := preparePostImage(link, "light", defaultTimezone)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +281,7 @@ func TestPostImageOptionalCardHTTP(t *testing.T) {
 			http.DefaultTransport = redirectTransport{target, original}
 			defer func() { http.DefaultTransport = original }()
 
-			request, err := preparePostImage(inlineLink("https://x.com/author/status/7"), "light")
+			request, err := preparePostImage(inlineLink("https://x.com/author/status/7"), "light", defaultTimezone)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -399,7 +399,7 @@ func TestPostImageOriginalPanels(t *testing.T) {
 			defer server.Close()
 			target, _ := url.Parse(server.URL)
 			client := &http.Client{Transport: redirectTransport{target, http.DefaultTransport}}
-			req, err := preparePostImageWithClient(client, inlineLink("https://x.com/artist/status/42"), "light")
+			req, err := preparePostImageWithClient(client, inlineLink("https://x.com/artist/status/42"), "light", defaultTimezone)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -411,5 +411,111 @@ func TestPostImageOriginalPanels(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestPostImageTimezonePreparation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		post := map[string]any{
+			"created_timestamp": 1704065400,
+			"author":            map[string]string{"name": "Post", "screen_name": "post"},
+			"quote": map[string]any{
+				"created_timestamp": 1719835200,
+				"author":            map[string]string{"name": "Quoted", "screen_name": "quote"},
+			},
+		}
+
+		if !strings.Contains(r.URL.Path, "/status/41") {
+			post["replying_to_status"] = "41"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "tweet": post})
+	}))
+	defer server.Close()
+	target, _ := url.Parse(server.URL)
+	client := &http.Client{Transport: redirectTransport{target, http.DefaultTransport}}
+	for _, tc := range []struct{ zone, winter, summer string }{
+		{defaultTimezone, "2:30 AM · Jan 1, 2024 UTC+03:00", "3:00 PM · Jul 1, 2024 UTC+03:00"},
+		{"America/New_York", "6:30 PM · Dec 31, 2023 UTC-05:00", "8:00 AM · Jul 1, 2024 UTC-04:00"},
+		{"Asia/Kathmandu", "5:15 AM · Jan 1, 2024 UTC+05:45", "5:45 PM · Jul 1, 2024 UTC+05:45"},
+	} {
+		t.Run(tc.zone, func(t *testing.T) {
+			request, err := preparePostImageWithClient(client, inlineLink("https://x.com/post/status/42"), "light", tc.zone)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(request.ReplyChain) != 1 {
+				t.Fatalf("reply chain: %+v", request.ReplyChain)
+			}
+			for _, post := range []renderPost{request.Post, request.ReplyChain[0]} {
+				if post.CreatedAt != tc.winter || post.Quote == nil || post.Quote.CreatedAt != tc.summer {
+					t.Fatalf("timestamps: %+v quote=%+v", post, post.Quote)
+				}
+			}
+			data, err := json.Marshal(request)
+			if err != nil || bytes.Contains(data, []byte("created_timestamp")) {
+				t.Fatalf("JSON %s: %v", data, err)
+			}
+		})
+	}
+}
+
+func TestPostImageCacheSharedByTimezone(t *testing.T) {
+	db := testArtworkDB(t)
+	if err := saveUserTimezone(db, 3, "UTC"); err != nil {
+		t.Fatal(err)
+	}
+
+	var jpg bytes.Buffer
+	if err := jpeg.Encode(&jpg, image.NewRGBA(image.Rect(0, 0, 64, 64)), nil); err != nil {
+		t.Fatal(err)
+	}
+	var calls []string
+	var results []map[string]any
+	server := postImageTelegramServer(t, jpg.Bytes(), &calls, &results)
+	defer server.Close()
+	target, _ := url.Parse(server.URL)
+	original := http.DefaultTransport
+	http.DefaultTransport = redirectTransport{target, original}
+	defer func() { http.DefaultTransport = original }()
+	bot, err := tgbotapi.NewBotAPIWithAPIEndpoint("token", server.URL+"/bot%s/%s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	renderer := testPostImageRenderer(t)
+	t.Setenv("KOPOKA_RENDERER", renderer)
+
+	link := inlineLink("https://x.com/user/status/42")
+	choose := func(user int64) {
+		t.Helper()
+		chosen := &tgbotapi.ChosenInlineResult{From: &tgbotapi.User{ID: user}, InlineMessageID: "inline"}
+		if err := editInlinePostImage(bot, db, chosen, "@cache", link, "light", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	choose(1)
+	before := len(calls)
+	t.Setenv("KOPOKA_RENDERER", filepath.Join(t.TempDir(), "missing"))
+	choose(2)
+	if strings.Join(calls[before:], ",") != "edit" {
+		t.Fatalf("same zone calls: %v", calls[before:])
+	}
+	t.Setenv("KOPOKA_RENDERER", renderer)
+	before = len(calls)
+	choose(3)
+	if !slices.Contains(calls[before:], "fetch") || !slices.Contains(calls[before:], "upload") {
+		t.Fatalf("different zone calls: %v", calls[before:])
+	}
+	var count int
+	id := artworkID(xPostLink(link))
+	row := db.QueryRow(`SELECT count(*) FROM post_image_cache WHERE artwork_id=? AND theme='light'`, id)
+	if err := row.Scan(&count); err != nil || count != 2 {
+		t.Fatalf("cache rows %d: %v", count, err)
+	}
+	if _, err := db.Exec(`UPDATE post_image_cache SET render_version=? WHERE timezone=?`, postImageVersion-1, "UTC"); err != nil {
+		t.Fatal(err)
+	}
+	file, _, err := findPostImage(db, id, "light", "UTC")
+	if err != nil || file != "" {
+		t.Fatalf("stale cache file %q: %v", file, err)
 	}
 }

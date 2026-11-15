@@ -49,9 +49,14 @@ func openArtworkDB(path string) (*sql.DB, error) {
  CREATE TABLE IF NOT EXISTS history_first_saved (user_id INTEGER PRIMARY KEY);
  CREATE TABLE IF NOT EXISTS history_picture_view (user_id INTEGER PRIMARY KEY);
  CREATE TABLE IF NOT EXISTS thumbnail_cache (artwork_id TEXT NOT NULL, media_count INTEGER NOT NULL, file_id TEXT NOT NULL, render_version INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (artwork_id, media_count));
- CREATE TABLE IF NOT EXISTS post_image_cache (artwork_id TEXT NOT NULL, theme TEXT NOT NULL, render_version INTEGER NOT NULL, file_id TEXT NOT NULL, caption TEXT NOT NULL, PRIMARY KEY (artwork_id, theme, render_version));
+ CREATE TABLE IF NOT EXISTS post_image_cache (artwork_id TEXT NOT NULL, theme TEXT NOT NULL, timezone TEXT NOT NULL DEFAULT 'Etc/GMT-3', render_version INTEGER NOT NULL, file_id TEXT NOT NULL, caption TEXT NOT NULL, PRIMARY KEY (artwork_id, theme, timezone, render_version));
+ CREATE TABLE IF NOT EXISTS user_timezone (user_id INTEGER PRIMARY KEY, timezone TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS instant_inline_settings (user_id INTEGER PRIMARY KEY, x INTEGER NOT NULL DEFAULT 0, pixiv INTEGER NOT NULL DEFAULT 0);`)
 	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := migratePostImageTimezone(db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -118,6 +123,30 @@ func openArtworkDB(path string) (*sql.DB, error) {
 		}
 	}
 	return db, nil
+}
+
+func migratePostImageTimezone(db *sql.DB) error {
+	var exists int
+	if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info('post_image_cache') WHERE name='timezone'`).Scan(&exists); err != nil {
+		return err
+	}
+	if exists != 0 {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	_, err = tx.Exec(`ALTER TABLE post_image_cache RENAME TO post_image_cache_old;
+ CREATE TABLE post_image_cache (artwork_id TEXT NOT NULL, theme TEXT NOT NULL, timezone TEXT NOT NULL DEFAULT 'Etc/GMT-3', render_version INTEGER NOT NULL, file_id TEXT NOT NULL, caption TEXT NOT NULL, PRIMARY KEY (artwork_id, theme, timezone, render_version));
+ INSERT INTO post_image_cache(artwork_id, theme, timezone, render_version, file_id, caption)
+ SELECT artwork_id, theme, 'UTC', render_version, file_id, caption FROM post_image_cache_old;
+ DROP TABLE post_image_cache_old;`)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func toggleHistorySetting(db *sql.DB, user int64, setting string) error {

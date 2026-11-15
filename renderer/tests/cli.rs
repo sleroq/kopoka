@@ -114,3 +114,29 @@ fn cli_carousel_clips_at_card_edge_with_arrow() {
         "arrow overlay {overlay:?}"
     );
 }
+
+#[test]
+fn cli_renders_supplied_timestamps() {
+    let render_dates = |date: &str| {
+        let post = json!({"author_name":"A", "author_username":"a", "author_avatar_url":"", "text":"Hello", "created_at":date});
+        let request = json!({"theme":"light", "post":post, "reply_chain":[post]});
+        let mut child = Command::new(env!("CARGO_BIN_EXE_kopoka-render"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(request.to_string().as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success());
+        output.stdout
+    };
+    assert_ne!(
+        render_dates("2:30 AM · Jan 1, 2024 UTC+03:00"),
+        render_dates("6:30 PM · Dec 31, 2023 UTC-05:00")
+    );
+}

@@ -263,9 +263,14 @@ func inlineArtworkResults(db *sql.DB, user int64, link *url.URL, previews *thumb
 	go func() { merged <- inlineMergedResult(link, previews, instant) }()
 	var light, dark chan map[string]any
 	if xLinkHosts[strings.ToLower(link.Host)] {
-		light, dark = make(chan map[string]any, 1), make(chan map[string]any, 1)
-		go func() { light <- postImageResult(db, link, "light", previews, instant) }()
-		go func() { dark <- postImageResult(db, link, "dark", previews, instant) }()
+		zone, err := loadUserTimezone(db, user)
+		if err != nil {
+			log.Printf("loading post image timezone: %v", err)
+		} else {
+			light, dark = make(chan map[string]any, 1), make(chan map[string]any, 1)
+			go func() { light <- postImageResult(db, link, "light", zone, previews, instant) }()
+			go func() { dark <- postImageResult(db, link, "dark", zone, previews, instant) }()
+		}
 	}
 	results := []any{<-normal}
 	if result := <-merged; result != nil {
@@ -281,7 +286,9 @@ func handleInlineQuery(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.InlineQ
 	results := []any{}
 	nextOffset := ""
 
-	if text := strings.TrimSpace(query.Query); text == "" || text == "." || text == "x" || text == "p" {
+	if _, ok := timezoneQuery(query.Query); ok {
+		results, nextOffset = timezoneResults(query)
+	} else if text := strings.TrimSpace(query.Query); text == "" || text == "." || text == "x" || text == "p" {
 		results, nextOffset = inlineHistoryView(db, query, previews)
 	} else if link := inlineLink(query.Query); link != nil {
 		link, err := preferredPhotoLink(db, query.From.ID, link)
@@ -306,6 +313,10 @@ func handleInlineQuery(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.InlineQ
 }
 
 func handleChosenInlineResult(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, cacheChat string, queue *mediaQueue, previews *thumbnails) {
+	if strings.HasPrefix(chosen.ResultID, "timezone:") {
+		handleTimezoneSelection(bot, db, chosen)
+		return
+	}
 	link := inlineLink(chosen.Query)
 	theme := ""
 	if link != nil && link.Host != "pixiv.net" && link.Host != "www.pixiv.net" {
