@@ -443,7 +443,7 @@ func processMessageLinks(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.D
 		if err := <-result.result; err != nil {
 			log.Printf("processing %s: %v", result.link, err)
 			text := fmt.Sprintf("Could not process %s. Please try again.", result.link)
-			if _, ok := errors.AsType[unavailablePhotoError](err); ok {
+			if _, ok := errors.AsType[unavailablePhotoError](err); ok || errors.Is(err, errXPostNotFound) {
 				text = fmt.Sprintf("Could not process %s: %s.", result.link, err)
 			}
 			reply := tgbotapi.NewMessage(message.Chat.ID, text)

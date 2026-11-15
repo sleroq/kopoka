@@ -465,8 +465,8 @@ func handleChosenInlineResult(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *
 	} else if err := <-result; err != nil {
 		log.Printf("processing chosen inline result: %v", err)
 		failure = fmt.Sprintf("Could not load %s. Please try again.", label)
-		if _, ok := errors.AsType[unavailablePhotoError](err); ok {
-			failure = "Could not load artwork: " + err.Error() + "."
+		if _, ok := errors.AsType[unavailablePhotoError](err); ok || errors.Is(err, errXPostNotFound) {
+			failure = fmt.Sprintf("Could not load %s: %s.", label, err)
 		}
 	}
 	if failure != "" {

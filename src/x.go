@@ -71,6 +71,8 @@ func xPostLink(link *url.URL) *url.URL {
 	return &copy
 }
 
+var errXPostNotFound = errors.New("post not found (404)")
+
 type unavailablePhotoError struct{ index int }
 
 func (e unavailablePhotoError) Error() string { return fmt.Sprintf("photo %d is unavailable", e.index) }
@@ -105,6 +107,9 @@ func fetchXPost(link *url.URL, allowMissingURLs bool) (xPost, error) {
 			return vx, nil
 		}
 	}
+	if errors.Is(fxErr, errXPostNotFound) || errors.Is(vxErr, errXPostNotFound) {
+		return xPost{}, errXPostNotFound
+	}
 	var unavailable unavailablePhotoError
 	if errors.As(fxErr, &unavailable) {
 		return xPost{}, fxErr
@@ -123,6 +128,9 @@ func fetchXResponse(client *http.Client, link *url.URL, host string, response an
 		return fmt.Errorf("fetching X link: %w", err)
 	}
 	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode == http.StatusNotFound {
+		return errXPostNotFound
+	}
 	if res.StatusCode != http.StatusOK {
 		return fmt.Errorf("fetching X link: HTTP %s", res.Status)
 	}
@@ -154,6 +162,9 @@ func fetchFxPost(client *http.Client, link *url.URL) (xPost, error) {
 	}
 	if err := fetchXResponse(client, link, "api.fxtwitter.com", &response); err != nil {
 		return xPost{}, err
+	}
+	if response.Code == http.StatusNotFound {
+		return xPost{}, errXPostNotFound
 	}
 	if response.Code != http.StatusOK || response.Tweet == nil {
 		return xPost{}, fmt.Errorf("API error %d: %s", response.Code, response.Message)

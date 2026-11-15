@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -85,6 +86,45 @@ func TestXProvidersBothFail(t *testing.T) {
 	}
 	if link.Host != "x.com" || metadata.Author != "" || metadata.Text != "" {
 		t.Fatalf("failure changed link or metadata: %s, %+v", link, metadata)
+	}
+}
+
+func TestXPostNotFound(t *testing.T) {
+	cases := []struct {
+		name     string
+		fxStatus int
+		fxBody   string
+		vxStatus int
+		vxBody   string
+		want404  bool
+		wantOK   bool
+	}{
+		{"deleted post", 404, `{"code":404}`, 200, `<html>not found</html>`, true, false},
+		{"fx api 404", 200, `{"code":404}`, 503, `unavailable`, true, false},
+		{"vx 404", 503, `unavailable`, 404, `not found`, true, false},
+		{"fallback succeeds", 404, `not found`, 200, `{"user_name":"Author"}`, false, true},
+		{"provider failures", 503, `unavailable`, 200, `<html>error</html>`, false, false},
+	}
+	original := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = original })
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			http.DefaultTransport = xPostTransport(func(r *http.Request) (*http.Response, error) {
+				status, body := tc.fxStatus, tc.fxBody
+				if r.URL.Host == "api.vxtwitter.com" {
+					status, body = tc.vxStatus, tc.vxBody
+				}
+				return &http.Response{
+					StatusCode: status, Status: http.StatusText(status),
+					Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header), Request: r,
+				}, nil
+			})
+			link, _ := url.Parse("https://x.com/user/status/123")
+			_, err := handleXLink(link, &artwork{})
+			if errors.Is(err, errXPostNotFound) != tc.want404 || (err == nil) != tc.wantOK {
+				t.Fatalf("error = %v, want 404 = %v, success = %v", err, tc.want404, tc.wantOK)
+			}
+		})
 	}
 }
 

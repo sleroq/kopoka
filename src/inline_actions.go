@@ -193,7 +193,7 @@ func handleArtworkCallback(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql
 	if err := <-result; err != nil {
 		log.Printf("sending original artwork: %v", err)
 		text := "Could not get the full-res version. Please try again."
-		if _, ok := errors.AsType[unavailablePhotoError](err); ok {
+		if _, ok := errors.AsType[unavailablePhotoError](err); ok || errors.Is(err, errXPostNotFound) {
 			text = "Could not get the full-res version: " + err.Error() + "."
 		}
 		reply := tgbotapi.NewMessage(query.Message.Chat.ID, text)

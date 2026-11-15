@@ -212,6 +212,9 @@ func fetchRichPost(client *http.Client, link *url.URL) (*fxRichPost, error) {
 	if err := fetchXResponse(client, link, "api.fxtwitter.com", &response); err != nil {
 		return nil, err
 	}
+	if response.Code == http.StatusNotFound {
+		return nil, errXPostNotFound
+	}
 	if response.Code != http.StatusOK || response.Tweet == nil {
 		return nil, fmt.Errorf("FxTwitter API error %d: %s", response.Code, response.Message)
 	}
