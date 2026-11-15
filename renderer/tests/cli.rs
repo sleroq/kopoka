@@ -20,6 +20,10 @@ fn render(media: Value, images: Value) -> Output {
         "post": {"author_name": "A", "author_username": "a", "author_avatar_url": "", "text": "Hello", "media": media},
         "images": images
     });
+    render_request(request)
+}
+
+fn render_request(request: Value) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_kopoka-render"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -190,5 +194,55 @@ fn cli_light_bars_are_black_only_between_photos() {
             beyond.0.iter().all(|&channel| channel > 200),
             "after photos {beyond:?}"
         );
+    }
+}
+
+#[test]
+fn cli_reply_rail_and_media_are_bounded() {
+    for theme in ["light", "dark"] {
+        let parent = json!({"author_name":"Parent", "author_username":"parent", "author_avatar_url":"avatar", "text":"Reply", "media":{"carousel":true,"photos":[{"url":"media"},{"url":"media"}]}, "quote":{"author_name":"Quote", "author_username":"quote", "author_avatar_url":"", "text":"Quoted", "media":{"photos":[{"url":"media"}]}}});
+        let short = json!({"author_name":"Short", "author_username":"short", "author_avatar_url":"avatar", "text":"Reply"});
+        let main = json!({"author_name":"Main", "author_username":"main", "author_avatar_url":"", "text":"Main"});
+        let images =
+            json!({"avatar":asset(20, 20, [230, 20, 20]), "media":asset(20, 20, [20, 220, 20])});
+        let output = render_request(
+            json!({"theme":theme,"post":main,"reply_chain":[parent,short],"has_more_in_chain":true,"images":images}),
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let img = image::load_from_memory(&output.stdout).unwrap().to_rgb8();
+        let red = |p: &Rgb<u8>| p[0] > 180 && p[1] < 70;
+        let green = |p: &Rgb<u8>| p[1] > 170 && p[0] < 80;
+        // Root padding is 24px, dots occupy 32px, and the avatar is 48px square.
+        assert!(red(img.get_pixel(96, 160)));
+        assert!(!red(img.get_pixel(146, 160)));
+        let media_y = (160..img.height())
+            .find(|&y| green(img.get_pixel(200, y)))
+            .unwrap();
+        assert!(!green(img.get_pixel(160, media_y)));
+        assert!(green(img.get_pixel(1030, media_y)));
+        assert!(!green(img.get_pixel(1080, media_y)));
+        // Rail continues beside media, from below the first avatar to the next one.
+        let rail = img.get_pixel(94, media_y + 100);
+        let background = img.get_pixel(80, media_y + 100);
+        assert_ne!(rail, background);
+        let second_y = (media_y + 1..img.height())
+            .find(|&y| red(img.get_pixel(96, y)))
+            .unwrap();
+        assert_ne!(
+            img.get_pixel(94, second_y - 14),
+            img.get_pixel(80, second_y - 14)
+        );
+        // Three dots sit above the avatar on the same rail.
+        for y in [60, 80, 100] {
+            assert_ne!(img.get_pixel(96, y), img.get_pixel(80, y));
+        }
+        let standalone =
+            render_request(json!({"theme":theme,"post":main,"has_more_in_chain":true}));
+        let no_dots = render_request(json!({"theme":theme,"post":main}));
+        assert_eq!(standalone.stdout, no_dots.stdout);
     }
 }

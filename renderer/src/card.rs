@@ -256,6 +256,12 @@ impl Card<'_> {
             "gap:12px;align-items:center",
         );
         let mut nodes = vec![header, self.body(&post.text, if compact { 14 } else { 16 })];
+        nodes.extend(self.extras(post, width, compact)?);
+        Ok(column(nodes, "gap:12px;min-width:0"))
+    }
+
+    fn extras(&self, post: &Post, width: f32, compact: bool) -> Result<Vec<Node>> {
+        let mut nodes = Vec::new();
         if let Some(media) = &post.media {
             if let Some(mosaic) = &media.mosaic {
                 nodes.push(self.photo(&mosaic.url, width)?);
@@ -325,7 +331,83 @@ impl Card<'_> {
                 ),
             ));
         }
-        Ok(column(nodes, "gap:12px;min-width:0"))
+        Ok(nodes)
+    }
+
+    fn reply(&self, post: &Post) -> Result<Node> {
+        let truncate = "min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
+        let names = row(
+            vec![
+                text(
+                    &post.author_name,
+                    &format!(
+                        "color:{};font-size:13px;font-weight:700;flex-shrink:0;max-width:100%;{truncate}",
+                        self.text
+                    ),
+                ),
+                text(
+                    format!("@{}", post.author_username),
+                    &format!(
+                        "color:{};font-size:13px;margin-left:4px;{truncate}",
+                        self.secondary
+                    ),
+                ),
+            ],
+            &format!("align-items:baseline;{truncate}"),
+        );
+        let mut header = vec![names];
+        if let Some(date) = post.created_at.as_deref().filter(|date| !date.is_empty()) {
+            header.push(text(
+                format!("· {date}"),
+                &format!(
+                    "color:{};font-size:13px;margin-left:4px;flex-shrink:0;white-space:nowrap",
+                    self.secondary
+                ),
+            ));
+        }
+        let mut nodes = vec![
+            row(header, "align-items:baseline;min-width:0"),
+            self.body(&post.text, 14),
+        ];
+        let extras = self.extras(post, 442.0, true)?;
+        if !extras.is_empty() {
+            nodes.push(column(extras, "gap:12px;margin-top:8px;margin-bottom:8px"));
+        }
+        Ok(column(
+            vec![
+                column(
+                    vec![self.avatar(post, 48.0)?],
+                    "position:absolute;left:0;top:0",
+                ),
+                column(
+                    vec![],
+                    &format!(
+                        "position:absolute;left:23px;top:52px;bottom:-6px;width:2px;background:{}",
+                        self.border
+                    ),
+                ),
+                column(nodes, "width:442px;gap:4px;min-width:0"),
+            ],
+            "position:relative;padding-left:60px;min-height:60px;margin-bottom:12px",
+        ))
+    }
+
+    fn dots(&self) -> Node {
+        let dots = (0..3)
+            .map(|_| {
+                column(
+                    vec![],
+                    &format!(
+                        "width:4px;height:4px;border-radius:4px;background:{}",
+                        self.border
+                    ),
+                )
+            })
+            .collect();
+        column(
+            vec![column(dots, "position:absolute;left:22px;top:4px;gap:6px")],
+            "height:32px;position:relative",
+        )
     }
 }
 
@@ -353,14 +435,16 @@ pub fn render(request: Request) -> Result<Vec<u8>> {
         border,
         background,
     };
-    let mut nodes = Vec::new();
-    if request.has_more_in_chain.unwrap_or(false) {
-        nodes.push(text("⋮", &format!("color:{secondary};font-size:24px")));
+    let mut thread = Vec::new();
+    let chain = request.reply_chain.as_deref().unwrap_or_default();
+    if !chain.is_empty() && request.has_more_in_chain.unwrap_or(false) {
+        thread.push(card.dots());
     }
-    for reply in request.reply_chain.as_deref().unwrap_or_default() {
-        nodes.push(card.post(reply, 502.0, true)?);
+    for reply in chain {
+        thread.push(card.reply(reply)?);
     }
-    nodes.push(card.post(&request.post, 502.0, false)?);
+    thread.push(card.post(&request.post, 502.0, false)?);
+    let mut nodes = vec![column(thread, "")];
     let date = request.post.created_at.as_deref().unwrap_or_default();
     nodes.push(row(
         vec![
