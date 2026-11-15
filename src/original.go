@@ -111,6 +111,10 @@ func originalFileURLs(app *pixiv.AppPixivAPI, link *url.URL) ([]originalSource, 
 	if err != nil {
 		return nil, false, err
 	}
+	index := xPhotoIndex(link)
+	if err := selectXPhoto(&post, link); err != nil {
+		return nil, false, err
+	}
 	sources := make([]originalSource, 0, len(post.Media))
 	for i, media := range post.Media {
 		raw, preview, kind := media.URL, "", media.Type
@@ -127,7 +131,11 @@ func originalFileURLs(app *pixiv.AppPixivAPI, link *url.URL) ([]originalSource, 
 				raw = u.String()
 			}
 		}
-		source := originalSource{url: raw, preview: preview, kind: kind, index: i + 1}
+		ordinal := i + 1
+		if index > 0 {
+			ordinal = index
+		}
+		source := originalSource{url: raw, preview: preview, kind: kind, index: ordinal}
 		sources = append(sources, source)
 	}
 	return sources, false, nil

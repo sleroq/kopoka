@@ -396,6 +396,7 @@ type thumbnailMedia struct {
 type thumbnailSource struct {
 	media      []thumbnailMedia
 	count      int
+	selected   int
 	pixiv      bool
 	pixivPages bool
 }
@@ -447,7 +448,7 @@ func (t *thumbnails) pixivSource(link *url.URL) (thumbnailSource, error) {
 }
 
 func (t *thumbnails) xSource(link *url.URL) (thumbnailSource, error) {
-	api := url.URL{Scheme: "https", Host: "api.fxtwitter.com", Path: link.Path}
+	api := url.URL{Scheme: "https", Host: "api.fxtwitter.com", Path: xPostLink(link).Path}
 	res, err := t.client.Get(api.String())
 	if err != nil {
 		return thumbnailSource{}, err
@@ -490,6 +491,18 @@ func (t *thumbnails) xSource(link *url.URL) (thumbnailSource, error) {
 	if len(items) == 0 {
 		return thumbnailSource{}, fmt.Errorf("FxTwitter preview missing")
 	}
+	count := len(items)
+	selected := xPhotoIndex(link)
+	if selected > 0 {
+		if selected > count {
+			return thumbnailSource{}, fmt.Errorf("FxTwitter photo %d out of range", selected)
+		}
+		item := items[selected-1]
+		if item.Type != "" && item.Type != "photo" {
+			return thumbnailSource{}, fmt.Errorf("FxTwitter media %d is not a photo", selected)
+		}
+		items = items[selected-1 : selected]
+	}
 	for i, item := range items {
 		switch item.Type {
 		case "video", "gif":
@@ -504,7 +517,7 @@ func (t *thumbnails) xSource(link *url.URL) (thumbnailSource, error) {
 			return thumbnailSource{}, fmt.Errorf("unsupported FxTwitter media type %q", item.Type)
 		}
 	}
-	return thumbnailSource{media: items, count: len(items)}, nil
+	return thumbnailSource{media: items, count: count, selected: selected}, nil
 }
 
 func (t *thumbnails) mergeSource(source thumbnailSource) (image.Image, int, bool, error) {
@@ -534,7 +547,7 @@ func (t *thumbnails) mergeSource(source thumbnailSource) (image.Image, int, bool
 		merged = !bytes.Equal(first.Media.(tgbotapi.FileBytes).Bytes, joined.Media.(tgbotapi.FileBytes).Bytes)
 	}
 	actual := source.count
-	if len(source.media) > 1 {
+	if len(source.media) > 1 || source.selected > 0 {
 		actual = len(media)
 	}
 	img, err := downloadArtPhoto(t.client, mediaBase(media[0]).Media)
@@ -562,7 +575,7 @@ func (t *thumbnails) generate(link *url.URL) ([]byte, []byte, int, error) {
 	canvas := image.NewRGBA(image.Rect(0, 0, width, height))
 	draw.Draw(canvas, canvas.Bounds(), image.NewUniform(color.White), image.Point{}, draw.Src)
 	draw.CatmullRom.Scale(canvas, canvas.Bounds(), img, b, draw.Over, nil)
-	if err := t.decorate(canvas, source.pixiv, source.count, merged); err != nil {
+	if err := t.decorate(canvas, source.pixiv, source.count, source.selected, merged); err != nil {
 		return nil, nil, 0, err
 	}
 
@@ -581,7 +594,7 @@ func (t *thumbnails) generate(link *url.URL) ([]byte, []byte, int, error) {
 	return out.Bytes(), large.Bytes(), actual, nil
 }
 
-func (t *thumbnails) decorate(canvas *image.RGBA, pix bool, count int, merged bool) error {
+func (t *thumbnails) decorate(canvas *image.RGBA, pix bool, count, selected int, merged bool) error {
 	width, height := canvas.Bounds().Dx(), canvas.Bounds().Dy()
 	// Offset shadows and a faint border keep overlays distinct against any artwork.
 	tile := image.NewRGBA(image.Rect(0, 0, 76*4, 76*4))
@@ -600,28 +613,33 @@ func (t *thumbnails) decorate(canvas *image.RGBA, pix bool, count int, merged bo
 	margin := int(math.Round(float64(shorter) * 12 / 384))
 	tileBounds := image.Rect(width-margin-tileSize, height-margin-tileSize, width-margin, height-margin)
 	draw.CatmullRom.Scale(canvas, tileBounds, tile, tile.Bounds(), draw.Over, nil)
-	if count > 1 || merged {
-		badge := image.NewRGBA(image.Rect(0, 0, 384*4, 56*4))
-		right := 370 * 4
-		if count > 1 {
-			left, err := t.badge(badge, count)
-			if err != nil {
-				return err
-			}
-			right = left - 8*4
-		}
-		if merged {
-			left := right - 38*4
-			badgeBackground(badge, left, right)
-			for i := range 4 {
-				x := left + (9+i*6)*4
-				rounded(badge, image.Rect(x, 26*4, x+2*4, 42*4), 1*4, color.NRGBA{255, 255, 255, 255})
-			}
-		}
-		badgeHeight := max(1, int(math.Round(float64(shorter)*56/384)))
-		draw.CatmullRom.Scale(canvas, image.Rect(width-shorter, 0, width, badgeHeight), badge, badge.Bounds(), draw.Over, nil)
-	}
 
+	if count <= 1 && selected == 0 && !merged {
+		return nil
+	}
+	badge := image.NewRGBA(image.Rect(0, 0, 384*4, 56*4))
+	right := 370 * 4
+	if count > 1 || selected > 0 {
+		label := strconv.Itoa(count)
+		if selected > 0 {
+			label = strconv.Itoa(selected) + "/" + label
+		}
+		left, err := t.badge(badge, label)
+		if err != nil {
+			return err
+		}
+		right = left - 8*4
+	}
+	if merged {
+		left := right - 38*4
+		badgeBackground(badge, left, right)
+		for i := range 4 {
+			x := left + (9+i*6)*4
+			rounded(badge, image.Rect(x, 26*4, x+2*4, 42*4), 1*4, color.NRGBA{255, 255, 255, 255})
+		}
+	}
+	badgeHeight := max(1, int(math.Round(float64(shorter)*56/384)))
+	draw.CatmullRom.Scale(canvas, image.Rect(width-shorter, 0, width, badgeHeight), badge, badge.Bounds(), draw.Over, nil)
 	return nil
 }
 
@@ -641,13 +659,12 @@ func rounded(dst *image.RGBA, r image.Rectangle, radius float32, c color.NRGBA) 
 	z.Draw(dst, dst.Bounds(), image.NewUniform(c), image.Point{})
 }
 
-func (t *thumbnails) badge(dst *image.RGBA, count int) (int, error) {
+func (t *thumbnails) badge(dst *image.RGBA, label string) (int, error) {
 	face, err := opentype.NewFace(t.font, &opentype.FaceOptions{Size: 22 * 4, DPI: 72, Hinting: font.HintingFull})
 	if err != nil {
 		return 0, err
 	}
 	defer func() { _ = face.Close() }()
-	label := strconv.Itoa(count)
 	width := font.MeasureString(face, label).Ceil()
 	left := 370*4 - (width + 47*4)
 	badgeBackground(dst, left, 370*4)

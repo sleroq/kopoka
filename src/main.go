@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"html"
 	"log"
@@ -124,6 +125,9 @@ func handleXLink(link *url.URL, metadata *artwork) ([]any, error) {
 		return nil, err
 	}
 
+	if err := selectXPhoto(&post, link); err != nil {
+		return nil, err
+	}
 	metadata.Author, metadata.Text = post.Author, post.Text
 	link.Host = "fxtwitter.com"
 	var photos []any
@@ -184,10 +188,10 @@ func showProcessing(bot *tgbotapi.BotAPI, chatID int64, action string) func() {
 
 func supportedLink(link *url.URL) bool {
 	switch link.Host {
-	case "www.pixiv.net", "pixiv.net", "x.com", "fixupx.com", "vxtwitter.com", "fixvx.com", "twitter.com", "fxtwitter.com":
+	case "www.pixiv.net", "pixiv.net":
 		return true
 	}
-	return false
+	return xLinkHosts[strings.ToLower(link.Host)]
 }
 
 func fetchArtPhotos(app *pixiv.AppPixivAPI, link *url.URL, metadata *artwork) ([]any, error) {
@@ -202,6 +206,9 @@ func fetchArtPhotos(app *pixiv.AppPixivAPI, link *url.URL, metadata *artwork) ([
 	if err != nil {
 		return nil, err
 	}
+	if xPhotoIndex(link) > 0 {
+		return photos, nil
+	}
 	return mergeArtPhotos(photos), nil
 }
 
@@ -210,13 +217,22 @@ func processLink(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, messa
 		return nil
 	}
 
-	stop := showProcessing(bot, message.Chat.ID, tgbotapi.ChatTyping)
 	valid := inlineLink(link.String())
 	a := artwork{}
+	parts := strings.Split(link.Path, "/")
+	if valid == nil && link.Host != "pixiv.net" && link.Host != "www.pixiv.net" && len(parts) >= 5 && parts[2] == "status" && parts[4] == "photo" {
+		return fmt.Errorf("invalid photo link")
+	}
 	if valid != nil {
+		var err error
+		valid, err = preferredPhotoLink(db, message.From.ID, valid)
+		if err != nil {
+			return err
+		}
 		link = valid
 		a.ID, a.URL = artworkID(valid), valid.String()
 	}
+	stop := showProcessing(bot, message.Chat.ID, tgbotapi.ChatTyping)
 	photos, err := fetchArtPhotos(app, link, &a)
 	stop()
 	if err != nil {
@@ -407,7 +423,11 @@ func processMessageLinks(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.D
 	for _, result := range results {
 		if err := <-result.result; err != nil {
 			log.Printf("processing %s: %v", result.link, err)
-			reply := tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("Could not process %s. Please try again.", result.link))
+			text := fmt.Sprintf("Could not process %s. Please try again.", result.link)
+			if _, ok := errors.AsType[unavailablePhotoError](err); ok {
+				text = fmt.Sprintf("Could not process %s: %s.", result.link, err)
+			}
+			reply := tgbotapi.NewMessage(message.Chat.ID, text)
 			reply.ReplyToMessageID = message.MessageID
 			if _, err := bot.Send(reply); err != nil {
 				log.Printf("sending processing error: %v", err)

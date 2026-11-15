@@ -317,7 +317,7 @@ func verifyInstantInlineQueries(t *testing.T, s *instantSettingsScenario) {
 	s.expectThumbnail(1, pixiv, true)
 	s.tap("X: ✗", 1)
 	s.expectButtons("Toggle all", "X: ✓", "Pixiv: ✗", "Back")
-	for _, host := range []string{"x.com", "fixupx.com", "vxtwitter.com", "fixvx.com", "twitter.com", "fxtwitter.com"} {
+	for host := range xLinkHosts {
 		s.expectThumbnail(1, "https://"+host+"/u/status/1", false)
 	}
 	s.expectThumbnail(1, pixiv, true)

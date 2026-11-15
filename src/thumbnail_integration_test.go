@@ -944,14 +944,19 @@ func checkCountBadge(t *testing.T, previews *thumbnails, data []byte, count int)
 	if err != nil {
 		t.Fatal(err)
 	}
-	badge := image.NewRGBA(image.Rect(0, 0, 384*4, 56*4))
-	left, err := previews.badge(badge, count)
-	if err != nil {
-		t.Fatal(err)
-	}
 	alternative := count - 1
 	if count == 2 {
 		alternative = 3
+	}
+	checkBadgeLabel(t, previews, img, fmt.Sprint(count), fmt.Sprint(alternative))
+}
+
+func checkBadgeLabel(t *testing.T, previews *thumbnails, img image.Image, label, alternative string) int {
+	t.Helper()
+	badge := image.NewRGBA(image.Rect(0, 0, 384*4, 56*4))
+	left, err := previews.badge(badge, label)
+	if err != nil {
+		t.Fatal(err)
 	}
 	other := image.NewRGBA(badge.Bounds())
 	if _, err := previews.badge(other, alternative); err != nil {
@@ -979,8 +984,9 @@ func checkCountBadge(t *testing.T, previews *thumbnails, data []byte, count int)
 		}
 	}
 	if samples == 0 || matches*100/samples < 55 {
-		t.Errorf("count badge %d size %v: %d/%d distinguishing pixels", count, size, matches, samples)
+		t.Errorf("count badge %s size %v: %d/%d distinguishing pixels", label, size, matches, samples)
 	}
+	return left
 }
 
 func TestThumbnailAspectRatios(t *testing.T) {

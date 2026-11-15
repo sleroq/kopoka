@@ -101,6 +101,7 @@ func settingsView(user int64) (string, tgbotapi.InlineKeyboardMarkup) {
 	return "Settings", tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(button("Configure history", "history-menu")),
 		tgbotapi.NewInlineKeyboardRow(button("Instant inline query", "instant")),
+		tgbotapi.NewInlineKeyboardRow(button("Specific photo links", "photo-menu")),
 	)
 }
 
@@ -161,6 +162,21 @@ func instantSettingsView(db *sql.DB, user int64) (string, tgbotapi.InlineKeyboar
 	return text, keyboard, nil
 }
 
+func photoSettingsView(db *sql.DB, user int64) (string, tgbotapi.InlineKeyboardMarkup, error) {
+	var disabled bool
+	err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM photo_link_opt_out WHERE user_id=?)`, user).Scan(&disabled)
+	mark := "Enabled"
+	if disabled {
+		mark = "Disabled"
+	}
+	button := func(text, action string) tgbotapi.InlineKeyboardButton {
+		return tgbotapi.NewInlineKeyboardButtonData(text, fmt.Sprintf("settings:%s:%d", action, user))
+	}
+	return "Settings\n\nSpecific photo links", tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(button(mark, "photo-toggle")),
+		tgbotapi.NewInlineKeyboardRow(button("Back", "back"))), err
+}
+
 func showSettings(bot *tgbotapi.BotAPI, db *sql.DB, message *tgbotapi.Message) {
 	text, keyboard := settingsView(message.From.ID)
 	reply := tgbotapi.NewMessage(message.Chat.ID, text)
@@ -196,7 +212,10 @@ func handleSettingsCallback(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.Ca
 
 	view := parts[1]
 	switch parts[1] {
-	case "instant", "history-menu":
+	case "instant", "history-menu", "photo-menu":
+	case "photo-toggle":
+		view = "photo-menu"
+		err = togglePhotoLinks(db, user)
 	case "instant-all", "instant-x", "instant-pixiv":
 		view = "instant"
 		err = toggleInstantInline(db, user, strings.TrimPrefix(parts[1], "instant-"))
@@ -246,6 +265,8 @@ func handleSettingsCallback(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.Ca
 	var text string
 	var keyboard tgbotapi.InlineKeyboardMarkup
 	switch view {
+	case "photo-menu":
+		text, keyboard, err = photoSettingsView(db, user)
 	case "instant":
 		text, keyboard, err = instantSettingsView(db, user)
 	case "history-menu":

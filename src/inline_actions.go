@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
@@ -72,16 +73,21 @@ func inlineMessageArtwork(message *telegramMessage) *url.URL {
 func artworkActionData(action string, user int64, link *url.URL) string {
 	id := artworkID(link)
 	site, rawID, _ := strings.Cut(id, ":")
+	rawID, _, _ = strings.Cut(rawID, ":")
 	number, _ := strconv.ParseUint(rawID, 10, 64)
 	data := fmt.Sprintf("art:%s:%s:%s%s", action, strconv.FormatInt(user, 36), site[:1], strconv.FormatUint(number, 36))
 	if site == "x" {
 		name := strings.Split(link.Path, "/")[1]
 		encoded := base64.RawURLEncoding.EncodeToString([]byte(name))
-		if len(data)+1+len(encoded) > 64 {
+		suffix := ""
+		if index := xPhotoIndex(link); index > 0 {
+			suffix = ":" + strconv.FormatInt(int64(index), 36)
+		}
+		if len(data)+1+len(encoded)+len(suffix) > 64 {
 			// FxTwitter identifies posts by ID and ignores the screen name.
 			encoded = base64.RawURLEncoding.EncodeToString([]byte("i"))
 		}
-		data += ":" + encoded
+		data += ":" + encoded + suffix
 	}
 	return data
 }
@@ -97,12 +103,19 @@ func artworkActionLink(parts []string) *url.URL {
 	switch {
 	case parts[3][0] == 'p' && len(parts) == 4:
 		return inlineLink(fmt.Sprintf("https://www.pixiv.net/artworks/%d", id))
-	case parts[3][0] == 'x' && len(parts) == 5:
+	case parts[3][0] == 'x' && (len(parts) == 5 || len(parts) == 6):
 		name, err := base64.RawURLEncoding.DecodeString(parts[4])
 		if err != nil {
 			return nil
 		}
 		link := &url.URL{Scheme: "https", Host: "x.com", Path: fmt.Sprintf("/%s/status/%d", name, id)}
+		if len(parts) == 6 {
+			n, err := strconv.ParseUint(parts[5], 36, 63)
+			if err != nil || n == 0 {
+				return nil
+			}
+			link.Path += "/photo/" + strconv.FormatUint(n, 10)
+		}
 		return inlineLink(link.String())
 	}
 	return nil
@@ -152,7 +165,11 @@ func handleArtworkCallback(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql
 	}
 	if err := <-result; err != nil {
 		log.Printf("sending original artwork: %v", err)
-		reply := tgbotapi.NewMessage(query.Message.Chat.ID, "Could not get the full-res version. Please try again.")
+		text := "Could not get the full-res version. Please try again."
+		if _, ok := errors.AsType[unavailablePhotoError](err); ok {
+			text = "Could not get the full-res version: " + err.Error() + "."
+		}
+		reply := tgbotapi.NewMessage(query.Message.Chat.ID, text)
 		reply.ReplyToMessageID = query.Message.MessageID
 		if _, err := bot.Send(reply); err != nil {
 			log.Printf("sending original artwork failure: %v", err)

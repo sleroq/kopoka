@@ -20,13 +20,18 @@ type artwork struct {
 }
 
 func artworkID(link *url.URL) string {
-	parts := strings.Split(link.Path, "/")
+	index := xPhotoIndex(link)
+	parts := strings.Split(xPostLink(link).Path, "/")
 	id, _ := strconv.ParseUint(parts[len(parts)-1], 10, 64)
 	site := "x"
 	if link.Host == "pixiv.net" || link.Host == "www.pixiv.net" {
 		site = "pixiv"
 	}
-	return site + ":" + strconv.FormatUint(id, 10)
+	result := site + ":" + strconv.FormatUint(id, 10)
+	if site == "x" && index > 0 {
+		result += ":photo:" + strconv.Itoa(index)
+	}
+	return result
 }
 
 func openArtworkDB(path string) (*sql.DB, error) {
@@ -38,6 +43,7 @@ func openArtworkDB(path string) (*sql.DB, error) {
 	db.SetMaxOpenConns(1)
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS artwork (id TEXT PRIMARY KEY, url TEXT NOT NULL, author TEXT NOT NULL, text TEXT NOT NULL, caption TEXT NOT NULL, photos TEXT NOT NULL, preview_width INTEGER NOT NULL DEFAULT 0, preview_height INTEGER NOT NULL DEFAULT 0);
  CREATE TABLE IF NOT EXISTS history (sequence INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, artwork_id TEXT NOT NULL, UNIQUE(user_id, artwork_id));
+ CREATE TABLE IF NOT EXISTS photo_link_opt_out (user_id INTEGER PRIMARY KEY);
  CREATE TABLE IF NOT EXISTS history_opt_out (user_id INTEGER PRIMARY KEY);
  CREATE TABLE IF NOT EXISTS history_chat_hidden (user_id INTEGER PRIMARY KEY);
  CREATE TABLE IF NOT EXISTS history_first_saved (user_id INTEGER PRIMARY KEY);
@@ -110,6 +116,35 @@ func openArtworkDB(path string) (*sql.DB, error) {
 		}
 	}
 	return db, nil
+}
+
+func preferredPhotoLink(db *sql.DB, user int64, link *url.URL) (*url.URL, error) {
+	if xPhotoIndex(link) == 0 {
+		return link, nil
+	}
+	var disabled bool
+	err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM photo_link_opt_out WHERE user_id=?)`, user).Scan(&disabled)
+	if err != nil {
+		return nil, err
+	}
+	if disabled {
+		return xPostLink(link), nil
+	}
+	return link, nil
+}
+
+func togglePhotoLinks(db *sql.DB, user int64) error {
+	var disabled bool
+	err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM photo_link_opt_out WHERE user_id=?)`, user).Scan(&disabled)
+	if err != nil {
+		return err
+	}
+	if disabled {
+		_, err = db.Exec(`DELETE FROM photo_link_opt_out WHERE user_id=?`, user)
+	} else {
+		_, err = db.Exec(`INSERT INTO photo_link_opt_out(user_id) VALUES (?)`, user)
+	}
+	return err
 }
 
 type instantInlineSettings struct {

@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
@@ -32,6 +33,11 @@ func inlineLink(text string) *url.URL {
 		}
 	} else {
 		parts := strings.Split(strings.TrimPrefix(link.Path, "/"), "/")
+		if index := xPhotoIndex(link); index > 0 {
+			parts = parts[:3]
+			link.Path = "/" + strings.Join(parts, "/") + "/photo/" + strconv.Itoa(index)
+			link.RawPath = ""
+		}
 		if len(parts) != 3 || parts[0] == "" || parts[1] != "status" {
 			return nil
 		}
@@ -165,7 +171,12 @@ func handleInlineQuery(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.InlineQ
 	if strings.TrimSpace(query.Query) == "" {
 		results, nextOffset = inlineHistory(db, query, previews)
 	} else if link := inlineLink(query.Query); link != nil {
-		results = append(results, inlineArtworkResult(db, query.From.ID, link, previews))
+		link, err := preferredPhotoLink(db, query.From.ID, link)
+		if err != nil {
+			log.Printf("loading photo preference: %v", err)
+		} else {
+			results = append(results, inlineArtworkResult(db, query.From.ID, link, previews))
+		}
 	}
 	encoded, err := json.Marshal(results)
 	if err != nil {
@@ -201,6 +212,9 @@ func handleChosenInlineResult(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *
 	} else if err := <-result; err != nil {
 		log.Printf("processing chosen inline result: %v", err)
 		failure = "Could not load artwork. Please try again."
+		if _, ok := errors.AsType[unavailablePhotoError](err); ok {
+			failure = "Could not load artwork: " + err.Error() + "."
+		}
 	}
 	if failure != "" {
 		params := tgbotapi.Params{
@@ -221,6 +235,10 @@ func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB,
 		return fmt.Errorf("invalid artwork URL")
 	}
 
+	link, err := preferredPhotoLink(db, chosen.From.ID, link)
+	if err != nil {
+		return err
+	}
 	a := artwork{ID: artworkID(link), URL: link.String()}
 	photos, err := fetchArtPhotos(app, link, &a)
 	if err != nil {
