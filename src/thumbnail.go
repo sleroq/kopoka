@@ -60,6 +60,7 @@ type thumbnails struct {
 	db           *sql.DB
 	cacheChat    string
 	placeholders map[bool][]byte
+	postImages   map[string][]byte
 	client       *http.Client
 	mu           sync.Mutex
 	work         map[string]*thumbnailWork
@@ -115,6 +116,7 @@ func newThumbnails(baseURL string, app *pixiv.AppPixivAPI, bot *tgbotapi.BotAPI,
 	if err != nil {
 		return nil, err
 	}
+
 	x, err := png.Decode(bytes.NewReader(xLogo))
 	if err != nil {
 		return nil, err
@@ -143,8 +145,12 @@ func newThumbnails(baseURL string, app *pixiv.AppPixivAPI, bot *tgbotapi.BotAPI,
 		}
 		placeholders[isPixiv] = out.Bytes()
 	}
+	postImages, err := renderPostImagePlaceholders(bold)
+	if err != nil {
+		return nil, err
+	}
 	return &thumbnails{
-		base: base, app: app, bot: bot, db: db, cacheChat: cacheChat, placeholders: placeholders, client: &http.Client{Timeout: 15 * time.Second},
+		base: base, app: app, bot: bot, db: db, cacheChat: cacheChat, placeholders: placeholders, postImages: postImages, client: &http.Client{Timeout: 15 * time.Second},
 		work: make(map[string]*thumbnailWork), workers: make(chan struct{}, 6),
 		logos: logos, font: bold,
 	}, nil
@@ -206,6 +212,42 @@ func (t *thumbnails) urlPhoto(link *url.URL, count, width, height int) previewPh
 func (t *thumbnails) placeholder(pixiv bool) previewPhoto {
 	address := t.placeholderURL(pixiv)
 	return previewPhoto{photoURL: address, thumbnailURL: address, width: 384, height: 384}
+}
+
+func (t *thumbnails) postImagePlaceholder(theme string) previewPhoto {
+	address := *t.base
+	address.Path += "/post-image-placeholder-" + theme + ".jpg"
+	return previewPhoto{photoURL: address.String(), thumbnailURL: address.String(), width: 384, height: 384}
+}
+
+func renderPostImagePlaceholders(bold *opentype.Font) (map[string][]byte, error) {
+	face, err := opentype.NewFace(bold, &opentype.FaceOptions{Size: 28, DPI: 72, Hinting: font.HintingFull})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = face.Close() }()
+
+	images := make(map[string][]byte, 2)
+	for _, theme := range []string{"light", "dark"} {
+		background, foreground, title := color.White, color.Black, "Light"
+		if theme == "dark" {
+			background, foreground, title = color.Black, color.White, "Dark"
+		}
+		canvas := image.NewRGBA(image.Rect(0, 0, 384, 384))
+		draw.Draw(canvas, canvas.Bounds(), image.NewUniform(background), image.Point{}, draw.Src)
+		drawer := font.Drawer{Dst: canvas, Src: image.NewUniform(foreground), Face: face}
+		drawer.Dot = fixed.P((384-drawer.MeasureString("Post image").Ceil())/2, 180)
+		drawer.DrawString("Post image")
+		drawer.Src = image.NewUniform(color.NRGBA{29, 155, 240, 255})
+		drawer.Dot = fixed.P((384-drawer.MeasureString(title).Ceil())/2, 222)
+		drawer.DrawString(title)
+		var out bytes.Buffer
+		if err := jpeg.Encode(&out, canvas, &jpeg.Options{Quality: 90}); err != nil {
+			return nil, err
+		}
+		images[theme] = out.Bytes()
+	}
+	return images, nil
 }
 
 func (t *thumbnails) placeholderURL(pixiv bool) string {
@@ -338,6 +380,10 @@ func (t *thumbnails) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		placeholder = t.placeholders[false]
 	case strings.HasSuffix(r.URL.Path, "/thumbnail-placeholder-pixiv.jpg"):
 		placeholder = t.placeholders[true]
+	case strings.HasSuffix(r.URL.Path, "/post-image-placeholder-light.jpg"):
+		placeholder = t.postImages["light"]
+	case strings.HasSuffix(r.URL.Path, "/post-image-placeholder-dark.jpg"):
+		placeholder = t.postImages["dark"]
 	case strings.HasSuffix(r.URL.Path, "/thumbnail"):
 		t.serveThumbnail(w, r)
 		return

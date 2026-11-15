@@ -267,6 +267,9 @@ func handleInlineQuery(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.InlineQ
 			go func() { normal <- inlineArtworkResult(db, query.From.ID, link, previews) }()
 			merged := inlineMergedResult(link, previews)
 			results = append(results, <-normal, merged)
+			if link.Host != "pixiv.net" && link.Host != "www.pixiv.net" {
+				results = append(results, postImageResult(db, link, "light", previews), postImageResult(db, link, "dark", previews))
+			}
 		}
 	}
 	encoded, err := json.Marshal(results)
@@ -284,7 +287,12 @@ func handleInlineQuery(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.InlineQ
 }
 
 func handleChosenInlineResult(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, cacheChat string, queue *mediaQueue, previews *thumbnails) {
-	if chosen.ResultID != inlineResultID && chosen.ResultID != inlineMergedResultID {
+	link := inlineLink(chosen.Query)
+	theme := ""
+	if link != nil && link.Host != "pixiv.net" && link.Host != "www.pixiv.net" {
+		theme = postImageTheme(chosen.ResultID, link)
+	}
+	if theme == "" && chosen.ResultID != inlineResultID && chosen.ResultID != inlineMergedResultID {
 		id := chosen.ResultID
 		if parent, index, ok := strings.Cut(id, ":item:"); ok {
 			if n, err := strconv.Atoi(index); err == nil && n >= 0 {
@@ -297,11 +305,20 @@ func handleChosenInlineResult(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *
 		}
 		return
 	}
+	if theme != "" && strings.HasSuffix(chosen.ResultID, ":cached") {
+		if err := selectArtwork(db, chosen.From.ID, artworkID(xPostLink(link))); err != nil {
+			log.Printf("recording inline selection: %v", err)
+		}
+		return
+	}
 	if chosen.InlineMessageID == "" {
 		log.Print("missing inline message ID")
 		return
 	}
 	result, err := queue.submit(chosen.From.ID, func() error {
+		if theme != "" {
+			return editInlinePostImage(bot, db, chosen, cacheChat, link, theme)
+		}
 		return editInlineArtwork(bot, app, db, chosen, cacheChat, previews)
 	})
 	failure := ""
@@ -347,6 +364,9 @@ func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB,
 		return err
 	}
 	if len(photos) == 0 {
+		if xLinkHosts[strings.ToLower(link.Host)] {
+			return editInlinePostImage(bot, db, chosen, cacheChat, link, defaultPostImageTheme)
+		}
 		return fmt.Errorf("artwork has no photos")
 	}
 	if len(photos) > 50 {

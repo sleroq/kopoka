@@ -183,7 +183,11 @@ func (s *instantSettingsScenario) inline(user int64, link string) map[string]any
 	previews.client = &http.Client{Transport: s.network}
 	handleInlineQuery(s.bot, s.db, query, previews)
 	results := s.api.snapshot().results
-	if len(results) != 2 {
+	want := 4
+	if strings.Contains(link, "pixiv.net") {
+		want = 2
+	}
+	if len(results) != want {
 		s.t.Fatalf("inline results: %#v", results)
 	}
 	return results[0]

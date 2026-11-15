@@ -49,6 +49,7 @@ func openArtworkDB(path string) (*sql.DB, error) {
  CREATE TABLE IF NOT EXISTS history_first_saved (user_id INTEGER PRIMARY KEY);
  CREATE TABLE IF NOT EXISTS history_picture_view (user_id INTEGER PRIMARY KEY);
  CREATE TABLE IF NOT EXISTS thumbnail_cache (artwork_id TEXT NOT NULL, media_count INTEGER NOT NULL, file_id TEXT NOT NULL, render_version INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (artwork_id, media_count));
+ CREATE TABLE IF NOT EXISTS post_image_cache (artwork_id TEXT NOT NULL, theme TEXT NOT NULL, render_version INTEGER NOT NULL, file_id TEXT NOT NULL, caption TEXT NOT NULL, PRIMARY KEY (artwork_id, theme, render_version));
  CREATE TABLE IF NOT EXISTS instant_inline_settings (user_id INTEGER PRIMARY KEY, x INTEGER NOT NULL DEFAULT 0, pixiv INTEGER NOT NULL DEFAULT 0);`)
 	if err != nil {
 		_ = db.Close()

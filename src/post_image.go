@@ -1,0 +1,485 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"html"
+	"image/jpeg"
+	"io"
+	"log"
+	"net/http"
+	"net/url"
+	"os"
+	"os/exec"
+	"strconv"
+	"strings"
+	"time"
+
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+)
+
+const postImageVersion = 3
+const defaultPostImageTheme = "dark"
+
+type postImage struct {
+	URL string `json:"url"`
+}
+type postVideo struct {
+	ThumbnailURL string `json:"thumbnail_url"`
+}
+type postMedia struct {
+	Photos []postImage `json:"photos,omitempty"`
+	Videos []postVideo `json:"videos,omitempty"`
+	Mosaic *postImage  `json:"mosaic,omitempty"`
+}
+type postArticle struct {
+	Title       string     `json:"title"`
+	PreviewText string     `json:"preview_text"`
+	CoverMedia  *postImage `json:"cover_media,omitempty"`
+}
+type postCard struct {
+	Title  string     `json:"title"`
+	Domain string     `json:"domain"`
+	Image  *postImage `json:"image,omitempty"`
+}
+type renderPost struct {
+	AuthorName       string       `json:"author_name"`
+	AuthorUsername   string       `json:"author_username"`
+	AuthorAvatarURL  string       `json:"author_avatar_url"`
+	Text             string       `json:"text"`
+	CreatedTimestamp int64        `json:"created_timestamp,omitempty"`
+	Likes            uint64       `json:"likes,omitempty"`
+	Retweets         uint64       `json:"retweets,omitempty"`
+	Replies          uint64       `json:"replies,omitempty"`
+	Media            *postMedia   `json:"media,omitempty"`
+	Quote            *renderPost  `json:"quote,omitempty"`
+	Article          *postArticle `json:"article,omitempty"`
+	Card             *postCard    `json:"card,omitempty"`
+}
+type renderRequest struct {
+	Theme      string            `json:"theme"`
+	Post       renderPost        `json:"post"`
+	ReplyChain []renderPost      `json:"reply_chain,omitempty"`
+	HasMore    bool              `json:"has_more_in_chain,omitempty"`
+	Images     map[string][]byte `json:"images,omitempty"`
+}
+
+type fxImage struct {
+	URL          string `json:"url"`
+	ThumbnailURL string `json:"thumbnail_url"`
+	Type         string `json:"type"`
+	Formats      struct {
+		JPEG string `json:"jpeg"`
+	} `json:"formats"`
+}
+type fxRichPost struct {
+	Text     string `json:"text"`
+	Created  int64  `json:"created_timestamp"`
+	Likes    uint64 `json:"likes"`
+	Retweets uint64 `json:"retweets"`
+	Replies  uint64 `json:"replies"`
+	Author   struct {
+		Name       string `json:"name"`
+		ScreenName string `json:"screen_name"`
+		AvatarURL  string `json:"avatar_url"`
+	} `json:"author"`
+	ReplyingToStatus string       `json:"replying_to_status"`
+	Media            *fxRichMedia `json:"media"`
+	Quote            *fxRichPost  `json:"quote"`
+	Article          *struct {
+		Title       string `json:"title"`
+		PreviewText string `json:"preview_text"`
+		CoverMedia  *struct {
+			MediaInfo struct {
+				URL string `json:"original_img_url"`
+			} `json:"media_info"`
+		} `json:"cover_media"`
+	} `json:"article"`
+	Card *fxLinkCard `json:"card"`
+}
+
+type fxRichMedia struct {
+	Photos []fxImage `json:"photos"`
+	Videos []fxImage `json:"videos"`
+	All    []fxImage `json:"all"`
+	Mosaic *fxImage  `json:"mosaic"`
+}
+
+type fxLinkCard struct {
+	URL    string   `json:"url"`
+	Title  string   `json:"title"`
+	Domain string   `json:"domain"`
+	Image  *fxImage `json:"image"`
+}
+
+func (i fxImage) image() postImage { return postImage{URL: i.URL} }
+
+func (p fxRichPost) normalize() (renderPost, error) {
+	if p.Author.Name == "" || p.Author.ScreenName == "" {
+		return renderPost{}, fmt.Errorf("FxTwitter response missing author")
+	}
+	out := renderPost{
+		AuthorName: p.Author.Name, AuthorUsername: p.Author.ScreenName,
+		AuthorAvatarURL: p.Author.AvatarURL, Text: p.Text,
+		CreatedTimestamp: p.Created, Likes: p.Likes, Retweets: p.Retweets, Replies: p.Replies,
+		Media: p.Media.normalize(),
+	}
+	if p.Quote != nil {
+		q, err := p.Quote.normalize()
+		if err != nil {
+			return out, err
+		}
+		out.Quote = &q
+	}
+	if p.Article != nil {
+		out.Article = &postArticle{Title: p.Article.Title, PreviewText: p.Article.PreviewText}
+		if p.Article.CoverMedia != nil {
+			i := p.Article.CoverMedia.MediaInfo
+			out.Article.CoverMedia = &postImage{URL: i.URL}
+		}
+	}
+	if out.Media == nil && out.Article == nil {
+		out.Card = p.Card.normalize()
+		if out.Card != nil && p.Card.URL != "" {
+			out.Text = strings.TrimRight(out.Text, " \t\n\r")
+			out.Text = strings.TrimRight(strings.TrimSuffix(out.Text, p.Card.URL), " \t\n\r")
+		}
+	}
+	return out, nil
+}
+
+func (m *fxRichMedia) normalize() *postMedia {
+	if m == nil {
+		return nil
+	}
+	out := &postMedia{}
+	if m.Mosaic != nil && m.Mosaic.Formats.JPEG != "" {
+		image := m.Mosaic.image()
+		image.URL = m.Mosaic.Formats.JPEG
+		out.Mosaic = &image
+	} else {
+		for _, image := range m.Photos {
+			out.Photos = append(out.Photos, image.image())
+		}
+	}
+	for _, video := range m.Videos {
+		out.Videos = append(out.Videos, postVideo{ThumbnailURL: video.ThumbnailURL})
+	}
+	if len(m.Photos) == 0 && len(m.Videos) == 0 && out.Mosaic == nil {
+		for _, image := range m.All {
+			switch image.Type {
+			case "photo", "":
+				out.Photos = append(out.Photos, image.image())
+			case "video", "gif":
+				out.Videos = append(out.Videos, postVideo{ThumbnailURL: image.ThumbnailURL})
+			}
+		}
+	}
+	if out.Mosaic == nil && len(out.Photos) == 0 && len(out.Videos) == 0 {
+		return nil
+	}
+	return out
+}
+
+func (c *fxLinkCard) normalize() *postCard {
+	if c == nil || c.Title == "" {
+		return nil
+	}
+	out := &postCard{Title: c.Title, Domain: c.Domain}
+	if out.Domain == "" {
+		if link, err := url.Parse(c.URL); err == nil {
+			out.Domain = link.Hostname()
+		}
+	}
+	if c.Image != nil && c.Image.URL != "" {
+		image := c.Image.image()
+		out.Image = &image
+	}
+	return out
+}
+
+func fetchRichPost(client *http.Client, link *url.URL) (*fxRichPost, error) {
+	var response struct {
+		Code    int         `json:"code"`
+		Message string      `json:"message"`
+		Tweet   *fxRichPost `json:"tweet"`
+	}
+	if err := fetchXResponse(client, link, "api.fxtwitter.com", &response); err != nil {
+		return nil, err
+	}
+	if response.Code != http.StatusOK || response.Tweet == nil {
+		return nil, fmt.Errorf("FxTwitter API error %d: %s", response.Code, response.Message)
+	}
+	return response.Tweet, nil
+}
+func preparePostImage(link *url.URL, theme string) (renderRequest, error) {
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	source, err := fetchRichPost(client, xPostLink(link))
+	if err != nil {
+		return renderRequest{}, err
+	}
+	post, err := source.normalize()
+	if err != nil {
+		return renderRequest{}, err
+	}
+	chain, more, err := source.replyChain(client)
+	if err != nil {
+		return renderRequest{}, err
+	}
+	request := renderRequest{Theme: theme, Post: post, ReplyChain: chain, HasMore: more, Images: map[string][]byte{}}
+	if err := loadPostAssets(client, request.Post, request.Images); err != nil {
+		return request, err
+	}
+	for _, p := range request.ReplyChain {
+		if err := loadPostAssets(client, p, request.Images); err != nil {
+			return request, err
+		}
+	}
+	return request, nil
+}
+
+func (p *fxRichPost) replyChain(client *http.Client) ([]renderPost, bool, error) {
+	var chain []renderPost
+	for len(chain) < 3 && p.ReplyingToStatus != "" {
+		id, err := strconv.ParseUint(p.ReplyingToStatus, 10, 64)
+		if err != nil || id == 0 {
+			return nil, false, fmt.Errorf("invalid FxTwitter reply parent")
+		}
+		link := &url.URL{Scheme: "https", Host: "x.com", Path: "/i/status/" + strconv.FormatUint(id, 10)}
+		p, err = fetchRichPost(client, link)
+		if err != nil {
+			return nil, false, err
+		}
+		post, err := p.normalize()
+		if err != nil {
+			return nil, false, err
+		}
+		chain = append(chain, post)
+	}
+	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
+		chain[i], chain[j] = chain[j], chain[i]
+	}
+	return chain, p.ReplyingToStatus != "", nil
+}
+
+func (p renderPost) imageURLs() []string {
+	var urls []string
+
+	if p.AuthorAvatarURL != "" {
+		urls = append(urls, p.AuthorAvatarURL)
+	}
+	if p.Media != nil {
+		if p.Media.Mosaic != nil {
+			urls = append(urls, p.Media.Mosaic.URL)
+		} else {
+			for _, i := range p.Media.Photos {
+				urls = append(urls, i.URL)
+			}
+		}
+		for _, v := range p.Media.Videos {
+			urls = append(urls, v.ThumbnailURL)
+		}
+	}
+	if p.Article != nil && p.Article.CoverMedia != nil {
+		urls = append(urls, p.Article.CoverMedia.URL)
+	}
+	if p.Card != nil && p.Card.Image != nil {
+		urls = append(urls, p.Card.Image.URL)
+	}
+	return urls
+}
+
+func loadPostAssets(client *http.Client, p renderPost, images map[string][]byte) error {
+	for _, u := range p.imageURLs() {
+		if u == "" {
+			return fmt.Errorf("FxTwitter response missing image URL")
+		}
+		if _, ok := images[u]; ok {
+			continue
+		}
+		res, err := client.Get(u)
+		if err != nil {
+			return fmt.Errorf("fetching image: %w", err)
+		}
+		data, readErr := io.ReadAll(io.LimitReader(res.Body, 10_000_001))
+		_ = res.Body.Close()
+		if readErr != nil {
+			return readErr
+		}
+		if res.StatusCode != http.StatusOK || len(data) == 0 || len(data) > 10_000_000 {
+			return fmt.Errorf("fetching image %s: HTTP %s, %d bytes", u, res.Status, len(data))
+		}
+		images[u] = data
+	}
+	if p.Quote != nil {
+		return loadPostAssets(client, *p.Quote, images)
+	}
+	return nil
+}
+
+func renderPostImage(request renderRequest) ([]byte, error) {
+	input, err := json.Marshal(request)
+	if err != nil {
+		return nil, err
+	}
+	name := os.Getenv("KOPOKA_RENDERER")
+	if name == "" {
+		name = "kopoka-render"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name)
+	cmd.Stdin = bytes.NewReader(input)
+	var out, stderr bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("rendering post image: %w: %s", err, stderr.String())
+	}
+	data := out.Bytes()
+	if len(data) > 10_000_000 {
+		return nil, fmt.Errorf("rendered JPEG exceeds Telegram size limit")
+	}
+	config, err := jpeg.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("invalid rendered JPEG: %w", err)
+	}
+	width, height := config.Width, config.Height
+	if width <= 0 || height <= 0 || width+height > 10000 || max(width, height) > 20*min(width, height) {
+		return nil, fmt.Errorf("invalid rendered JPEG dimensions %dx%d", width, height)
+	}
+	return data, nil
+}
+func postImageID(link *url.URL, theme string) string {
+	return "post-image:" + theme + ":" + strings.TrimPrefix(artworkID(xPostLink(link)), "x:")
+}
+func postImageTheme(id string, link *url.URL) string {
+	for _, theme := range []string{"light", "dark"} {
+		if id == postImageID(link, theme) || id == postImageID(link, theme)+":cached" {
+			return theme
+		}
+	}
+	return ""
+}
+func findPostImage(db *sql.DB, id, theme string) (string, string, error) {
+	var file, caption string
+	row := db.QueryRow(`SELECT file_id,caption FROM post_image_cache WHERE artwork_id=? AND theme=? AND render_version=?`,
+		id, theme, postImageVersion)
+	err := row.Scan(&file, &caption)
+	if err == sql.ErrNoRows {
+		return "", "", nil
+	}
+	return file, caption, err
+}
+func postImageResult(db *sql.DB, link *url.URL, theme string, previews *thumbnails) map[string]any {
+	file, caption, err := findPostImage(db, artworkID(xPostLink(link)), theme)
+	if err != nil {
+		log.Printf("loading cached post image: %v", err)
+	}
+	photo := previews.postImagePlaceholder(theme)
+	if file != "" {
+		photo = previewPhoto{fileID: file}
+	}
+	result := inlinePhoto(photo)
+	result["id"] = postImageID(link, theme)
+	result["title"] = "Post image · " + strings.ToUpper(theme[:1]) + theme[1:]
+	if file != "" {
+		result["id"] = postImageID(link, theme) + ":cached"
+		result["caption"] = caption
+		result["parse_mode"] = "HTML"
+		return result
+	}
+	result["input_message_content"] = map[string]any{
+		"message_text": "Loading post image…", "disable_web_page_preview": true,
+	}
+	wait := map[string]any{"text": "Please wait…", "disabled": map[string]any{}}
+	result["reply_markup"] = map[string]any{"inline_keyboard": []any{[]any{wait}}}
+	return result
+}
+func postImagePhoto(db *sql.DB, link *url.URL, theme string) (tgbotapi.InputMediaPhoto, error) {
+	file, caption, err := findPostImage(db, artworkID(xPostLink(link)), theme)
+	if err != nil {
+		return tgbotapi.InputMediaPhoto{}, err
+	}
+	if file != "" {
+		photo := tgbotapi.NewInputMediaPhoto(tgbotapi.FileID(file))
+		photo.Caption, photo.ParseMode = caption, "HTML"
+		return photo, nil
+	}
+	request, err := preparePostImage(link, theme)
+	if err != nil {
+		return tgbotapi.InputMediaPhoto{}, err
+	}
+	data, err := renderPostImage(request)
+	if err != nil {
+		return tgbotapi.InputMediaPhoto{}, err
+	}
+	photo := tgbotapi.NewInputMediaPhoto(tgbotapi.FileBytes{Name: "post.jpg", Bytes: data})
+	photo.Caption = fmt.Sprintf(`<a href="%s">%s</a>`,
+		html.EscapeString(xPostLink(link).String()), html.EscapeString(request.Post.AuthorName))
+	photo.ParseMode = "HTML"
+	return photo, nil
+}
+
+func savePostImage(db *sql.DB, link *url.URL, theme, fileID, caption string) error {
+	_, err := db.Exec(`INSERT INTO post_image_cache(artwork_id,theme,render_version,file_id,caption) VALUES(?,?,?,?,?)
+ ON CONFLICT(artwork_id,theme,render_version) DO UPDATE SET file_id=excluded.file_id,caption=excluded.caption`,
+		artworkID(xPostLink(link)), theme, postImageVersion, fileID, caption)
+	return err
+}
+
+func sendPostImage(bot *tgbotapi.BotAPI, db *sql.DB, message *tgbotapi.Message, link *url.URL, theme string) error {
+	photo, err := postImagePhoto(db, link, theme)
+	if err != nil {
+		return err
+	}
+	ids, err := sendPhotosWithIDs(bot, message.Chat.ID, message.MessageID, []any{photo})
+	if err != nil {
+		return err
+	}
+	if len(ids) == 1 {
+		if err := savePostImage(db, link, theme, ids[0], photo.Caption); err != nil {
+			log.Printf("saving chat post image: %v", err)
+		}
+	}
+	return nil
+}
+
+func editInlinePostImage(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, cacheChat string, link *url.URL, theme string) error {
+	photo, err := postImagePhoto(db, link, theme)
+	if err != nil {
+		return err
+	}
+	file, cached := photo.Media.(tgbotapi.FileID)
+	if !cached {
+		id, err := cacheInlineMedia(bot, cacheChat, photo)
+		if err != nil {
+			return err
+		}
+		if err := savePostImage(db, link, theme, id, photo.Caption); err != nil {
+			return err
+		}
+		file = tgbotapi.FileID(id)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"type": "photo", "media": file, "caption": photo.Caption, "parse_mode": photo.ParseMode,
+	})
+	if err != nil {
+		return err
+	}
+	_, err = retryTelegram(func() (*tgbotapi.APIResponse, error) {
+		params := tgbotapi.Params{
+			"inline_message_id": chosen.InlineMessageID, "media": string(payload),
+			"reply_markup": `{"inline_keyboard":[]}`,
+		}
+		return bot.MakeRequest("editMessageMedia", params)
+	})
+	if err != nil {
+		return err
+	}
+	return selectArtwork(db, chosen.From.ID, artworkID(xPostLink(link)))
+}

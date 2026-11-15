@@ -242,6 +242,11 @@ func processLink(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, messa
 		return err
 	}
 	if len(photos) == 0 {
+		if xLinkHosts[strings.ToLower(link.Host)] {
+			stop = showProcessing(bot, message.Chat.ID, tgbotapi.ChatUploadPhoto)
+			defer stop()
+			return sendPostImage(bot, db, message, link, defaultPostImageTheme)
+		}
 		return fmt.Errorf("no media found")
 	}
 

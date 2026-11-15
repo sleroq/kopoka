@@ -16,8 +16,23 @@
       system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+        renderer = pkgs.rustPlatform.buildRustPackage {
+          pname = "kopoka-render";
+          version = "0.1.0";
+          src = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              ./Cargo.toml
+              ./Cargo.lock
+              ./renderer
+            ];
+          };
+          cargoLock.lockFile = ./Cargo.lock;
+          meta.mainProgram = "kopoka-render";
+        };
       in
       {
+        packages.renderer = renderer;
         packages.default = pkgs.buildGoModule {
           pname = "kopoka";
           version = "0.1.0";
@@ -29,10 +44,18 @@
             "-w"
           ];
           nativeBuildInputs = [ pkgs.makeWrapper ];
-          nativeCheckInputs = [ pkgs.ffmpeg ];
+          nativeCheckInputs = [
+            pkgs.ffmpeg
+            renderer
+          ];
           postInstall = ''
             mv $out/bin/src $out/bin/kopoka
-            wrapProgram $out/bin/kopoka --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.ffmpeg ]}
+            wrapProgram $out/bin/kopoka --prefix PATH : ${
+              pkgs.lib.makeBinPath [
+                pkgs.ffmpeg
+                renderer
+              ]
+            }
           '';
           meta = with pkgs.lib; {
             description = "A Telegram bot for handling Pixiv and X (Twitter) links";
@@ -49,6 +72,10 @@
             gopls
             gotools
             go-tools
+            cargo
+            rustc
+            clippy
+            rustfmt
           ];
           shellHook = ''
             echo "Kopoka development environment"
