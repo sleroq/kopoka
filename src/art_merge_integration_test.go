@@ -8,12 +8,15 @@ import (
 	"image/draw"
 	"image/png"
 	"os"
+	"reflect"
+	"slices"
 	"testing"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-func artFixturePhotos(t *testing.T, fixture string, width, height, count int) []any {
+// Fixtures contain only the JPEG-decoded touching edges, not the full artwork.
+func artFixturePhotos(t *testing.T, fixture string, widths []int, height int) []any {
 	t.Helper()
 	file, err := os.Open("testdata/" + fixture + "-edges.png")
 	if err != nil {
@@ -24,8 +27,8 @@ func artFixturePhotos(t *testing.T, fixture string, width, height, count int) []
 	if err != nil {
 		t.Fatal(err)
 	}
-	photos := make([]any, count)
-	for i := range photos {
+	photos := make([]any, len(widths))
+	for i, width := range widths {
 		panel := image.NewRGBA(image.Rect(0, 0, width, height))
 		draw.Draw(panel, panel.Bounds(), image.NewUniform(color.White), image.Point{}, draw.Src)
 		draw.Draw(panel, image.Rect(0, 0, 3, height), edges, image.Pt(i*6, 0), draw.Src)
@@ -69,27 +72,59 @@ func checkMergedArt(t *testing.T, photos []any, sizes []image.Point, captions []
 
 func TestMergeArtPhotosReportedPosts(t *testing.T) {
 	tests := []struct {
-		name                 string
-		width, height, count int
-		sizes                []image.Point
-		captions             []int
+		name     string
+		widths   []int
+		height   int
+		sizes    []image.Point
+		captions []int
 	}{
 		// https://x.com/wenhaocha1/status/2121769943221891481
-		{"wenhao-chart", 307, 4096, 20, []image.Point{{6140, 4096}}, []int{0}},
-		{"wenhao-chart-large", 154, 2048, 20, []image.Point{{3080, 2048}}, []int{0}},
+		{"wenhao-chart", slices.Repeat([]int{307}, 20), 4096, []image.Point{{6140, 4096}}, []int{0}},
+		{"wenhao-chart-large", slices.Repeat([]int{154}, 20), 2048, []image.Point{{3080, 2048}}, []int{0}},
 		// https://x.com/k1phex/status/2121351590250418434
-		{"k1phex-scenes", 240, 1080, 12, []image.Point{{1440, 1080}, {1440, 1080}}, []int{0, 6}},
+		{"k1phex-scenes", slices.Repeat([]int{240}, 12), 1080, []image.Point{{1440, 1080}, {1440, 1080}}, []int{0, 6}},
 		// https://x.com/reyforn_/status/2121768052748349807
-		{"reyforn-panorama", 1080, 1440, 20, []image.Point{{21600, 1440}}, []int{0}},
+		{"reyforn-panorama", slices.Repeat([]int{1080}, 20), 1440, []image.Point{{21600, 1440}}, []int{0}},
+		// https://x.com/streetysnail/status/2121253103387148550
+		{"streetysnail", []int{28, 27, 28, 27, 28, 28, 27, 28, 27, 28, 28, 27, 28, 27, 28, 28, 27, 28, 27, 28}, 552, []image.Point{{552, 552}}, []int{0}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			photos := artFixturePhotos(t, tt.name, tt.width, tt.height, tt.count)
+			photos := artFixturePhotos(t, tt.name, tt.widths, tt.height)
 			checkMergedArt(t, photos, tt.sizes, tt.captions)
 			if tt.name == "reyforn-panorama" {
 				checkMergedArt(t, photos[1:4], []image.Point{{1080, 1440}, {1080, 1440}, {1080, 1440}}, []int{1, 2, 3})
 				checkMergedArt(t, photos[:4], []image.Point{{2160, 1440}, {1080, 1440}, {1080, 1440}}, []int{0, 2, 3})
 			}
 		})
+	}
+}
+
+// https://x.com/Crysepia/status/2121525386106536012
+// The atlas retains all JPEG-decoded boundaries, not the full artwork.
+func TestMergeArtPhotosKeepsCrysepiaFramesSeparate(t *testing.T) {
+	file, err := os.Open("testdata/crysepia-edges.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = file.Close() }()
+	atlas, err := png.Decode(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	photos := make([]any, 4)
+	for i := range photos {
+		panel := image.NewRGBA(image.Rect(0, 0, 1920, 1080))
+		draw.Draw(panel, panel.Bounds(), atlas, image.Pt(i*1920, 0), draw.Src)
+		var encoded bytes.Buffer
+		if err := png.Encode(&encoded, panel); err != nil {
+			t.Fatal(err)
+		}
+		photo := tgbotapi.NewInputMediaPhoto(tgbotapi.FileBytes{Name: fmt.Sprintf("panel-%d.png", i), Bytes: encoded.Bytes()})
+		photo.Caption = fmt.Sprintf("panel %d", i)
+		photos[i] = photo
+	}
+	if got := mergeArtPhotos(photos); !reflect.DeepEqual(got, photos) {
+		t.Error("independent frames were merged, changed, or reordered")
 	}
 }

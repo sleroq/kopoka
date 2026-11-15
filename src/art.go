@@ -171,7 +171,7 @@ func artSeamScore(a, b image.Image, horizontal, relaxed bool) float64 {
 		}
 		if displaced-aligned >= 8 && aligned <= 0.4*displaced ||
 			!trimmed && aligned <= 3 && displaced-aligned >= 0.4 && aligned <= 0.8*displaced ||
-			relaxed && !trimmed && displaced-aligned >= 3 && aligned <= (2.0/3)*displaced {
+			relaxed && displaced-aligned >= 3 && (aligned <= 0.4*displaced || !trimmed && aligned <= (2.0/3)*displaced) {
 			return mean
 		}
 	}
