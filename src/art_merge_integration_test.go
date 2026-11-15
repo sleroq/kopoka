@@ -87,6 +87,8 @@ func TestMergeArtPhotosReportedPosts(t *testing.T) {
 		{"reyforn-panorama", slices.Repeat([]int{1080}, 20), 1440, []image.Point{{21600, 1440}}, []int{0}},
 		// https://x.com/streetysnail/status/2121253103387148550
 		{"streetysnail", []int{28, 27, 28, 27, 28, 28, 27, 28, 27, 28, 28, 27, 28, 27, 28, 28, 27, 28, 27, 28}, 552, []image.Point{{552, 552}}, []int{0}},
+		// https://x.com/mirute3939/status/2121771591956922577
+		{"mirute-parade", slices.Repeat([]int{848}, 18), 1424, []image.Point{{15264, 1424}}, []int{0}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

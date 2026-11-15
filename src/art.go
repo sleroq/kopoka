@@ -158,7 +158,8 @@ func artSeamScore(a, b image.Image, horizontal, relaxed bool) float64 {
 		if trimmed {
 			aligned = edgeDifference(left, right, 0, true)
 		}
-		if aligned > 10 {
+		// Sharp contours can differ more across a cut in an anchored row.
+		if aligned > 10 && (!relaxed || trimmed || aligned > 20) {
 			continue
 		}
 		displaced := math.Inf(1)
