@@ -357,7 +357,8 @@ func deleteHistory(db *sql.DB, user int64) error {
 }
 
 func removeHistoryArtwork(db *sql.DB, user int64, id string) (bool, error) {
-	result, err := db.Exec(`DELETE FROM history WHERE user_id = ? AND artwork_id = ?`, user, id)
+	result, err := db.Exec(`DELETE FROM history WHERE user_id = ? AND artwork_id IN (?, ?, ?)`,
+		user, id, id+":merged", id+":merged:bars")
 	if err != nil {
 		return false, err
 	}

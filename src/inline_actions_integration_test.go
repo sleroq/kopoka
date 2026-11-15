@@ -61,12 +61,15 @@ func (s *inlineActionServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 
 func TestInlineArtworkActions(t *testing.T) {
 	db := testArtworkDB(t)
-	for _, user := range []int64{11, 12} {
+	for _, entry := range []struct {
+		user int64
+		id   string
+	}{{11, "x:123:merged"}, {11, "x:123:merged:bars"}, {12, "x:123"}} {
 		a := artwork{
-			ID: "x:123", URL: "https://x.com/artist/status/123", Author: "Artist",
+			ID: entry.id, URL: "https://x.com/artist/status/123", Author: "Artist",
 			Caption: "caption", Photos: []string{"photo"},
 		}
-		if err := saveSelection(db, user, a); err != nil {
+		if err := saveSelection(db, entry.user, a); err != nil {
 			t.Fatal(err)
 		}
 	}
