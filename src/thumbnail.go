@@ -74,6 +74,7 @@ type thumbnails struct {
 	placeholders      map[bool][]byte
 	postImages        map[string][]byte
 	mergedPlaceholder []byte
+	barsPlaceholder   []byte
 	client            *http.Client
 	mu                sync.Mutex
 	work              map[string]*thumbnailWork
@@ -169,12 +170,21 @@ func newThumbnails(baseURL string, app *pixiv.AppPixivAPI, bot *tgbotapi.BotAPI,
 	if err := jpeg.Encode(&mergedPlaceholder, canvas, &jpeg.Options{Quality: 90}); err != nil {
 		return nil, err
 	}
+	draw.Draw(canvas, canvas.Bounds(), image.NewUniform(color.NRGBA{20, 22, 27, 255}), image.Point{}, draw.Src)
+	for i := range 8 {
+		x := 72 + i*31
+		rounded(canvas, image.Rect(x, 120, x+23, 264), 8, color.NRGBA{255, 255, 255, 255})
+	}
+	var barsPlaceholder bytes.Buffer
+	if err := jpeg.Encode(&barsPlaceholder, canvas, &jpeg.Options{Quality: 90}); err != nil {
+		return nil, err
+	}
 	postImages, err := renderPostImagePlaceholders(bold)
 	if err != nil {
 		return nil, err
 	}
 	return &thumbnails{
-		base: base, app: app, bot: bot, db: db, cacheChat: cacheChat, placeholders: placeholders, postImages: postImages, mergedPlaceholder: mergedPlaceholder.Bytes(), client: &http.Client{Timeout: 15 * time.Second},
+		base: base, app: app, bot: bot, db: db, cacheChat: cacheChat, placeholders: placeholders, postImages: postImages, mergedPlaceholder: mergedPlaceholder.Bytes(), barsPlaceholder: barsPlaceholder.Bytes(), client: &http.Client{Timeout: 15 * time.Second},
 		work: make(map[string]*thumbnailWork), postImageWork: make(map[string]*postImagePreviewWork), workers: make(chan struct{}, 6),
 		logos: logos, font: bold,
 	}, nil
@@ -238,9 +248,13 @@ func (t *thumbnails) placeholder(pixiv bool) previewPhoto {
 	return previewPhoto{photoURL: address, thumbnailURL: address, width: 384, height: 384}
 }
 
-func (t *thumbnails) mergedPlaceholderPhoto() previewPhoto {
+func (t *thumbnails) mergedPlaceholderPhoto(bars bool) previewPhoto {
 	address := *t.base
-	address.Path += "/thumbnail-placeholder-merged.jpg"
+	if bars {
+		address.Path += "/thumbnail-placeholder-merged-bars.jpg"
+	} else {
+		address.Path += "/thumbnail-placeholder-merged.jpg"
+	}
 	return previewPhoto{photoURL: address.String(), thumbnailURL: address.String(), width: 384, height: 384}
 }
 
@@ -271,7 +285,7 @@ func (t *thumbnails) mergedPhotoVariant(link *url.URL, instant, bars bool) (prev
 			default:
 			}
 		}
-		return t.mergedPlaceholderPhoto(), true
+		return t.mergedPlaceholderPhoto(bars), true
 	}
 	work = t.warmup(link, 0)
 	done, variant, mode := work.forcedDone, &work.forced, "1"
@@ -297,7 +311,7 @@ func (t *thumbnails) mergedPhotoVariant(link *url.URL, instant, bars bool) (prev
 		}
 	case <-time.After(8 * time.Second):
 	}
-	return t.mergedPlaceholderPhoto(), true
+	return t.mergedPlaceholderPhoto(bars), true
 }
 
 func (t *thumbnails) postImagePlaceholder(theme string) previewPhoto {
@@ -504,6 +518,8 @@ func (t *thumbnails) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	var placeholder []byte
 	switch {
+	case strings.HasSuffix(r.URL.Path, "/thumbnail-placeholder-merged-bars.jpg"):
+		placeholder = t.barsPlaceholder
 	case strings.HasSuffix(r.URL.Path, "/thumbnail-placeholder-merged.jpg"):
 		placeholder = t.mergedPlaceholder
 	case strings.HasSuffix(r.URL.Path, "/thumbnail-placeholder-x.jpg"):
