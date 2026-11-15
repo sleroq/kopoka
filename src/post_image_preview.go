@@ -142,12 +142,11 @@ func (work *postImagePreviewWork) postImageHasBars() bool {
 	}
 }
 
-func (t *thumbnails) postImagePreview(link *url.URL, theme, zone string, instant bool) previewPhoto {
-	if instant {
+func (t *thumbnails) postImagePreview(link *url.URL, theme, zone string, work *postImagePreviewWork) previewPhoto {
+	if work == nil {
 		return t.postImagePlaceholder(strings.TrimSuffix(theme, "-bars"))
 	}
 	link = postImagePreviewLink(link)
-	work := t.startPostImagePreview(link, zone, strings.TrimSuffix(theme, "-bars"))
 	t.mu.Lock()
 	variant := work.variants[theme]
 	t.mu.Unlock()

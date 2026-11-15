@@ -23,6 +23,7 @@ func inlineLink(text string) *url.URL {
 	if err != nil || (link.Scheme != "https" && link.Scheme != "http") || !supportedLink(link) || link.User != nil {
 		return nil
 	}
+
 	if link.Host == "pixiv.net" || link.Host == "www.pixiv.net" {
 		if strings.HasPrefix(link.Path, "/en/artworks/") {
 			link.Path = strings.TrimPrefix(link.Path, "/en")
@@ -48,6 +49,7 @@ func inlineLink(text string) *url.URL {
 			return nil
 		}
 	}
+
 	photo := 0
 	if link.Host == "pixiv.net" || link.Host == "www.pixiv.net" {
 		photo, _ = strconv.Atoi(link.Query().Get("photo"))

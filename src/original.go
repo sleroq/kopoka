@@ -323,6 +323,7 @@ func originalPixivFiles(app *pixiv.AppPixivAPI, link *url.URL) ([]originalSource
 	if err != nil {
 		return nil, fmt.Errorf("parsing Pixiv ID: %w", err)
 	}
+
 	pixivRequestMu.Lock()
 	illust, err := app.IllustDetail(id)
 	pixivRequestMu.Unlock()
@@ -333,6 +334,7 @@ func originalPixivFiles(app *pixiv.AppPixivAPI, link *url.URL) ([]originalSource
 	if err != nil {
 		return nil, err
 	}
+
 	if illust.Type == "ugoira" {
 		pixivRequestMu.Lock()
 		metadata, err := app.UgoiraMetadata(id)

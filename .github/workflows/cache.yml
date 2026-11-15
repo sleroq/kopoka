@@ -21,7 +21,7 @@ jobs:
       - name: Build Kopoka
         id: build
         run: |
-          path=$(nix build .#packages.x86_64-linux.default --no-link --print-out-paths)
+          path=$(nix build .#packages.x86_64-linux.default --no-link --print-out-paths -L)
           echo "path=$path" >> "$GITHUB_OUTPUT"
 
       - name: Log in to Attic

@@ -94,7 +94,7 @@ cat "$PREVIEW_TEST_IMAGE"
 	link := inlineLink("https://x.com/user/status/42/photo/2?foo=bar")
 
 	for _, theme := range []string{"light", "dark", "light-bars", "dark-bars"} {
-		result := postImageResult(db, link, theme, defaultTimezone, previews, true)
+		result := postImageResult(db, link, theme, defaultTimezone, previews, nil)
 		if !strings.Contains(result["photo_url"].(string), "placeholder-"+strings.TrimSuffix(theme, "-bars")) {
 			t.Fatalf("instant: %v", result)
 		}
@@ -103,9 +103,10 @@ cat "$PREVIEW_TEST_IMAGE"
 		t.Fatal("instant preview started work")
 	}
 
+	work := previews.startPostImagePreview(link, defaultTimezone, "light", "dark")
 	results := make(chan map[string]any, 4)
 	for _, theme := range []string{"light", "dark", "light-bars", "dark-bars"} {
-		go func(theme string) { results <- postImageResult(db, link, theme, defaultTimezone, previews, false) }(theme)
+		go func(theme string) { results <- postImageResult(db, link, theme, defaultTimezone, previews, work) }(theme)
 	}
 	checkPostImagePreviewResponses(t, previews, results)
 
@@ -130,7 +131,7 @@ cat "$PREVIEW_TEST_IMAGE"
 		if err := editInlinePostImage(bot, db, chosen, "@cache", link, theme, previews); err != nil {
 			t.Fatal(err)
 		}
-		result := postImageResult(db, link, theme, defaultTimezone, previews, false)
+		result := postImageResult(db, link, theme, defaultTimezone, previews, work)
 		if result["photo_file_id"] != "card" || result["id"] != postImageID(link, theme)+":cached" || !strings.Contains(result["caption"].(string), "Artist") {
 			t.Fatalf("cached: %v", result)
 		}
@@ -225,10 +226,21 @@ func TestPostImagePreviewRetryAfterFailure(t *testing.T) {
 		}
 	}
 
+	for _, theme := range []string{"light", "dark", "light-bars", "dark-bars"} {
+		result := postImageResult(previews.db, link, theme, defaultTimezone, previews, work)
+		if !strings.Contains(result["photo_url"].(string), "placeholder-") {
+			t.Fatalf("failed preview: %v", result)
+		}
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("failed work was requested again: %d", calls.Load())
+	}
+
 	if err := os.WriteFile(filepath.Join(dir, "ready"), nil, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if photo := previews.postImagePreview(link, "light", defaultTimezone, false); !strings.Contains(photo.photoURL, "/post-image-preview?") {
+	retry := previews.startPostImagePreview(link, defaultTimezone, "light")
+	if photo := previews.postImagePreview(link, "light", defaultTimezone, retry); !strings.Contains(photo.photoURL, "/post-image-preview?") {
 		t.Fatalf("retry: %+v", photo)
 	}
 	if calls.Load() != 2 {
@@ -250,7 +262,7 @@ func TestPostImagePreviewSelectedThemes(t *testing.T) {
 	link := inlineLink("https://x.com/user/status/42")
 	work := previews.startPostImagePreview(link, defaultTimezone, "warm", "dim")
 	for _, theme := range []string{"warm", "dim", "warm-bars", "dim-bars"} {
-		photo := previews.postImagePreview(link, theme, defaultTimezone, false)
+		photo := previews.postImagePreview(link, theme, defaultTimezone, work)
 		address, err := url.Parse(photo.photoURL)
 		if err != nil || address.Query().Get("theme") != theme {
 			t.Fatalf("%s preview: %+v %v", theme, photo, err)
@@ -297,7 +309,8 @@ func TestPostImagePreviewTimezones(t *testing.T) {
 	}
 	var images [][]byte
 	for _, zone := range []string{defaultTimezone, "UTC"} {
-		photo := previews.postImagePreview(link, "light", zone, false)
+		work := previews.startPostImagePreview(link, zone, "light")
+		photo := previews.postImagePreview(link, "light", zone, work)
 		address, err := url.Parse(photo.photoURL)
 		if err != nil || address.Query().Get("tz") != zone {
 			t.Fatalf("URL %q: %v", photo.photoURL, err)

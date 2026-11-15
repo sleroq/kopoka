@@ -434,9 +434,10 @@ func inlinePostImageResults(db *sql.DB, user int64, link *url.URL, previews *thu
 		return nil
 	}
 
+	var work *postImagePreviewWork
 	var barsAvailable chan bool
 	if !instant {
-		work := previews.startPostImagePreview(link, zone, themes.Light, themes.Dark)
+		work = previews.startPostImagePreview(link, zone, themes.Light, themes.Dark)
 		barsAvailable = make(chan bool, 1)
 		go func() { barsAvailable <- work.postImageHasBars() }()
 	}
@@ -444,7 +445,7 @@ func inlinePostImageResults(db *sql.DB, user int64, link *url.URL, previews *thu
 	for _, theme := range []string{themes.Light, themes.Dark, themes.Light + "-bars", themes.Dark + "-bars"} {
 		result := make(chan map[string]any, 1)
 		postImages = append(postImages, result)
-		go func() { result <- postImageResult(db, link, theme, zone, previews, instant) }()
+		go func() { result <- postImageResult(db, link, theme, zone, previews, work) }()
 	}
 
 	showBars := barsAvailable == nil || <-barsAvailable
@@ -458,7 +459,7 @@ func inlinePostImageResults(db *sql.DB, user int64, link *url.URL, previews *thu
 	return results
 }
 
-func postImageResult(db *sql.DB, link *url.URL, theme, zone string, previews *thumbnails, instant bool) map[string]any {
+func postImageResult(db *sql.DB, link *url.URL, theme, zone string, previews *thumbnails, work *postImagePreviewWork) map[string]any {
 	file, caption, err := findPostImage(db, artworkID(xPostLink(link)), theme, zone)
 	if err != nil {
 		log.Printf("loading cached post image: %v", err)
@@ -467,7 +468,7 @@ func postImageResult(db *sql.DB, link *url.URL, theme, zone string, previews *th
 	if file != "" {
 		photo = previewPhoto{fileID: file}
 	} else {
-		photo = previews.postImagePreview(link, theme, zone, instant)
+		photo = previews.postImagePreview(link, theme, zone, work)
 	}
 	result := inlinePhoto(photo)
 	result["id"] = postImageID(link, theme)

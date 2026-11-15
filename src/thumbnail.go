@@ -648,6 +648,7 @@ func (t *thumbnails) pixivSource(link *url.URL) (thumbnailSource, error) {
 	if t.app == nil {
 		return thumbnailSource{}, fmt.Errorf("missing Pixiv client")
 	}
+
 	pixivRequestMu.Lock()
 	illust, err := t.app.IllustDetail(id)
 	pixivRequestMu.Unlock()
@@ -661,6 +662,7 @@ func (t *thumbnails) pixivSource(link *url.URL) (thumbnailSource, error) {
 	if err != nil {
 		return thumbnailSource{}, err
 	}
+
 	source := thumbnailSource{pixiv: true, count: max(1, illust.PageCount, len(illust.MetaPages)), selected: selected}
 	if illust.Type != "ugoira" && len(illust.MetaPages) > 1 {
 		source.pixivPages = true
