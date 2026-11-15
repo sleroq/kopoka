@@ -15,6 +15,7 @@ import (
 )
 
 func TestPostImageThemeSettingsFlow(t *testing.T) {
+	t.Setenv("KOPOKA_RENDERER", testPostImageRenderer(t))
 	path := filepath.Join(t.TempDir(), "settings.db")
 	db, err := openArtworkDB(path)
 	if err != nil {
@@ -138,9 +139,12 @@ func themeSettingsServer(t *testing.T, text, markup, results *string) *httptest.
 func verifyThemePreviewSelection(t *testing.T, results []map[string]any, selected string) {
 	t.Helper()
 	for _, result := range results {
-		address, err := url.Parse(result["photo_url"].(string))
+		address, err := url.Parse(result["thumbnail_url"].(string))
 		if err != nil || (address.Query().Get("selected") == "true") != (result["id"] == selected) {
 			t.Fatalf("selected preview: %v, %v", result, err)
+		}
+		if result["photo_url"] == result["thumbnail_url"] || result["photo_width"].(float64) < 1000 || result["photo_width"] == result["photo_height"] {
+			t.Fatalf("preview photo: %v", result)
 		}
 	}
 }

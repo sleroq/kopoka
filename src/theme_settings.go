@@ -110,7 +110,12 @@ func themeResults(db *sql.DB, user int64, family, filter string, previews *thumb
 		if option.Family != family || !strings.Contains(strings.ToLower(option.Name), filter) {
 			continue
 		}
-		result := inlinePhoto(previews.themePreview(option.ID, option.ID == selected))
+		photo, err := previews.themePreview(option.ID, option.ID == selected)
+		if err != nil {
+			log.Printf("rendering theme preview for %s: %v", option.ID, err)
+			continue
+		}
+		result := inlinePhoto(photo)
 		result["id"], result["title"] = "theme:"+option.ID, option.Name
 		result["input_message_content"] = map[string]any{"message_text": "Setting theme…"}
 		result["reply_markup"] = keyboard

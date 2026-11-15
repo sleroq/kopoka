@@ -14,17 +14,33 @@ import (
 	"golang.org/x/image/vector"
 )
 
+const themePreviewVersion = 2
+
 type themePreviewImages struct {
-	plain, selected []byte
+	photo, thumbnail, selected []byte
+	width, height              int
 }
 
-func (t *thumbnails) themePreview(theme string, selected bool) previewPhoto {
+func (t *thumbnails) themePreview(theme string, selected bool) (previewPhoto, error) {
+	images, err := t.renderThemePreview(theme)
+	if err != nil {
+		return previewPhoto{}, err
+	}
 	address := *t.base
 	address.Path += "/theme-preview"
-	address.RawQuery = url.Values{
-		"theme": {theme}, "selected": {strconv.FormatBool(selected)}, "v": {strconv.Itoa(postImageVersion)},
-	}.Encode()
-	return previewPhoto{photoURL: address.String(), thumbnailURL: address.String(), width: 384, height: 384}
+	query := url.Values{
+		"theme": {theme}, "v": {strconv.Itoa(postImageVersion) + "-" + strconv.Itoa(themePreviewVersion)},
+	}
+	query.Set("size", "large")
+	address.RawQuery = query.Encode()
+	photoURL := address.String()
+	query.Del("size")
+	query.Set("selected", strconv.FormatBool(selected))
+	address.RawQuery = query.Encode()
+	return previewPhoto{
+		photoURL: photoURL, thumbnailURL: address.String(),
+		width: images.width, height: images.height,
+	}, nil
 }
 
 func (t *thumbnails) serveThemePreview(w http.ResponseWriter, r *http.Request) {
@@ -39,8 +55,10 @@ func (t *thumbnails) serveThemePreview(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "theme preview generation failed", http.StatusBadGateway)
 		return
 	}
-	data := images.plain
-	if r.URL.Query().Get("selected") == "true" {
+	data := images.thumbnail
+	if r.URL.Query().Get("size") == "large" {
+		data = images.photo
+	} else if r.URL.Query().Get("selected") == "true" {
 		data = images.selected
 	}
 	w.Header().Set("Content-Type", "image/jpeg")
@@ -72,10 +90,8 @@ func (t *thumbnails) renderThemePreview(theme string) (themePreviewImages, error
 	bounds := card.Bounds()
 	size := bounds.Size()
 	width, height := size.X*384/max(size.X, size.Y), size.Y*384/max(size.X, size.Y)
-	canvas := image.NewRGBA(image.Rect(0, 0, 384, 384))
-	draw.Draw(canvas, canvas.Bounds(), image.NewUniform(card.At(bounds.Min.X, bounds.Min.Y)), image.Point{}, draw.Src)
-	destination := image.Rect((384-width)/2, (384-height)/2, (384+width)/2, (384+height)/2)
-	draw.CatmullRom.Scale(canvas, destination, card, bounds, draw.Src, nil)
+	canvas := image.NewRGBA(image.Rect(0, 0, width, height))
+	draw.CatmullRom.Scale(canvas, canvas.Bounds(), card, bounds, draw.Src, nil)
 	var plain bytes.Buffer
 	if err := jpeg.Encode(&plain, canvas, &jpeg.Options{Quality: 90}); err != nil {
 		return images, err
@@ -86,7 +102,10 @@ func (t *thumbnails) renderThemePreview(theme string) (themePreviewImages, error
 	if err := jpeg.Encode(&selected, canvas, &jpeg.Options{Quality: 90}); err != nil {
 		return images, err
 	}
-	images = themePreviewImages{plain: plain.Bytes(), selected: selected.Bytes()}
+	images = themePreviewImages{
+		photo: data, thumbnail: plain.Bytes(), selected: selected.Bytes(),
+		width: size.X, height: size.Y,
+	}
 	t.themePreviewMu.Lock()
 	t.themePreviews[theme] = images
 	t.themePreviewMu.Unlock()
@@ -105,5 +124,8 @@ func drawThemeSelectionBadge(canvas *image.RGBA) {
 	check.LineTo(337*4, 37*4)
 	check.ClosePath()
 	check.Draw(badge, badge.Bounds(), image.NewUniform(color.White), image.Point{})
-	draw.CatmullRom.Scale(canvas, image.Rect(0, 0, 384, 56), badge, badge.Bounds(), draw.Over, nil)
+	width, height := canvas.Bounds().Dx(), canvas.Bounds().Dy()
+	shorter := min(width, height)
+	badgeBounds := image.Rect(width-shorter, 0, width, 56*shorter/384)
+	draw.CatmullRom.Scale(canvas, badgeBounds, badge, badge.Bounds(), draw.Over, nil)
 }
