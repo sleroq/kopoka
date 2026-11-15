@@ -429,7 +429,7 @@ fn format_count(count: Option<u64>) -> String {
 pub fn render(request: Request) -> Result<Vec<u8>> {
     let empty = HashMap::new();
     let (background, text_color, secondary, border) = match request.theme {
-        Theme::Light => ("#f7f9f9", "#0f1419", "#536471", "#cfd9de"),
+        Theme::Light => ("#ffffff", "#0f1419", "#536471", "#cfd9de"),
         Theme::Warm => ("#fff6f5", "#21191a", "#785f62", "#e9d6d5"),
         Theme::Dark => ("#000000", "#e7e9ea", "#71767b", "#2f3336"),
         Theme::Dim => ("#16181c", "#e7e9ea", "#7c8186", "#3e4144"),
