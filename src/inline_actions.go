@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -68,6 +69,45 @@ func inlineMessageArtwork(message *telegramMessage) *url.URL {
 	return nil
 }
 
+func artworkActionData(action string, user int64, link *url.URL) string {
+	id := artworkID(link)
+	site, rawID, _ := strings.Cut(id, ":")
+	number, _ := strconv.ParseUint(rawID, 10, 64)
+	data := fmt.Sprintf("art:%s:%s:%s%s", action, strconv.FormatInt(user, 36), site[:1], strconv.FormatUint(number, 36))
+	if site == "x" {
+		name := strings.Split(link.Path, "/")[1]
+		encoded := base64.RawURLEncoding.EncodeToString([]byte(name))
+		if len(data)+1+len(encoded) > 64 {
+			// FxTwitter identifies posts by ID and ignores the screen name.
+			encoded = base64.RawURLEncoding.EncodeToString([]byte("i"))
+		}
+		data += ":" + encoded
+	}
+	return data
+}
+
+func artworkActionLink(parts []string) *url.URL {
+	if len(parts) < 4 || len(parts[3]) < 2 {
+		return nil
+	}
+	id, err := strconv.ParseUint(parts[3][1:], 36, 64)
+	if err != nil || id == 0 {
+		return nil
+	}
+	switch {
+	case parts[3][0] == 'p' && len(parts) == 4:
+		return inlineLink(fmt.Sprintf("https://www.pixiv.net/artworks/%d", id))
+	case parts[3][0] == 'x' && len(parts) == 5:
+		name, err := base64.RawURLEncoding.DecodeString(parts[4])
+		if err != nil {
+			return nil
+		}
+		link := &url.URL{Scheme: "https", Host: "x.com", Path: fmt.Sprintf("/%s/status/%d", name, id)}
+		return inlineLink(link.String())
+	}
+	return nil
+}
+
 func handleIncomingMessage(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, message *telegramMessage, queue *mediaQueue, previews *thumbnails) {
 	if message.ViaBot == nil || message.ViaBot.ID != bot.Self.ID {
 		handleMessage(bot, app, db, &message.Message, queue, previews)
@@ -84,14 +124,9 @@ func handleIncomingMessage(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql
 	if link == nil {
 		reply.Text += "\n\nCould not find the artwork link."
 	} else {
-		// Keep the source with the question so callbacks also work before a new
-		// inline result has finished loading or when history is disabled.
-		reply.Entities = []tgbotapi.MessageEntity{{Type: "text_link", Offset: 0, Length: len(question), URL: link.String()}}
-		reply.DisableWebPagePreview = true
-		user := strconv.FormatInt(message.From.ID, 10)
 		reply.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
-			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("remove from the history", "art:remove:"+user)),
-			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("get full-res version", "art:original:"+user)),
+			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("remove from the history", artworkActionData("remove", message.From.ID, link))),
+			tgbotapi.NewInlineKeyboardRow(tgbotapi.NewInlineKeyboardButtonData("get full-res version", artworkActionData("original", message.From.ID, link))),
 		)
 	}
 	if _, err := bot.Send(reply); err != nil {
@@ -127,17 +162,24 @@ func handleArtworkCallback(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql
 
 func startArtworkAction(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, query *tgbotapi.CallbackQuery, queue *mediaQueue) (string, <-chan error) {
 	parts := strings.Split(query.Data, ":")
-	if len(parts) != 3 || query.From == nil {
+	if len(parts) < 3 || query.From == nil {
 		return "Invalid request.", nil
 	}
-	user, err := strconv.ParseInt(parts[2], 10, 64)
+	base := 36
+	if len(parts) == 3 { // Buttons sent before the source moved into callback data.
+		base = 10
+	}
+	user, err := strconv.ParseInt(parts[2], base, 64)
 	if err != nil || user != query.From.ID {
 		return "This button belongs to another user.", nil
 	}
 	if query.Message == nil || query.Message.Chat == nil {
 		return "Message unavailable.", nil
 	}
-	link := inlineMessageArtwork(&telegramMessage{Message: *query.Message})
+	link := artworkActionLink(parts)
+	if len(parts) == 3 {
+		link = inlineMessageArtwork(&telegramMessage{Message: *query.Message})
+	}
 	if link == nil {
 		return "Could not find the artwork link.", nil
 	}
@@ -154,10 +196,15 @@ func startArtworkAction(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB
 		}
 		return "This link is not in your history.", nil
 	case "original":
+		saved, err := findArtwork(db, artworkID(link))
+		if err != nil {
+			log.Printf("loading artwork for original files: %v", err)
+			return "Could not load the artwork. Please try again.", nil
+		}
 		result, err := queue.submit(user, func() error {
 			stop := showProcessing(bot, query.Message.Chat.ID, tgbotapi.ChatUploadDocument)
 			defer stop()
-			return sendOriginalFiles(bot, app, query.Message.Chat.ID, query.Message.MessageID, link)
+			return sendOriginalFiles(bot, app, query.Message.Chat.ID, query.Message.MessageID, link, saved)
 		})
 		if err != nil {
 			return fmt.Sprintf("Could not get the full-res version: %s. Please retry later.", err), nil

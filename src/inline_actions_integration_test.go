@@ -94,8 +94,13 @@ func TestInlineArtworkActions(t *testing.T) {
 		t.Fatalf("question: %v", question)
 	}
 	var entities []tgbotapi.MessageEntity
-	if err := json.Unmarshal([]byte(question.Get("entities")), &entities); err != nil || len(entities) != 1 || entities[0].URL != "https://fxtwitter.com/artist/status/123" {
-		t.Fatalf("question entities: %v, %v", entities, err)
+	if raw := question.Get("entities"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &entities); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(entities) != 0 {
+		t.Fatalf("question unexpectedly contains links: %v", entities)
 	}
 	var keyboard tgbotapi.InlineKeyboardMarkup
 	if err := json.Unmarshal([]byte(question.Get("reply_markup")), &keyboard); err != nil || len(keyboard.InlineKeyboard) != 2 {
@@ -104,6 +109,9 @@ func TestInlineArtworkActions(t *testing.T) {
 	remove, originalButton := keyboard.InlineKeyboard[0][0], keyboard.InlineKeyboard[1][0]
 	if remove.Text != "remove from the history" || originalButton.Text != "get full-res version" {
 		t.Fatalf("buttons: %+v, %+v", remove, originalButton)
+	}
+	if len(*remove.CallbackData) > 64 || len(*originalButton.CallbackData) > 64 {
+		t.Fatalf("callback data exceeds Telegram's limit: %s, %s", *remove.CallbackData, *originalButton.CallbackData)
 	}
 	callback := func(user int64, data string) {
 		t.Helper()
@@ -132,6 +140,15 @@ func TestInlineArtworkActions(t *testing.T) {
 	if len(api.documents) != 1 || api.documents[0].Get("document") != "https://pbs.twimg.com/media/art.jpg?name=orig" || api.documents[0].Get("reply_to_message_id") != "43" {
 		t.Fatalf("documents: %v", api.documents)
 	}
+
+	// Previously sent questions stored the source as a text-link entity.
+	legacy := &tgbotapi.CallbackQuery{ID: "legacy", From: &tgbotapi.User{ID: 12}, Data: "art:remove:12",
+		Message: &tgbotapi.Message{MessageID: 44, Chat: &tgbotapi.Chat{ID: 12}, Text: "old question",
+			Entities: []tgbotapi.MessageEntity{{Type: "text_link", Offset: 0, Length: 12, URL: "https://x.com/artist/status/123"}}}}
+	handleIncomingCallback(bot, nil, db, legacy, queue)
+	if api.answers[len(api.answers)-1] != "Removed from your history." {
+		t.Fatalf("legacy callback: %v", api.answers)
+	}
 }
 
 func TestInlineArtworkLoadingAndCaption(t *testing.T) {
@@ -157,5 +174,26 @@ func TestInlineArtworkLoadingAndCaption(t *testing.T) {
 		if got := inlineMessageArtwork(message); got == nil || got.String() != link.String() {
 			t.Fatalf("artwork link: %v", got)
 		}
+	}
+	if err := setHistoryEnabled(db, 11, false); err != nil {
+		t.Fatal(err)
+	}
+	query := &tgbotapi.CallbackQuery{From: &tgbotapi.User{ID: 11}, Data: artworkActionData("remove", 11, link),
+		Message: &tgbotapi.Message{Chat: &tgbotapi.Chat{ID: 11}, Text: "why did you send this to me?"}}
+	text, job := startArtworkAction(bot, nil, db, query, nil)
+	if text != "This link is not in your history." || job != nil {
+		t.Fatalf("history-disabled Pixiv callback: %q, %v", text, job)
+	}
+
+	// Maximum IDs and an X handle still fit Telegram's 64-byte callback limit.
+	x := inlineLink("https://x.com/abcdefghijklmno/status/18446744073709551615")
+	query.From.ID = 9223372036854775807
+	query.Data = artworkActionData("original", query.From.ID, x)
+	if len(query.Data) > 64 {
+		t.Fatalf("callback is %d bytes: %s", len(query.Data), query.Data)
+	}
+	decoded := artworkActionLink(strings.Split(query.Data, ":"))
+	if decoded == nil || decoded.String() != x.String() {
+		t.Fatalf("callback artwork: %v", decoded)
 	}
 }

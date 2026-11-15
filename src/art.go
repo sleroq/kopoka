@@ -51,24 +51,27 @@ func joinArtGrid(images []image.Image) image.Image {
 	if columns == 0 {
 		return nil
 	}
-
 	joined := image.NewRGBA(image.Rectangle{Max: size})
 	draw.Draw(joined, joined.Bounds(), image.NewUniform(color.White), image.Point{}, draw.Src)
+	drawArtGrid(joined, images, columns, draw.Over)
+	return joined
+}
+
+func drawArtGrid(dst draw.Image, images []image.Image, columns int, op draw.Op) {
 	offset := image.Point{}
 	for i, img := range images {
 		bounds := img.Bounds()
 		rect := image.Rectangle{Min: offset, Max: offset.Add(bounds.Size())}
-		draw.Draw(joined, rect, img, bounds.Min, draw.Over)
+		draw.Draw(dst, rect, img, bounds.Min, op)
 		offset.X += bounds.Dx()
 		if (i+1)%columns == 0 {
 			offset.X = 0
 			offset.Y += bounds.Dy()
 		}
 	}
-	return joined
 }
 
-func artGridMatches(images []image.Image, columns int) (image.Point, bool) {
+func artGridSize(images []image.Image, columns int) (image.Point, bool) {
 	var size image.Point
 	for i, img := range images {
 		bounds := img.Bounds()
@@ -82,6 +85,17 @@ func artGridMatches(images []image.Image, columns int) (image.Point, bool) {
 		if column == 0 {
 			size.Y += bounds.Dy()
 		}
+	}
+	return size, true
+}
+
+func artGridMatches(images []image.Image, columns int) (image.Point, bool) {
+	size, fits := artGridSize(images, columns)
+	if !fits {
+		return image.Point{}, false
+	}
+	for i, img := range images {
+		row, column := i/columns, i%columns
 		// Check every original tile seam independently: a good match in one
 		// column must never conceal an unrelated tile in another column.
 		if column > 0 && !artSeamIsDistinct(images[i-1], img, true) {
