@@ -97,7 +97,9 @@ func TestHistorySourceFilter(t *testing.T) {
 			if pictures {
 				s.toggle(1)
 			}
-			checkHistorySource(t, s, filter.query, filter.source)
+			checkHistorySource(t, s, filter.query, filter.source, pictures)
+			checkHistorySource(t, s, filter.query+" .", filter.source, !pictures)
+			checkHistorySource(t, s, ".  "+filter.query, filter.source, !pictures)
 			if pictures {
 				s.toggle(1)
 			}
@@ -105,13 +107,14 @@ func TestHistorySourceFilter(t *testing.T) {
 	}
 }
 
-func checkHistorySource(t *testing.T, s *pictureHistoryScenario, query, source string) {
+func checkHistorySource(t *testing.T, s *pictureHistoryScenario, query, source string, pictures bool) {
 	t.Helper()
 	cursor, count := "", 0
 	for {
 		s.query(query, cursor)
 		for _, result := range s.answer {
-			if !strings.HasPrefix(result["id"].(string), source+":") {
+			id := result["id"].(string)
+			if !strings.HasPrefix(id, source+":") || strings.Contains(id, ":item:") != pictures {
 				t.Fatalf("%s: unexpected result %v", query, result)
 			}
 			count++

@@ -130,12 +130,12 @@ func slideshow(a artwork) map[string]any {
 	return map[string]any{"html": markup.String(), "media": media}
 }
 
-func inlineHistory(db *sql.DB, query *tgbotapi.InlineQuery, previews *thumbnails) ([]any, string) {
+func inlineHistory(db *sql.DB, query *tgbotapi.InlineQuery, source string, previews *thumbnails) ([]any, string) {
 	offset, err := strconv.Atoi(query.Offset)
 	if err != nil || offset < 0 {
 		offset = 0
 	}
-	history, err := artworkHistory(db, query.From.ID, offset, historySource(query.Query))
+	history, err := artworkHistory(db, query.From.ID, offset, source)
 	if err != nil {
 		log.Printf("loading inline history: %v", err)
 	}
@@ -151,33 +151,38 @@ func inlineHistory(db *sql.DB, query *tgbotapi.InlineQuery, previews *thumbnails
 	return results, nextOffset
 }
 
-func historySource(query string) string {
-	switch strings.TrimSpace(query) {
-	case "x":
-		return "x"
-	case "p":
-		return "pixiv"
-	default:
-		return ""
+func historyFilters(query string) (source string, invert, ok bool) {
+	for word := range strings.FieldsSeq(query) {
+		switch {
+		case word == "." && !invert:
+			invert = true
+		case word == "x" && source == "":
+			source = "x"
+		case word == "p" && source == "":
+			source = "pixiv"
+		default:
+			return "", false, false
+		}
 	}
+	return source, invert, true
 }
 
-func inlineHistoryView(db *sql.DB, query *tgbotapi.InlineQuery, previews *thumbnails) ([]any, string) {
+func inlineHistoryView(db *sql.DB, query *tgbotapi.InlineQuery, source string, invert bool, previews *thumbnails) ([]any, string) {
 	pictures, err := pictureHistoryEnabled(db, query.From.ID)
 	if err != nil {
 		log.Printf("loading history view: %v", err)
 		return []any{}, ""
 	}
-	if strings.TrimSpace(query.Query) == "." {
+	if invert {
 		pictures = !pictures
 	}
 	if pictures {
-		return inlinePictureHistory(db, query)
+		return inlinePictureHistory(db, query, source)
 	}
-	return inlineHistory(db, query, previews)
+	return inlineHistory(db, query, source, previews)
 }
 
-func inlinePictureHistory(db *sql.DB, query *tgbotapi.InlineQuery) ([]any, string) {
+func inlinePictureHistory(db *sql.DB, query *tgbotapi.InlineQuery, source string) ([]any, string) {
 	postOffset, mediaIndex := 0, 0
 	if post, media, ok := strings.Cut(query.Offset, ":"); ok {
 		p, pErr := strconv.Atoi(post)
@@ -187,7 +192,7 @@ func inlinePictureHistory(db *sql.DB, query *tgbotapi.InlineQuery) ([]any, strin
 		}
 	}
 
-	history, err := artworkHistory(db, query.From.ID, postOffset, historySource(query.Query))
+	history, err := artworkHistory(db, query.From.ID, postOffset, source)
 	if err != nil {
 		log.Printf("loading inline history: %v", err)
 	}
@@ -309,8 +314,8 @@ func inlineQueryResults(db *sql.DB, query *tgbotapi.InlineQuery, previews *thumb
 	if _, ok := timezoneQuery(query.Query); ok {
 		return timezoneResults(query)
 	}
-	if text := strings.TrimSpace(query.Query); text == "" || text == "." || text == "x" || text == "p" {
-		return inlineHistoryView(db, query, previews)
+	if source, invert, ok := historyFilters(query.Query); ok {
+		return inlineHistoryView(db, query, source, invert, previews)
 	}
 	if link := inlineQueryLink(query.Query); link != nil {
 		link, err := preferredPhotoLink(db, query.From.ID, link)
