@@ -47,6 +47,7 @@ func (s *pictureHistoryScenario) serveHTTP(w http.ResponseWriter, r *http.Reques
 		_, _ = w.Write([]byte(`{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot","username":"bot"}}`))
 		return
 	case strings.HasSuffix(r.URL.Path, "/answerInlineQuery"):
+		s.answer = nil
 		if err := json.Unmarshal([]byte(r.Form.Get("results")), &s.answer); err != nil {
 			s.t.Error(err)
 		}
@@ -181,6 +182,7 @@ func checkPictureHistoryResults(t *testing.T, answer []map[string]any, caption s
 		{"x:1:item:2", "video", "video_file_id", "video"},
 		{"x:1:item:3", "mpeg4_gif", "mpeg4_file_id", "animation"},
 	}
+
 	if len(answer) != len(items) {
 		t.Fatalf("picture view: %v", answer)
 	}
@@ -188,6 +190,16 @@ func checkPictureHistoryResults(t *testing.T, answer []map[string]any, caption s
 		result := answer[i]
 		if result["id"] != want.id || result["type"] != want.kind || result[want.key] != want.file {
 			t.Fatalf("item %d: %v", i, result)
+		}
+		if want.kind == "photo" {
+			wantCaption := caption
+			if i == 0 {
+				wantCaption = `<a href="https://fxtwitter.com/u/status/2/photo/3">Artist</a>`
+			}
+			if result["caption"] != wantCaption || result["parse_mode"] != "HTML" || result["input_message_content"] != nil {
+				t.Fatalf("item %d caption: %v", i, result)
+			}
+			continue
 		}
 		rich := result["input_message_content"].(map[string]any)["rich_message"].(map[string]any)
 		if want.kind == "mpeg4_gif" {

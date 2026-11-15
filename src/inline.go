@@ -76,7 +76,12 @@ func inlinePhoto(photo previewPhoto) map[string]any {
 func cachedInlineResult(a artwork, previews *thumbnails) map[string]any {
 	result := inlinePhoto(previews.savedPhoto(a))
 	result["id"], result["title"], result["description"] = a.ID, a.Author, a.Text
-	result["input_message_content"] = map[string]any{"rich_message": richArtwork(a)}
+	if len(a.Photos) == 1 && mediaType(a, 0) == "photo" &&
+		(strings.HasSuffix(a.ID, ":merged") || strings.HasSuffix(a.ID, ":merged:bars")) {
+		result["caption"], result["parse_mode"] = strings.TrimSuffix(a.Caption, "\n"), "HTML"
+	} else {
+		result["input_message_content"] = map[string]any{"rich_message": richArtwork(a)}
+	}
 	return result
 }
 
@@ -215,9 +220,13 @@ func cachedPictureResult(a artwork, i int) map[string]any {
 	default:
 		result["type"], result["photo_file_id"] = "photo", a.Photos[i]
 	}
-	aItem := a
-	aItem.Photos, aItem.Types = []string{a.Photos[i]}, []string{kind}
-	result["input_message_content"] = map[string]any{"rich_message": richArtwork(aItem)}
+	if kind == "photo" {
+		result["caption"], result["parse_mode"] = strings.TrimSuffix(a.Caption, "\n"), "HTML"
+	} else {
+		aItem := a
+		aItem.Photos, aItem.Types = []string{a.Photos[i]}, []string{kind}
+		result["input_message_content"] = map[string]any{"rich_message": richArtwork(aItem)}
+	}
 	return result
 }
 

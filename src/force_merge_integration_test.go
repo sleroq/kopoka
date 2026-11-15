@@ -105,9 +105,25 @@ func TestInlineForceMerge(t *testing.T) {
 		t.Fatalf("merged saved: %#v, %v", saved, err)
 	}
 	checkBarsSelection(t, bot, db, chosen, queue, previews, &merged)
+	query.Query = ""
+	answer = nil
+	handleInlineQuery(bot, db, query, previews)
+	checkMergedHistory(t, answer, saved.Caption)
 	unchanged, err := findArtwork(db, "x:42")
 	if err != nil || unchanged == nil || strings.Join(unchanged.Photos, ",") != "normal-1,normal-2" {
 		t.Fatalf("normal saved: %#v, %v", unchanged, err)
+	}
+}
+
+func checkMergedHistory(t *testing.T, answer []map[string]any, caption string) {
+	t.Helper()
+	if len(answer) < 2 {
+		t.Fatalf("merged history results: %#v", answer)
+	}
+	for _, result := range answer[:2] {
+		if result["photo_file_id"] != "merged-file" || result["caption"] != caption || result["parse_mode"] != "HTML" || result["input_message_content"] != nil {
+			t.Fatalf("merged history result: %#v", result)
+		}
 	}
 }
 
