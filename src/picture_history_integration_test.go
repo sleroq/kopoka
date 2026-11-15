@@ -82,6 +82,49 @@ func (s *pictureHistoryScenario) toggle(user int64) {
 	handleSettingsCallback(s.bot, s.db, q)
 }
 
+func TestHistorySourceFilter(t *testing.T) {
+	s := newPictureHistoryScenario(t, filepath.Join(t.TempDir(), "history.db"))
+	for i := range 52 {
+		for _, source := range []string{"x", "pixiv"} {
+			id := fmt.Sprintf("%s:%d", source, i)
+			a := artwork{ID: id, URL: "https://example.com/" + id, Author: "Artist", Photos: []string{id}}
+			s.save(a, true)
+		}
+	}
+	for _, filter := range []struct{ query, source string }{{"x", "x"}, {"p", "pixiv"}} {
+		for _, pictures := range []bool{false, true} {
+			if pictures {
+				s.toggle(1)
+			}
+			checkHistorySource(t, s, filter.query, filter.source)
+			if pictures {
+				s.toggle(1)
+			}
+		}
+	}
+}
+
+func checkHistorySource(t *testing.T, s *pictureHistoryScenario, query, source string) {
+	t.Helper()
+	cursor, count := "", 0
+	for {
+		s.query(query, cursor)
+		for _, result := range s.answer {
+			if !strings.HasPrefix(result["id"].(string), source+":") {
+				t.Fatalf("%s: unexpected result %v", query, result)
+			}
+			count++
+		}
+		cursor = s.offset
+		if cursor == "" {
+			break
+		}
+	}
+	if count != 52 {
+		t.Fatalf("%s: got %d results", query, count)
+	}
+}
+
 func TestPictureHistoryFlow(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "history.db")
 	s := newPictureHistoryScenario(t, path)

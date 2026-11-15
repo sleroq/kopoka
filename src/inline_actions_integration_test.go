@@ -126,7 +126,7 @@ func TestInlineArtworkActions(t *testing.T) {
 		t.Fatalf("answers: %v", api.answers)
 	}
 	for user, want := range map[int64]int{11: 0, 12: 1} {
-		history, err := artworkHistory(db, user, 0)
+		history, err := artworkHistory(db, user, 0, "")
 		if err != nil || len(history) != want {
 			t.Fatalf("history for %d: %v, %v", user, history, err)
 		}

@@ -155,7 +155,7 @@ func TestPhotoLinkFlow(t *testing.T) {
 	remove := artworkActionData("remove", 11, callbackLink)
 	removeCallback := &tgbotapi.CallbackQuery{ID: "remove", From: message.From, Message: message, Data: remove}
 	handleArtworkCallback(bot, nil, db, removeCallback, queue)
-	history, err := artworkHistory(db, 11, 0)
+	history, err := artworkHistory(db, 11, 0, "")
 	if err != nil || len(history) != 1 || history[0].ID != "x:123" {
 		t.Fatalf("history after removal: %+v %v", history, err)
 	}

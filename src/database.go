@@ -376,12 +376,13 @@ func findArtwork(db *sql.DB, id string) (*artwork, error) {
 	return &a, err
 }
 
-func artworkHistory(db *sql.DB, user int64, offset int) ([]artwork, error) {
+func artworkHistory(db *sql.DB, user int64, offset int, source string) ([]artwork, error) {
 	rows, err := db.Query(`SELECT a.id,a.url,a.author,a.text,a.caption,a.photos,a.media_types,a.preview_width,a.preview_height
         FROM history h JOIN artwork a ON a.id=h.artwork_id
         WHERE h.user_id=? AND (h.inline_origin=1 OR NOT EXISTS (SELECT 1 FROM history_chat_hidden WHERE user_id=h.user_id))
+        AND (? = '' OR a.id LIKE ? || ':%')
         ORDER BY CASE WHEN EXISTS (SELECT 1 FROM history_first_saved WHERE user_id=h.user_id)
-            THEN h.first_sequence ELSE h.sequence END DESC LIMIT 51 OFFSET ?`, user, offset)
+            THEN h.first_sequence ELSE h.sequence END DESC LIMIT 51 OFFSET ?`, user, source, source, offset)
 	if err != nil {
 		return nil, err
 	}
