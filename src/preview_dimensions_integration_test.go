@@ -331,7 +331,7 @@ func TestMergedInlinePreview(t *testing.T) {
 		id     string
 		actual int
 		size   image.Point
-	}{{"2", 1, image.Pt(400, 320)}, {"4", 2, image.Pt(960, 1280)}} {
+	}{{"2", 1, image.Pt(400, 320)}, {"4", 2, image.Pt(1280, 1024)}} {
 		t.Run(tc.id, func(t *testing.T) {
 			f := newPreviewFlowServer(t)
 			previews, bot := f.setup(t)
@@ -350,7 +350,7 @@ func TestMergedInlinePreview(t *testing.T) {
 			barsResponse := httptest.NewRecorder()
 			previews.ServeHTTP(barsResponse, httptest.NewRequest("GET", barsURL.RequestURI(), nil))
 			barsImage, _, err := image.Decode(bytes.NewReader(barsResponse.Body.Bytes()))
-			if barsResponse.Code != 200 || err != nil || barsImage.Bounds().Dx() <= tc.size.X {
+			if barsResponse.Code != 200 || err != nil || barsImage.Bounds().Dx()*tc.size.Y <= tc.size.X*barsImage.Bounds().Dy() {
 				t.Fatalf("bars preview: %d %v", barsResponse.Code, err)
 			}
 

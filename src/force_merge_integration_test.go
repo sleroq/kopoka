@@ -94,7 +94,7 @@ func TestInlineForceMerge(t *testing.T) {
 		From: query.From, ResultID: inlineMergedResultID, InlineMessageID: "inline", Query: query.Query,
 	}
 	handleChosenInlineResult(bot, nil, db, chosen, "@cache", queue, nil)
-	if merged == nil || merged.Bounds().Size() != image.Pt(300, 300) {
+	if merged == nil || merged.Bounds().Size() != image.Pt(500, 300) {
 		t.Fatalf("merged image: %v", merged)
 	}
 
@@ -177,7 +177,7 @@ func checkForcedMergePixels(t *testing.T, merged image.Image) {
 	for _, sample := range []struct {
 		p    image.Point
 		want color.RGBA
-	}{{image.Pt(50, 50), color.RGBA{255, 0, 0, 255}}, {image.Pt(250, 50), color.RGBA{0, 0, 255, 255}}, {image.Pt(250, 250), color.RGBA{255, 255, 255, 255}}} {
+	}{{image.Pt(50, 50), color.RGBA{255, 0, 0, 255}}, {image.Pt(250, 50), color.RGBA{0, 0, 255, 255}}, {image.Pt(250, 250), color.RGBA{0, 0, 255, 255}}} {
 		got := color.RGBAModel.Convert(merged.At(sample.p.X, sample.p.Y)).(color.RGBA)
 		for _, delta := range []int{int(got.R) - int(sample.want.R), int(got.G) - int(sample.want.G), int(got.B) - int(sample.want.B)} {
 			if delta < -20 || delta > 20 {
