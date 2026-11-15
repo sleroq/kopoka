@@ -74,6 +74,7 @@ type thumbnails struct {
 	cacheChat         string
 	placeholders      map[bool][]byte
 	postImages        map[string][]byte
+	postTextIcon      []byte
 	mergedPlaceholder []byte
 	barsPlaceholder   []byte
 	client            *http.Client
@@ -186,8 +187,12 @@ func newThumbnails(baseURL string, app *pixiv.AppPixivAPI, bot *tgbotapi.BotAPI,
 	if err != nil {
 		return nil, err
 	}
+	postTextIcon, err := renderPostTextIcon()
+	if err != nil {
+		return nil, err
+	}
 	return &thumbnails{
-		base: base, app: app, bot: bot, db: db, cacheChat: cacheChat, placeholders: placeholders, postImages: postImages, mergedPlaceholder: mergedPlaceholder.Bytes(), barsPlaceholder: barsPlaceholder.Bytes(), client: &http.Client{Timeout: 15 * time.Second},
+		base: base, app: app, bot: bot, db: db, cacheChat: cacheChat, placeholders: placeholders, postImages: postImages, postTextIcon: postTextIcon, mergedPlaceholder: mergedPlaceholder.Bytes(), barsPlaceholder: barsPlaceholder.Bytes(), client: &http.Client{Timeout: 15 * time.Second},
 		work: make(map[string]*thumbnailWork), postImageWork: make(map[string]*postImagePreviewWork), themePreviews: make(map[string]themePreviewImages), workers: make(chan struct{}, 6),
 		logos: logos, font: bold,
 	}, nil
@@ -327,6 +332,44 @@ func (t *thumbnails) mergedPhotoVariant(link *url.URL, instant, bars bool) (prev
 	case <-time.After(8 * time.Second):
 	}
 	return t.mergedPlaceholderPhoto(bars), true
+}
+
+func (t *thumbnails) postTextPhoto() previewPhoto {
+	address := *t.base
+	address.Path += "/post-text-placeholder.jpg"
+	return previewPhoto{photoURL: address.String(), thumbnailURL: address.String(), width: 384, height: 384}
+}
+
+func renderPostTextIcon() ([]byte, error) {
+	canvas := image.NewRGBA(image.Rect(0, 0, 384, 384))
+	draw.Draw(canvas, canvas.Bounds(), image.NewUniform(color.NRGBA{20, 22, 27, 255}), image.Point{}, draw.Src)
+	border := color.NRGBA{84, 96, 110, 255}
+	card := color.NRGBA{31, 36, 44, 255}
+	text := color.NRGBA{231, 233, 234, 255}
+	muted := color.NRGBA{139, 152, 165, 255}
+	accent := color.NRGBA{29, 155, 240, 255}
+
+	rounded(canvas, image.Rect(57, 48, 327, 336), 24, border)
+	rounded(canvas, image.Rect(59, 50, 325, 334), 22, card)
+	rounded(canvas, image.Rect(83, 77, 121, 115), 19, accent)
+	rounded(canvas, image.Rect(135, 81, 254, 91), 5, text)
+	rounded(canvas, image.Rect(135, 101, 204, 109), 4, muted)
+	for i, right := range []int{274, 258, 220} {
+		y := 139 + i*21
+		rounded(canvas, image.Rect(83, y, right, y+9), 4, text)
+	}
+	rounded(canvas, image.Rect(81, 213, 303, 310), 14, border)
+	rounded(canvas, image.Rect(83, 215, 301, 308), 12, card)
+	rounded(canvas, image.Rect(98, 230, 105, 290), 3, accent)
+	for i, right := range []int{257, 270, 221} {
+		y := 232 + i*23
+		rounded(canvas, image.Rect(118, y, right, y+9), 4, muted)
+	}
+	var out bytes.Buffer
+	if err := jpeg.Encode(&out, canvas, &jpeg.Options{Quality: 90}); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
 }
 
 func (t *thumbnails) postImagePlaceholder(theme string) previewPhoto {
@@ -545,6 +588,8 @@ func (t *thumbnails) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		placeholder = t.placeholders[false]
 	case strings.HasSuffix(r.URL.Path, "/thumbnail-placeholder-pixiv.jpg"):
 		placeholder = t.placeholders[true]
+	case strings.HasSuffix(r.URL.Path, "/post-text-placeholder.jpg"):
+		placeholder = t.postTextIcon
 	case strings.HasSuffix(r.URL.Path, "/post-image-placeholder-light.jpg"):
 		placeholder = t.postImages["light"]
 	case strings.HasSuffix(r.URL.Path, "/post-image-placeholder-dark.jpg"):

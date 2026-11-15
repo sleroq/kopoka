@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"html"
+	"image/jpeg"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -182,10 +184,26 @@ func TestXPostInlineFormats(t *testing.T) {
 	queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})
 	link := "https://x.com/user/status/5"
 	query := &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 1}, Query: link}
-	handleInlineQuery(bot, db, query, testPreviews(t, db, bot))
+	previews := testPreviews(t, db, bot)
+	handleInlineQuery(bot, db, query, previews)
+	for _, result := range api.results {
+		if result["type"] != "photo" {
+			t.Fatalf("non-photo result breaks gallery: %#v", result)
+		}
+	}
 	result := api.results[len(api.results)-1]
-	if result["id"] != inlinePostTextID || result["type"] != "article" {
+	icon := "https://preview.example.com/post-text-placeholder.jpg"
+	content := result["input_message_content"].(map[string]any)
+	if result["id"] != inlinePostTextID || result["photo_url"] != icon || result["thumbnail_url"] != icon ||
+		result["photo_width"] != float64(384) || result["photo_height"] != float64(384) || content["message_text"] != "Loading X post…" {
 		t.Fatalf("post result: %#v", result)
+	}
+	response := httptest.NewRecorder()
+	previews.ServeHTTP(response, httptest.NewRequest("GET", icon, nil))
+	image, err := jpeg.DecodeConfig(bytes.NewReader(response.Body.Bytes()))
+	if err != nil || response.Code != http.StatusOK || response.Header().Get("Content-Type") != "image/jpeg" ||
+		image.Width != 384 || image.Height != 384 || bytes.Equal(response.Body.Bytes(), previews.placeholders[false]) {
+		t.Fatalf("post icon: status %d, image %+v, error %v", response.Code, image, err)
 	}
 	choose := func(id int64, link string) url.Values {
 		t.Helper()

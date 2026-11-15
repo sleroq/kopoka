@@ -363,7 +363,7 @@ func inlineArtworkResults(db *sql.DB, user int64, link *url.URL, previews *thumb
 	}
 	results = append(results, postImages...)
 	if xLinkHosts[strings.ToLower(link.Host)] {
-		results = append(results, inlinePostTextResult(link))
+		results = append(results, inlinePostTextResult(link, previews))
 	}
 	return results
 }

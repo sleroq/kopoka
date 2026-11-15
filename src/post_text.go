@@ -18,18 +18,18 @@ import (
 
 const inlinePostTextID = "post:text"
 
-func inlinePostTextResult(link *url.URL) map[string]any {
-	return map[string]any{
-		"type": "article", "id": inlinePostTextID, "title": "Post with text",
-		"description": "Post, quote and reply thread",
-		"input_message_content": map[string]any{
-			"message_text": "Loading X post…", "disable_web_page_preview": true,
-			"entities": []any{map[string]any{"type": "text_link", "offset": 0, "length": 15, "url": xPostLink(link).String()}},
-		},
-		"reply_markup": map[string]any{"inline_keyboard": []any{[]any{
-			map[string]any{"text": "Please wait…", "disabled": map[string]any{}},
-		}}},
+func inlinePostTextResult(link *url.URL, previews *thumbnails) map[string]any {
+	result := inlinePhoto(previews.postTextPhoto())
+	result["id"], result["title"] = inlinePostTextID, "Post with text"
+	result["description"] = "Post, quote and reply thread"
+	result["input_message_content"] = map[string]any{
+		"message_text": "Loading X post…", "disable_web_page_preview": true,
+		"entities": []any{map[string]any{"type": "text_link", "offset": 0, "length": 15, "url": xPostLink(link).String()}},
 	}
+	result["reply_markup"] = map[string]any{"inline_keyboard": []any{[]any{
+		map[string]any{"text": "Please wait…", "disabled": map[string]any{}},
+	}}}
+	return result
 }
 
 func xPostAttachments(post *fxRichPost) ([]xMedia, error) {
