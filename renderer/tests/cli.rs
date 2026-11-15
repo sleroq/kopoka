@@ -183,6 +183,13 @@ fn cli_light_bars_are_black_only_between_photos() {
                 gap.0.iter().all(|&channel| channel < 60),
                 "bars gap {gap:?}"
             );
+            for y in [ys[0] + 1, ys[ys.len() - 1] - 1] {
+                let corner = image.get_pixel(green_end - 1, y);
+                assert!(
+                    corner.0.iter().all(|&channel| channel > 200),
+                    "bars corner {corner:?}"
+                );
+            }
         } else {
             assert!(
                 gap.0.iter().all(|&channel| channel > 200),
