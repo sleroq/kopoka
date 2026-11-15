@@ -119,7 +119,7 @@ func handlePixivLink(app *pixiv.AppPixivAPI, link *url.URL, metadata *artwork) (
 }
 
 func handleXLink(link *url.URL, metadata *artwork) ([]any, error) {
-	post, err := fetchXPost(link)
+	post, err := fetchXPost(link, false)
 	if err != nil {
 		return nil, err
 	}
@@ -442,7 +442,7 @@ func main() {
 
 	go previews.backfillHistory()
 
-	updates := bot.GetUpdatesChan(*u)
+	updates := telegramUpdates(bot, *u)
 
 	for update := range updates {
 		if update.InlineQuery != nil {
@@ -453,13 +453,13 @@ func main() {
 			go handleChosenInlineResult(bot, pApp, db, update.ChosenInlineResult, cacheChat, queue, previews)
 		}
 		if update.CallbackQuery != nil {
-			go handleCallback(bot, db, update.CallbackQuery)
+			go handleIncomingCallback(bot, pApp, db, update.CallbackQuery, queue)
 		}
 		if update.Message != nil {
-			go handleMessage(bot, pApp, db, update.Message, queue, previews)
+			go handleIncomingMessage(bot, pApp, db, update.Message, queue, previews)
 		}
 		if update.ChannelPost != nil {
-			go handleMessage(bot, pApp, db, update.ChannelPost, queue, previews)
+			go handleIncomingMessage(bot, pApp, db, update.ChannelPost, queue, previews)
 		}
 	}
 }

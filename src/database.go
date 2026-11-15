@@ -235,6 +235,15 @@ func deleteHistory(db *sql.DB, user int64) error {
 	return err
 }
 
+func removeHistoryArtwork(db *sql.DB, user int64, id string) (bool, error) {
+	result, err := db.Exec(`DELETE FROM history WHERE user_id = ? AND artwork_id = ?`, user, id)
+	if err != nil {
+		return false, err
+	}
+	count, err := result.RowsAffected()
+	return count > 0, err
+}
+
 func scanArtwork(rows *sql.Rows) (artwork, error) {
 	var a artwork
 	var photos, types string

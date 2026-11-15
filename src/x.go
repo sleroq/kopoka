@@ -20,15 +20,23 @@ type xPost struct {
 	Media  []xMedia
 }
 
-func fetchXPost(link *url.URL) (xPost, error) {
+func fetchXPost(link *url.URL, allowMissingURLs bool) (xPost, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
-	post, fxErr := fetchFxPost(client, link)
+	fx, fxErr := fetchFxPost(client, link)
 	if fxErr == nil {
-		return post, nil
+		return fx, nil
 	}
-	post, vxErr := fetchVxPost(client, link)
+	vx, vxErr := fetchVxPost(client, link)
 	if vxErr == nil {
-		return post, nil
+		return vx, nil
+	}
+	if allowMissingURLs {
+		if validateXPost(fx, "FxTwitter", false) == nil {
+			return fx, nil
+		}
+		if validateXPost(vx, "VxTwitter", false) == nil {
+			return vx, nil
+		}
 	}
 	return xPost{}, fmt.Errorf("FxTwitter: %w; VxTwitter: %w", fxErr, vxErr)
 }
@@ -76,8 +84,8 @@ func fetchFxPost(client *http.Client, link *url.URL) (xPost, error) {
 		items = response.Tweet.Media.Photos
 	}
 	post := xPost{Text: response.Tweet.Text, Author: response.Tweet.Author.Name, Media: items}
-	if err := validateXPost(post, "FxTwitter"); err != nil {
-		return xPost{}, err
+	if err := validateXPost(post, "FxTwitter", true); err != nil {
+		return post, err
 	}
 	return post, nil
 }
@@ -101,8 +109,8 @@ func fetchVxPost(client *http.Client, link *url.URL) (xPost, error) {
 		}
 	}
 	post := xPost{Text: response.Text, Author: response.UserName, Media: response.Media}
-	if err := validateXPost(post, "VxTwitter"); err != nil {
-		return xPost{}, err
+	if err := validateXPost(post, "VxTwitter", true); err != nil {
+		return post, err
 	}
 	return post, nil
 }
@@ -118,12 +126,12 @@ func xPhotoURL(rawURL string) string {
 	return photoURL.String()
 }
 
-func validateXPost(post xPost, provider string) error {
+func validateXPost(post xPost, provider string, requireURLs bool) error {
 	if post.Author == "" {
 		return fmt.Errorf("%s response missing author name", provider)
 	}
 	for i, media := range post.Media {
-		if media.URL == "" {
+		if requireURLs && media.URL == "" {
 			return fmt.Errorf("%s response missing photo URL at index %d", provider, i)
 		}
 		switch media.Type {
