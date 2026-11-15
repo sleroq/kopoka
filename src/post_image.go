@@ -21,7 +21,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-const postImageVersion = 9
+const postImageVersion = 10
 const defaultPostImageTheme = "dark"
 
 type postImage struct {
@@ -455,11 +455,11 @@ func inlinePostImageResults(db *sql.DB, user int64, link *url.URL, previews *thu
 	}
 
 	showBars := barsAvailable == nil || <-barsAvailable
-	duplicateDark := previews.duplicatePostImageBars(link, zone, work)
+	duplicateBars := previews.duplicatePostImageBars(link, zone, work)
 	var results []any
 	for i, result := range postImages {
 		image := <-result
-		if i < 2 || showBars && (!duplicateDark || imageThemes[i] != "dark-bars") {
+		if i < 2 || showBars && !duplicateBars {
 			results = append(results, image)
 		}
 	}

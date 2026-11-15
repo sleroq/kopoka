@@ -138,7 +138,7 @@ func TestPostImageBarsCarouselThemes(t *testing.T) {
 	renderer := filepath.Join(dir, "renderer")
 	script := `#!/bin/sh
 input=$(cat)
-case "$input" in *'"theme":"dark"'*'"bars":true'*) touch "$TEST_DIR/dark-bars";; esac
+case "$input" in *'"bars":true'*) touch "$TEST_DIR/bars";; esac
 cat "$TEST_IMAGE"
 `
 	if err := os.WriteFile(renderer, []byte(script), 0700); err != nil {
@@ -186,14 +186,14 @@ cat "$TEST_IMAGE"
 	if fetches.Load() != 0 {
 		t.Fatal("instant mode fetched post data")
 	}
-	if got := ids(inlinePostImageResults(db, 1, link, previews, false)); got != "light,dark,light-bars" {
+	if got := ids(inlinePostImageResults(db, 1, link, previews, false)); got != "light,dark" {
 		t.Fatalf("carousel: %s", got)
 	}
-	if got := ids(inlinePostImageResults(db, 1, link, previews, true)); got != "light,dark,light-bars" {
+	if got := ids(inlinePostImageResults(db, 1, link, previews, true)); got != "light,dark" {
 		t.Fatalf("instant with preparation: %s", got)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "dark-bars")); !os.IsNotExist(err) {
-		t.Fatalf("dark bars rendered: %v", err)
+	if _, err := os.Stat(filepath.Join(dir, "bars")); !os.IsNotExist(err) {
+		t.Fatalf("carousel bars rendered: %v", err)
 	}
 
 	if err := savePostImageTheme(db, 1, "warm"); err != nil {
@@ -202,7 +202,13 @@ cat "$TEST_IMAGE"
 	if err := savePostImageTheme(db, 1, "dim"); err != nil {
 		t.Fatal(err)
 	}
-	if got := ids(inlinePostImageResults(db, 1, link, previews, false)); got != "warm,dim,warm-bars,dim-bars" {
+	if got := ids(inlinePostImageResults(db, 1, link, previews, false)); got != "warm,dim" {
 		t.Fatalf("warm and dim carousel: %s", got)
+	}
+	if got := ids(inlinePostImageResults(db, 1, link, previews, true)); got != "warm,dim" {
+		t.Fatalf("instant warm and dim carousel: %s", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "bars")); !os.IsNotExist(err) {
+		t.Fatalf("carousel bars rendered: %v", err)
 	}
 }

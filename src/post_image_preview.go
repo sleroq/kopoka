@@ -84,7 +84,7 @@ func (t *thumbnails) startPostImageVariant(work *postImagePreviewWork, link *url
 	work.finished = time.Time{}
 	go func() {
 		<-work.prepared
-		if strings.HasSuffix(theme, "-bars") && work.duplicateBars(strings.TrimSuffix(theme, "-bars")) {
+		if strings.HasSuffix(theme, "-bars") && work.duplicateBars() {
 			t.mu.Lock()
 			normal := work.variants[strings.TrimSuffix(theme, "-bars")]
 			t.mu.Unlock()
@@ -144,8 +144,8 @@ func (variant *postImagePreviewVariant) render(link *url.URL, request renderRequ
 	variant.thumbnail = out.Bytes()
 }
 
-func (work *postImagePreviewWork) duplicateBars(theme string) bool {
-	return work.prepareErr == nil && theme == "dark" && work.request.Post.Media != nil && work.request.Post.Media.Carousel
+func (work *postImagePreviewWork) duplicateBars() bool {
+	return work.prepareErr == nil && work.request.Post.Media != nil && work.request.Post.Media.Carousel
 }
 
 func (t *thumbnails) duplicatePostImageBars(link *url.URL, zone string, work *postImagePreviewWork) bool {
@@ -157,7 +157,7 @@ func (t *thumbnails) duplicatePostImageBars(link *url.URL, zone string, work *po
 	if work != nil {
 		select {
 		case <-work.prepared:
-			return work.duplicateBars("dark")
+			return work.duplicateBars()
 		default:
 		}
 	}

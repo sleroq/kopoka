@@ -175,61 +175,66 @@ fn cli_renders_supplied_timestamps() {
 }
 
 #[test]
-fn cli_light_bars_are_black_only_between_photos() {
+fn cli_bars_match_theme_background() {
     let images =
         json!({"red": asset(10, 40, [220, 30, 30]), "green": asset(10, 40, [30, 220, 30])});
     let photos = json!([{"url":"red"}, {"url":"green"}]);
-    for bars in [false, true] {
-        let output = render(
-            json!({"carousel": true, "bars": bars, "photos": photos}),
-            images.clone(),
-        );
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let image = image::load_from_memory(&output.stdout).unwrap().to_rgb8();
-        let is_red = |p: &Rgb<u8>| p[0] > 180 && p[1] < 80;
-        let is_green = |p: &Rgb<u8>| p[1] > 180 && p[0] < 80;
-        let ys: Vec<_> = (0..image.height())
-            .filter(|&y| is_red(image.get_pixel(100, y)))
-            .collect();
-        assert!(!ys.is_empty());
-        let y = (ys[0] + ys[ys.len() - 1]) / 2;
-        let red_end = (0..image.width())
-            .rfind(|&x| is_red(image.get_pixel(x, y)))
-            .unwrap();
-        let green_start = (red_end + 1..image.width())
-            .find(|&x| is_green(image.get_pixel(x, y)))
-            .unwrap();
-        let green_end = (green_start..image.width())
-            .rfind(|&x| is_green(image.get_pixel(x, y)))
-            .unwrap();
-        let gap = image.get_pixel((red_end + green_start) / 2, y);
-        if bars {
+    for (theme, background) in [
+        ("light", [255, 255, 255]),
+        ("warm", [255, 246, 245]),
+        ("dark", [0, 0, 0]),
+        ("dim", [22, 24, 28]),
+    ] {
+        for bars in [false, true] {
+            let output = render_request(json!({
+                "theme": theme,
+                "post": {"author_name":"A", "author_username":"a", "author_avatar_url":"", "text":"Hello", "media":{"carousel":true,"bars":bars,"photos":photos}},
+                "images": images
+            }));
             assert!(
-                gap.0.iter().all(|&channel| channel < 60),
-                "bars gap {gap:?}"
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
             );
+            let image = image::load_from_memory(&output.stdout).unwrap().to_rgb8();
+            let is_red = |p: &Rgb<u8>| p[0] > 180 && p[1] < 80;
+            let is_green = |p: &Rgb<u8>| p[1] > 180 && p[0] < 80;
+            let ys: Vec<_> = (0..image.height())
+                .filter(|&y| is_red(image.get_pixel(100, y)))
+                .collect();
+            assert!(!ys.is_empty());
+            let y = (ys[0] + ys[ys.len() - 1]) / 2;
+            let red_end = (0..image.width())
+                .rfind(|&x| is_red(image.get_pixel(x, y)))
+                .unwrap();
+            let green_start = (red_end + 1..image.width())
+                .find(|&x| is_green(image.get_pixel(x, y)))
+                .unwrap();
+            let green_end = (green_start..image.width())
+                .rfind(|&x| is_green(image.get_pixel(x, y)))
+                .unwrap();
+            let matches_background = |pixel: &Rgb<u8>| {
+                pixel
+                    .0
+                    .iter()
+                    .zip(background)
+                    .all(|(actual, expected)| actual.abs_diff(expected) <= 35)
+            };
+            let gap = image.get_pixel((red_end + green_start) / 2, y);
+            assert!(matches_background(gap), "{theme} bars={bars} gap {gap:?}");
             for y in [ys[0] + 1, ys[ys.len() - 1] - 1] {
                 let corner = image.get_pixel(green_end - 1, y);
                 assert!(
-                    corner.0.iter().all(|&channel| channel > 200),
-                    "bars corner {corner:?}"
+                    matches_background(corner),
+                    "{theme} bars={bars} corner {corner:?}"
                 );
             }
-        } else {
+            let beyond = image.get_pixel(green_end + 30, y);
             assert!(
-                gap.0.iter().all(|&channel| channel > 200),
-                "normal gap {gap:?}"
+                matches_background(beyond),
+                "{theme} bars={bars} after photos {beyond:?}"
             );
         }
-        let beyond = image.get_pixel(green_end + 30, y);
-        assert!(
-            beyond.0.iter().all(|&channel| channel > 200),
-            "after photos {beyond:?}"
-        );
     }
 }
 
