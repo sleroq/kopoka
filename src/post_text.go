@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"log"
 	"net/http"
 	"net/url"
 	"slices"
@@ -73,20 +74,44 @@ type cachedPostMedia struct {
 	kind, id string
 }
 
+func inputPostMedia(item xMedia) any {
+	if item.Type == "video" {
+		return tgbotapi.NewInputMediaVideo(tgbotapi.FileURL(item.URL))
+	}
+	return tgbotapi.NewInputMediaPhoto(tgbotapi.FileURL(item.URL))
+}
+
 func cachePostMedia(bot *tgbotapi.BotAPI, cacheChat string, media []xMedia) ([]cachedPostMedia, error) {
 	cached := make([]cachedPostMedia, 0, len(media))
 	for _, item := range media {
-		var input any = tgbotapi.NewInputMediaPhoto(tgbotapi.FileURL(item.URL))
-		if item.Type == "video" {
-			input = tgbotapi.NewInputMediaVideo(tgbotapi.FileURL(item.URL))
-		}
-		id, err := cacheInlineMedia(bot, cacheChat, input)
+		id, err := cacheInlineMedia(bot, cacheChat, inputPostMedia(item))
 		if err != nil {
 			return nil, err
 		}
 		cached = append(cached, cachedPostMedia{kind: item.Type, id: id})
 	}
 	return cached, nil
+}
+
+func cacheNormalPostMedia(bot *tgbotapi.BotAPI, cacheChat string, media []xMedia) (cachedPostMedia, error) {
+	var photos []any
+	for _, item := range media {
+		if item.Type != "photo" {
+			break
+		}
+		photos = append(photos, inputPostMedia(item))
+	}
+	first := inputPostMedia(media[0])
+	if len(photos) > 1 {
+		merged, err := forceMergePanels(photos, false)
+		if err != nil {
+			log.Printf("merging post attachments: %v", err)
+		} else {
+			first = merged[0]
+		}
+	}
+	id, err := cacheInlineMedia(bot, cacheChat, first)
+	return cachedPostMedia{kind: media[0].Type, id: id}, err
 }
 
 func richPostMedia(markup *strings.Builder, media []cachedPostMedia, offset int) {
@@ -243,12 +268,12 @@ func editInlinePostText(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.Chose
 	} else {
 		text := normalXPost(post, parents, more, len(attachments) > 0)
 		if len(attachments) > 0 {
-			cached, err := cachePostMedia(bot, cacheChat, attachments[:1])
+			cached, err := cacheNormalPostMedia(bot, cacheChat, attachments)
 			if err != nil {
 				return err
 			}
 			payload, err := json.Marshal(map[string]any{
-				"type": cached[0].kind, "media": cached[0].id, "caption": text,
+				"type": cached.kind, "media": cached.id, "caption": text,
 				"parse_mode": "HTML", "show_caption_above_media": true,
 			})
 			if err != nil {
