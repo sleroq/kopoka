@@ -828,7 +828,7 @@ func TestHistoryPreferenceTelegramFlow(t *testing.T) {
 	if err := json.Unmarshal([]byte(markup), &keyboard); err != nil {
 		t.Fatal(err)
 	}
-	if callbackAnswer != "" || len(keyboard.InlineKeyboard) != 4 || keyboard.InlineKeyboard[2][0].Text != "Disable history" || keyboard.InlineKeyboard[2][0].URL == nil || *keyboard.InlineKeyboard[2][0].URL != "https://t.me/runtime_test_bot?text=%2Fhistoryoff" {
+	if callbackAnswer != "" || len(keyboard.InlineKeyboard) != 5 || keyboard.InlineKeyboard[3][0].Text != "Disable history" || keyboard.InlineKeyboard[3][0].URL == nil || *keyboard.InlineKeyboard[3][0].URL != "https://t.me/runtime_test_bot?text=%2Fhistoryoff" {
 		t.Fatalf("history submenu: %q %s", callbackAnswer, markup)
 	}
 	callback(1, "settings:back:1")

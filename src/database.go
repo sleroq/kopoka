@@ -47,6 +47,7 @@ func openArtworkDB(path string) (*sql.DB, error) {
  CREATE TABLE IF NOT EXISTS history_opt_out (user_id INTEGER PRIMARY KEY);
  CREATE TABLE IF NOT EXISTS history_chat_hidden (user_id INTEGER PRIMARY KEY);
  CREATE TABLE IF NOT EXISTS history_first_saved (user_id INTEGER PRIMARY KEY);
+ CREATE TABLE IF NOT EXISTS history_picture_view (user_id INTEGER PRIMARY KEY);
  CREATE TABLE IF NOT EXISTS thumbnail_cache (artwork_id TEXT NOT NULL, media_count INTEGER NOT NULL, file_id TEXT NOT NULL, render_version INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (artwork_id, media_count));
  CREATE TABLE IF NOT EXISTS instant_inline_settings (user_id INTEGER PRIMARY KEY, x INTEGER NOT NULL DEFAULT 0, pixiv INTEGER NOT NULL DEFAULT 0);`)
 	if err != nil {
@@ -116,6 +117,62 @@ func openArtworkDB(path string) (*sql.DB, error) {
 		}
 	}
 	return db, nil
+}
+
+func toggleHistorySetting(db *sql.DB, user int64, setting string) error {
+	switch setting {
+	case "history":
+		var disabled bool
+		if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM history_opt_out WHERE user_id=?)`, user).Scan(&disabled); err != nil {
+			return err
+		}
+		return setHistoryEnabled(db, user, disabled)
+	case "order":
+		var firstSaved bool
+		if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM history_first_saved WHERE user_id=?)`, user).Scan(&firstSaved); err != nil {
+			return err
+		}
+		var err error
+		if firstSaved {
+			_, err = db.Exec(`DELETE FROM history_first_saved WHERE user_id=?`, user)
+		} else {
+			_, err = db.Exec(`INSERT INTO history_first_saved(user_id) VALUES (?)`, user)
+		}
+		return err
+	case "chat":
+		var hidden bool
+		if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM history_chat_hidden WHERE user_id=?)`, user).Scan(&hidden); err != nil {
+			return err
+		}
+		var err error
+		if hidden {
+			_, err = db.Exec(`DELETE FROM history_chat_hidden WHERE user_id=?`, user)
+		} else {
+			_, err = db.Exec(`INSERT INTO history_chat_hidden(user_id) VALUES (?)`, user)
+		}
+		return err
+	default:
+		return fmt.Errorf("invalid history setting: %s", setting)
+	}
+}
+
+func pictureHistoryEnabled(db *sql.DB, user int64) (bool, error) {
+	var enabled bool
+	err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM history_picture_view WHERE user_id=?)`, user).Scan(&enabled)
+	return enabled, err
+}
+
+func togglePictureHistory(db *sql.DB, user int64) error {
+	enabled, err := pictureHistoryEnabled(db, user)
+	if err != nil {
+		return err
+	}
+	if enabled {
+		_, err = db.Exec(`DELETE FROM history_picture_view WHERE user_id=?`, user)
+	} else {
+		_, err = db.Exec(`INSERT INTO history_picture_view(user_id) VALUES (?)`, user)
+	}
+	return err
 }
 
 func preferredPhotoLink(db *sql.DB, user int64, link *url.URL) (*url.URL, error) {

@@ -106,10 +106,11 @@ func settingsView(user int64) (string, tgbotapi.InlineKeyboardMarkup) {
 }
 
 func historySettingsView(db *sql.DB, user int64, username string) (string, tgbotapi.InlineKeyboardMarkup, error) {
-	var disabled, hidden, firstSaved bool
+	var disabled, hidden, firstSaved, pictures bool
 	err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM history_opt_out WHERE user_id=?),
         EXISTS(SELECT 1 FROM history_chat_hidden WHERE user_id=?),
-        EXISTS(SELECT 1 FROM history_first_saved WHERE user_id=?)`, user, user, user).Scan(&disabled, &hidden, &firstSaved)
+        EXISTS(SELECT 1 FROM history_first_saved WHERE user_id=?),
+        EXISTS(SELECT 1 FROM history_picture_view WHERE user_id=?)`, user, user, user, user).Scan(&disabled, &hidden, &firstSaved, &pictures)
 	if err != nil {
 		return "", tgbotapi.InlineKeyboardMarkup{}, err
 	}
@@ -121,6 +122,10 @@ func historySettingsView(db *sql.DB, user int64, username string) (string, tgbot
 	if firstSaved {
 		order = "First saved"
 	}
+	view := "Posts"
+	if pictures {
+		view = "Pictures"
+	}
 	button := func(text, action string) tgbotapi.InlineKeyboardButton {
 		return tgbotapi.NewInlineKeyboardButtonData(text, fmt.Sprintf("settings:%s:%d", action, user))
 	}
@@ -130,11 +135,12 @@ func historySettingsView(db *sql.DB, user int64, username string) (string, tgbot
 	}
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(button("History order: "+order, "order")),
+		tgbotapi.NewInlineKeyboardRow(button("Default view: "+view, "view")),
 		tgbotapi.NewInlineKeyboardRow(button("Show chat links in search history: "+chat, "chat")),
 		tgbotapi.NewInlineKeyboardRow(history),
 		tgbotapi.NewInlineKeyboardRow(button("Back", "back")),
 	)
-	return "Settings\n\nHistory", keyboard, nil
+	return "Settings\n\nHistory\nUse . for the other view.", keyboard, nil
 }
 
 func instantSettingsView(db *sql.DB, user int64) (string, tgbotapi.InlineKeyboardMarkup, error) {
@@ -223,35 +229,12 @@ func handleSettingsCallback(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.Ca
 	case "enable-history":
 		view = "history-menu"
 		err = setHistoryEnabled(db, user, true)
-	case "history":
+	case "history", "order", "chat":
 		view = "history-menu"
-		var disabled bool
-		err = db.QueryRow(`SELECT EXISTS(SELECT 1 FROM history_opt_out WHERE user_id=?)`, user).Scan(&disabled)
-		if err == nil {
-			err = setHistoryEnabled(db, user, disabled)
-		}
-	case "order":
+		err = toggleHistorySetting(db, user, parts[1])
+	case "view":
 		view = "history-menu"
-		var firstSaved bool
-		err = db.QueryRow(`SELECT EXISTS(SELECT 1 FROM history_first_saved WHERE user_id=?)`, user).Scan(&firstSaved)
-		if err == nil {
-			if firstSaved {
-				_, err = db.Exec(`DELETE FROM history_first_saved WHERE user_id=?`, user)
-			} else {
-				_, err = db.Exec(`INSERT INTO history_first_saved(user_id) VALUES (?)`, user)
-			}
-		}
-	case "chat":
-		view = "history-menu"
-		var hidden bool
-		err = db.QueryRow(`SELECT EXISTS(SELECT 1 FROM history_chat_hidden WHERE user_id=?)`, user).Scan(&hidden)
-		if err == nil {
-			if hidden {
-				_, err = db.Exec(`DELETE FROM history_chat_hidden WHERE user_id=?`, user)
-			} else {
-				_, err = db.Exec(`INSERT INTO history_chat_hidden(user_id) VALUES (?)`, user)
-			}
-		}
+		err = togglePictureHistory(db, user)
 	default:
 		answer.Text = "Invalid request."
 		return

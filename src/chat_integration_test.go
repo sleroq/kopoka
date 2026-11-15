@@ -235,7 +235,7 @@ func TestChatHistorySettingsFlow(t *testing.T) {
 	check("x:1", "x:99")
 	command("/settings")
 	toggle(1, "history-menu")
-	if reply != "Settings\n\nHistory" || !strings.Contains(markup, "Show chat links in search history: ✓") {
+	if reply != "Settings\n\nHistory\nUse . for the other view." || !strings.Contains(markup, "Show chat links in search history: ✓") {
 		t.Fatalf("settings: %q %s", reply, markup)
 	}
 	toggle(2, "chat")
@@ -263,7 +263,7 @@ func TestChatHistorySettingsFlow(t *testing.T) {
 	}
 	command("/settings")
 	toggle(1, "history-menu")
-	if reply != "Settings\n\nHistory" || !strings.Contains(markup, "Enable history") || !strings.Contains(markup, "Show chat links in search history: ✗") {
+	if reply != "Settings\n\nHistory\nUse . for the other view." || !strings.Contains(markup, "Enable history") || !strings.Contains(markup, "Show chat links in search history: ✗") {
 		t.Fatalf("settings: %q %s", reply, markup)
 	}
 	toggle(1, "chat")

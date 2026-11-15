@@ -135,6 +135,70 @@ func inlineHistory(db *sql.DB, query *tgbotapi.InlineQuery, previews *thumbnails
 	return results, nextOffset
 }
 
+func inlineHistoryView(db *sql.DB, query *tgbotapi.InlineQuery, previews *thumbnails) ([]any, string) {
+	pictures, err := pictureHistoryEnabled(db, query.From.ID)
+	if err != nil {
+		log.Printf("loading history view: %v", err)
+		return []any{}, ""
+	}
+	if strings.TrimSpace(query.Query) == "." {
+		pictures = !pictures
+	}
+	if pictures {
+		return inlinePictureHistory(db, query)
+	}
+	return inlineHistory(db, query, previews)
+}
+
+func inlinePictureHistory(db *sql.DB, query *tgbotapi.InlineQuery) ([]any, string) {
+	postOffset, mediaIndex := 0, 0
+	if post, media, ok := strings.Cut(query.Offset, ":"); ok {
+		p, pErr := strconv.Atoi(post)
+		m, mErr := strconv.Atoi(media)
+		if pErr == nil && mErr == nil && p >= 0 && m >= 0 {
+			postOffset, mediaIndex = p, m
+		}
+	}
+
+	history, err := artworkHistory(db, query.From.ID, postOffset)
+	if err != nil {
+		log.Printf("loading inline history: %v", err)
+	}
+
+	results := []any{}
+	for post, a := range history {
+		start := 0
+		if post == 0 {
+			start = mediaIndex
+		}
+		for i := start; i < len(a.Photos); i++ {
+			if len(results) == 50 {
+				return results, fmt.Sprintf("%d:%d", postOffset+post, i)
+			}
+			result := cachedPictureResult(a, i)
+			results = append(results, result)
+		}
+	}
+	return results, ""
+}
+
+func cachedPictureResult(a artwork, i int) map[string]any {
+	kind := mediaType(a, i)
+	result := map[string]any{"id": a.ID + ":item:" + strconv.Itoa(i), "title": a.Author, "description": a.Text}
+	switch kind {
+	case "video":
+		result["type"], result["video_file_id"] = "video", a.Photos[i]
+	case "animation":
+		result["type"], result["mpeg4_file_id"] = "mpeg4_gif", a.Photos[i]
+	default:
+		result["type"], result["photo_file_id"] = "photo", a.Photos[i]
+	}
+	aItem := a
+	aItem.Photos, aItem.Types = []string{a.Photos[i]}, []string{kind}
+	result["input_message_content"] = map[string]any{"rich_message": richArtwork(aItem)}
+	return result
+}
+
 func inlineArtworkResult(db *sql.DB, user int64, link *url.URL, previews *thumbnails) map[string]any {
 	a, err := findArtwork(db, artworkID(link))
 	if err != nil {
@@ -168,8 +232,8 @@ func handleInlineQuery(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.InlineQ
 	results := []any{}
 	nextOffset := ""
 
-	if strings.TrimSpace(query.Query) == "" {
-		results, nextOffset = inlineHistory(db, query, previews)
+	if text := strings.TrimSpace(query.Query); text == "" || text == "." {
+		results, nextOffset = inlineHistoryView(db, query, previews)
 	} else if link := inlineLink(query.Query); link != nil {
 		link, err := preferredPhotoLink(db, query.From.ID, link)
 		if err != nil {
@@ -194,7 +258,14 @@ func handleInlineQuery(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.InlineQ
 
 func handleChosenInlineResult(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, cacheChat string, queue *mediaQueue, previews *thumbnails) {
 	if chosen.ResultID != inlineResultID {
-		if err := selectArtwork(db, chosen.From.ID, chosen.ResultID); err != nil {
+		id := chosen.ResultID
+		if parent, index, ok := strings.Cut(id, ":item:"); ok {
+			if n, err := strconv.Atoi(index); err == nil && n >= 0 {
+				id = parent
+			}
+		}
+
+		if err := selectArtwork(db, chosen.From.ID, id); err != nil {
 			log.Printf("recording inline selection: %v", err)
 		}
 		return
