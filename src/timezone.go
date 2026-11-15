@@ -134,7 +134,7 @@ func isTimezoneSelection(message *tgbotapi.Message) bool {
 
 func timezoneKeyboard() tgbotapi.InlineKeyboardMarkup {
 	query := "tz "
-	button := tgbotapi.InlineKeyboardButton{Text: "Change timezone", SwitchInlineQueryCurrentChat: &query}
+	button := tgbotapi.InlineKeyboardButton{Text: "Change timezone again", SwitchInlineQueryCurrentChat: &query}
 	return tgbotapi.NewInlineKeyboardMarkup(tgbotapi.NewInlineKeyboardRow(button))
 }
 
