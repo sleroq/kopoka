@@ -52,6 +52,15 @@ func inlineLink(text string) *url.URL {
 	return link
 }
 
+func inlineQueryLink(query string) *url.URL {
+	for word := range strings.FieldsSeq(query) {
+		if link := inlineLink(word); link != nil {
+			return link
+		}
+	}
+	return nil
+}
+
 func inlinePhoto(photo previewPhoto) map[string]any {
 	result := map[string]any{"type": "photo"}
 	if photo.fileID != "" {
@@ -290,7 +299,7 @@ func handleInlineQuery(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.InlineQ
 		results, nextOffset = timezoneResults(query)
 	} else if text := strings.TrimSpace(query.Query); text == "" || text == "." || text == "x" || text == "p" {
 		results, nextOffset = inlineHistoryView(db, query, previews)
-	} else if link := inlineLink(query.Query); link != nil {
+	} else if link := inlineQueryLink(query.Query); link != nil {
 		link, err := preferredPhotoLink(db, query.From.ID, link)
 		if err != nil {
 			log.Printf("loading photo preference: %v", err)
@@ -317,7 +326,7 @@ func handleChosenInlineResult(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *
 		handleTimezoneSelection(bot, db, chosen)
 		return
 	}
-	link := inlineLink(chosen.Query)
+	link := inlineQueryLink(chosen.Query)
 	theme := ""
 	if link != nil && link.Host != "pixiv.net" && link.Host != "www.pixiv.net" {
 		theme = postImageTheme(chosen.ResultID, link)
@@ -375,7 +384,7 @@ func handleChosenInlineResult(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *
 }
 
 func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, cacheChat string, previews *thumbnails) error {
-	link := inlineLink(chosen.Query)
+	link := inlineQueryLink(chosen.Query)
 	if link == nil {
 		return fmt.Errorf("invalid artwork URL")
 	}

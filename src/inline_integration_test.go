@@ -125,7 +125,7 @@ func TestInlineTelegramFlow(t *testing.T) {
 				t.Fatal(err)
 			}
 			query := &tgbotapi.InlineQuery{
-				From: &tgbotapi.User{ID: 1}, ID: "query", Query: " https://x.com/user/status/1?tracking=1 ",
+				From: &tgbotapi.User{ID: 1}, ID: "query", Query: "Artist https://x.com/user/status/1?tracking=1 shared post",
 			}
 			handleInlineQuery(bot, db, query, testPreviews(t, db, bot))
 			if strings.Join(calls, ",") != "answer" || len(answer) != 4 {
@@ -356,12 +356,12 @@ func TestInlinePixivThumbnail(t *testing.T) {
 		t.Fatal(err)
 	}
 	handleInlineQuery(bot, db, &tgbotapi.InlineQuery{
-		ID: "query", From: &tgbotapi.User{ID: 1}, Query: "https://www.pixiv.net/artworks/82775556?ref=1",
+		ID: "query", From: &tgbotapi.User{ID: 1}, Query: "Artwork by Artist\nhttps://www.pixiv.net/artworks/82775556?ref=1 shared",
 	}, testPreviews(t, db, bot))
 }
 
 func TestInlineEmptyAnswers(t *testing.T) {
-	for _, query := range []string{"", "not a URL", "https://example.com/a", "https://pixiv.net/not-art", "https://pixiv.net/artworks/not-a-number"} {
+	for _, query := range []string{"", "not a URL", "https://example.com/a", "https://pixiv.net/not-art", "https://pixiv.net/artworks/not-a-number", "prefixhttps://pixiv.net/artworks/123", "https://pixiv.net/artworks/123suffix"} {
 		t.Run(query, func(t *testing.T) {
 			db := testArtworkDB(t)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
