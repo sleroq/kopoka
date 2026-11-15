@@ -84,13 +84,24 @@ func (t *thumbnails) startPostImageVariant(work *postImagePreviewWork, link *url
 	work.finished = time.Time{}
 	go func() {
 		<-work.prepared
-		t.workers <- struct{}{}
-		request := work.request
-		if strings.HasSuffix(theme, "-bars") {
-			request = work.bars
+		if strings.HasSuffix(theme, "-bars") && work.duplicateBars(strings.TrimSuffix(theme, "-bars")) {
+			t.mu.Lock()
+			normal := work.variants[strings.TrimSuffix(theme, "-bars")]
+			t.mu.Unlock()
+			<-normal.done
+			variant.data, variant.thumbnail = normal.data, normal.thumbnail
+			variant.width, variant.height = normal.width, normal.height
+			variant.caption, variant.err = normal.caption, normal.err
+			close(variant.done)
+		} else {
+			t.workers <- struct{}{}
+			request := work.request
+			if strings.HasSuffix(theme, "-bars") {
+				request = work.bars
+			}
+			variant.render(link, request, theme, work.prepareErr)
+			<-t.workers
 		}
-		variant.render(link, request, theme, work.prepareErr)
-		<-t.workers
 		t.mu.Lock()
 		work.failed = work.failed || variant.err != nil
 		work.active--
@@ -131,6 +142,26 @@ func (variant *postImagePreviewVariant) render(link *url.URL, request renderRequ
 	var out bytes.Buffer
 	variant.err = jpeg.Encode(&out, small, &jpeg.Options{Quality: 90})
 	variant.thumbnail = out.Bytes()
+}
+
+func (work *postImagePreviewWork) duplicateBars(theme string) bool {
+	return work.prepareErr == nil && theme == "dark" && work.request.Post.Media != nil && work.request.Post.Media.Carousel
+}
+
+func (t *thumbnails) duplicatePostImageBars(link *url.URL, zone string, work *postImagePreviewWork) bool {
+	if work == nil {
+		t.mu.Lock()
+		work = t.postImageWork[artworkID(xPostLink(link))+":"+zone]
+		t.mu.Unlock()
+	}
+	if work != nil {
+		select {
+		case <-work.prepared:
+			return work.duplicateBars("dark")
+		default:
+		}
+	}
+	return false
 }
 
 func (work *postImagePreviewWork) postImageHasBars() bool {

@@ -446,18 +446,20 @@ func inlinePostImageResults(db *sql.DB, user int64, link *url.URL, previews *thu
 		barsAvailable = make(chan bool, 1)
 		go func() { barsAvailable <- work.postImageHasBars() }()
 	}
+	imageThemes := []string{themes.Light, themes.Dark, themes.Light + "-bars", themes.Dark + "-bars"}
 	var postImages []chan map[string]any
-	for _, theme := range []string{themes.Light, themes.Dark, themes.Light + "-bars", themes.Dark + "-bars"} {
+	for _, theme := range imageThemes {
 		result := make(chan map[string]any, 1)
 		postImages = append(postImages, result)
 		go func() { result <- postImageResult(db, link, theme, zone, previews, work) }()
 	}
 
 	showBars := barsAvailable == nil || <-barsAvailable
+	duplicateDark := previews.duplicatePostImageBars(link, zone, work)
 	var results []any
 	for i, result := range postImages {
 		image := <-result
-		if i < 2 || showBars {
+		if i < 2 || showBars && (!duplicateDark || imageThemes[i] != "dark-bars") {
 			results = append(results, image)
 		}
 	}

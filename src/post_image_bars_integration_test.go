@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -120,5 +121,88 @@ func TestPostImageBarsInlineResults(t *testing.T) {
 		if artwork != tc.artwork || postImages < 2 {
 			t.Fatalf("id=%s user=%d artwork=%d postImages=%d results=%v", tc.id, tc.user, artwork, postImages, results)
 		}
+	}
+}
+
+func TestPostImageBarsCarouselThemes(t *testing.T) {
+	dir := t.TempDir()
+
+	var asset bytes.Buffer
+	if err := jpeg.Encode(&asset, image.NewRGBA(image.Rect(0, 0, 40, 40)), nil); err != nil {
+		t.Fatal(err)
+	}
+	imagePath := filepath.Join(dir, "image.jpg")
+	if err := os.WriteFile(imagePath, asset.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	renderer := filepath.Join(dir, "renderer")
+	script := `#!/bin/sh
+input=$(cat)
+case "$input" in *'"theme":"dark"'*'"bars":true'*) touch "$TEST_DIR/dark-bars";; esac
+cat "$TEST_IMAGE"
+`
+	if err := os.WriteFile(renderer, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KOPOKA_RENDERER", renderer)
+	t.Setenv("TEST_DIR", dir)
+	t.Setenv("TEST_IMAGE", imagePath)
+
+	var fetches atomic.Int32
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetches.Add(1)
+		if r.URL.Path == "/asset" {
+			_, _ = w.Write(asset.Bytes())
+			return
+		}
+		photos := make([]postImage, 5)
+		for i := range photos {
+			photos[i].URL = server.URL + "/asset"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "tweet": map[string]any{
+			"author": map[string]string{"name": "Artist", "screen_name": "user"},
+			"media":  map[string]any{"photos": photos},
+		}})
+	}))
+	defer server.Close()
+	db := testArtworkDB(t)
+	previews := testPreviews(t, db, nil)
+	target, _ := url.Parse(server.URL)
+	previews.client = &http.Client{Transport: redirectTransport{target, http.DefaultTransport}}
+	link := inlineLink("https://x.com/user/status/123")
+
+	ids := func(results []any) string {
+		var names []string
+		for _, item := range results {
+			names = append(names, strings.Split(item.(map[string]any)["id"].(string), ":")[1])
+		}
+		return strings.Join(names, ",")
+	}
+
+	if got := ids(inlinePostImageResults(db, 1, link, previews, true)); got != "light,dark,light-bars,dark-bars" {
+		t.Fatalf("instant without preparation: %s", got)
+	}
+	if fetches.Load() != 0 {
+		t.Fatal("instant mode fetched post data")
+	}
+	if got := ids(inlinePostImageResults(db, 1, link, previews, false)); got != "light,dark,light-bars" {
+		t.Fatalf("carousel: %s", got)
+	}
+	if got := ids(inlinePostImageResults(db, 1, link, previews, true)); got != "light,dark,light-bars" {
+		t.Fatalf("instant with preparation: %s", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "dark-bars")); !os.IsNotExist(err) {
+		t.Fatalf("dark bars rendered: %v", err)
+	}
+
+	if err := savePostImageTheme(db, 1, "warm"); err != nil {
+		t.Fatal(err)
+	}
+	if err := savePostImageTheme(db, 1, "dim"); err != nil {
+		t.Fatal(err)
+	}
+	if got := ids(inlinePostImageResults(db, 1, link, previews, false)); got != "warm,dim,warm-bars,dim-bars" {
+		t.Fatalf("warm and dim carousel: %s", got)
 	}
 }
