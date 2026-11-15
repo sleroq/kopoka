@@ -530,9 +530,9 @@ func TestPostImageTimezonePreparation(t *testing.T) {
 	target, _ := url.Parse(server.URL)
 	client := &http.Client{Transport: redirectTransport{target, http.DefaultTransport}}
 	for _, tc := range []struct{ zone, winter, summer string }{
-		{defaultTimezone, "2:30 AM · Jan 1, 2024 UTC+03:00", "3:00 PM · Jul 1, 2024 UTC+03:00"},
-		{"America/New_York", "6:30 PM · Dec 31, 2023 UTC-05:00", "8:00 AM · Jul 1, 2024 UTC-04:00"},
-		{"Asia/Kathmandu", "5:15 AM · Jan 1, 2024 UTC+05:45", "5:45 PM · Jul 1, 2024 UTC+05:45"},
+		{defaultTimezone, "2:30 AM · Jan 1, 2024", "3:00 PM · Jul 1, 2024"},
+		{"America/New_York", "6:30 PM · Dec 31, 2023", "8:00 AM · Jul 1, 2024"},
+		{"Asia/Kathmandu", "5:15 AM · Jan 1, 2024", "5:45 PM · Jul 1, 2024"},
 	} {
 		t.Run(tc.zone, func(t *testing.T) {
 			request, err := preparePostImageWithClient(client, inlineLink("https://x.com/post/status/42"), "light", tc.zone)

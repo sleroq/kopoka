@@ -21,7 +21,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-const postImageVersion = 7
+const postImageVersion = 8
 const defaultPostImageTheme = "dark"
 
 type postImage struct {
@@ -273,7 +273,7 @@ func preparePostImageVariants(client *http.Client, link *url.URL, zone string, m
 
 func (p renderPost) inTimezone(location *time.Location) renderPost {
 	if p.CreatedTimestamp != 0 {
-		p.CreatedAt = time.Unix(p.CreatedTimestamp, 0).In(location).Format("3:04 PM · Jan 2, 2006 UTC-07:00")
+		p.CreatedAt = time.Unix(p.CreatedTimestamp, 0).In(location).Format("3:04 PM · Jan 2, 2006")
 	}
 	if p.Quote != nil {
 		quote := p.Quote.inTimezone(location)
