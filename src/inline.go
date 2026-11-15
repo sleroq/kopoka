@@ -76,7 +76,7 @@ func inlinePhoto(photo previewPhoto) map[string]any {
 func cachedInlineResult(a artwork, previews *thumbnails) map[string]any {
 	result := inlinePhoto(previews.savedPhoto(a))
 	result["id"], result["title"], result["description"] = a.ID, a.Author, a.Text
-	if len(a.Photos) == 1 && mediaType(a, 0) == "photo" &&
+	if len(a.Photos) == 1 && mediaType(a, 0) == "photo" && result["photo_file_id"] != nil &&
 		(strings.HasSuffix(a.ID, ":merged") || strings.HasSuffix(a.ID, ":merged:bars")) {
 		result["caption"], result["parse_mode"] = strings.TrimSuffix(a.Caption, "\n"), "HTML"
 	} else {

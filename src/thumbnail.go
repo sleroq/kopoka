@@ -199,8 +199,15 @@ func (t *thumbnails) cached(link *url.URL, count int) string {
 }
 
 func (t *thumbnails) savedPhoto(a artwork) previewPhoto {
-	if (strings.HasSuffix(a.ID, ":merged") || strings.HasSuffix(a.ID, ":merged:bars")) && mediaType(a, 0) == "photo" {
+	if strings.HasSuffix(a.ID, ":merged:bars") && mediaType(a, 0) == "photo" {
 		return previewPhoto{fileID: a.Photos[0]}
+	}
+	if strings.HasSuffix(a.ID, ":merged") {
+		if link := inlineLink(a.URL); link != nil {
+			if photo, ok := t.mergedPhoto(link, false); ok {
+				return photo
+			}
+		}
 	}
 	if link := inlineLink(a.URL); link != nil {
 		count := len(a.Photos)

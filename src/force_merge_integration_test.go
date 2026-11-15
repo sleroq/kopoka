@@ -105,24 +105,43 @@ func TestInlineForceMerge(t *testing.T) {
 		t.Fatalf("merged saved: %#v, %v", saved, err)
 	}
 	checkBarsSelection(t, bot, db, chosen, queue, previews, &merged)
+	previews = testPreviews(t, db, bot)
+	previews.client = &http.Client{Transport: redirectTransport{target, original}}
 	query.Query = ""
 	answer = nil
 	handleInlineQuery(bot, db, query, previews)
-	checkMergedHistory(t, answer, saved.Caption)
+	checkMergedHistory(t, answer, saved.Caption, previews)
 	unchanged, err := findArtwork(db, "x:42")
 	if err != nil || unchanged == nil || strings.Join(unchanged.Photos, ",") != "normal-1,normal-2" {
 		t.Fatalf("normal saved: %#v, %v", unchanged, err)
 	}
 }
 
-func checkMergedHistory(t *testing.T, answer []map[string]any, caption string) {
+func checkMergedHistory(t *testing.T, answer []map[string]any, caption string, previews *thumbnails) {
 	t.Helper()
 	if len(answer) < 2 {
 		t.Fatalf("merged history results: %#v", answer)
 	}
 	for _, result := range answer[:2] {
-		if result["photo_file_id"] != "merged-file" || result["caption"] != caption || result["parse_mode"] != "HTML" || result["input_message_content"] != nil {
-			t.Fatalf("merged history result: %#v", result)
+		switch result["id"] {
+		case "x:42:merged:bars":
+			if result["photo_file_id"] != "merged-file" || result["caption"] != caption || result["parse_mode"] != "HTML" || result["input_message_content"] != nil {
+				t.Fatalf("bars history result: %#v", result)
+			}
+		case "x:42:merged":
+			if !strings.Contains(result["thumbnail_url"].(string), "merge=1") {
+				t.Fatalf("merged history preview: %#v", result)
+			}
+			recorder := httptest.NewRecorder()
+			previews.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, result["thumbnail_url"].(string), nil))
+			checkXDecorations(t, readThumbnail(t, recorder.Result()))
+			rich := result["input_message_content"].(map[string]any)["rich_message"].(map[string]any)
+			media := rich["media"].([]any)[0].(map[string]any)["media"].(map[string]any)
+			if media["media"] != "merged-file" {
+				t.Fatalf("merged history media: %#v", result)
+			}
+		default:
+			t.Fatalf("unexpected history result: %#v", result)
 		}
 	}
 }
