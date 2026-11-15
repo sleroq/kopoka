@@ -159,6 +159,44 @@ func TestInlineArtworkActions(t *testing.T) {
 	}
 }
 
+func TestPostImageLoadingActions(t *testing.T) {
+	db := testArtworkDB(t)
+	api := &inlineActionServer{t: t}
+	server := httptest.NewServer(http.HandlerFunc(api.serveHTTP))
+	defer server.Close()
+	bot, err := tgbotapi.NewBotAPIWithAPIEndpoint("token", server.URL+"/bot%s/%s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := inlineLink("https://x.com/artist/status/123/photo/2")
+	result := postImageResult(db, link, "light", "UTC", testPreviews(t, db, bot), true)
+	content := result["input_message_content"].(map[string]any)
+	encoded, err := json.Marshal(content["entities"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := &telegramMessage{}
+	message.Message = tgbotapi.Message{
+		MessageID: 42, From: &tgbotapi.User{ID: 11}, Chat: &tgbotapi.Chat{ID: 11},
+		ViaBot: &bot.Self, Text: content["message_text"].(string),
+	}
+	if err := json.Unmarshal(encoded, &message.Entities); err != nil {
+		t.Fatal(err)
+	}
+	handleIncomingMessage(bot, nil, db, message, nil, nil)
+	if api.question.Get("text") != "why did you send this to me?" {
+		t.Fatalf("question: %v", api.question)
+	}
+	var keyboard tgbotapi.InlineKeyboardMarkup
+	if err := json.Unmarshal([]byte(api.question.Get("reply_markup")), &keyboard); err != nil {
+		t.Fatal(err)
+	}
+	if len(keyboard.InlineKeyboard) != 3 || keyboard.InlineKeyboard[2][0].SwitchInlineQueryCurrentChat == nil ||
+		*keyboard.InlineKeyboard[2][0].SwitchInlineQueryCurrentChat != link.String() {
+		t.Fatalf("keyboard: %+v", keyboard)
+	}
+}
+
 func TestInlineArtworkLoadingAndCaption(t *testing.T) {
 	db := testArtworkDB(t)
 	bot := &tgbotapi.BotAPI{}

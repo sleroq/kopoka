@@ -484,6 +484,7 @@ func postImageResult(db *sql.DB, link *url.URL, theme, zone string, previews *th
 	}
 	result["input_message_content"] = map[string]any{
 		"message_text": "Loading post image…", "disable_web_page_preview": true,
+		"entities": []any{map[string]any{"type": "text_link", "offset": 0, "length": 19, "url": link.String()}},
 	}
 	wait := map[string]any{"text": "Please wait…", "disabled": map[string]any{}}
 	result["reply_markup"] = map[string]any{"inline_keyboard": []any{[]any{wait}}}
