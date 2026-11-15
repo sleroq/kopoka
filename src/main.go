@@ -194,7 +194,7 @@ func supportedLink(link *url.URL) bool {
 	return xLinkHosts[strings.ToLower(link.Host)]
 }
 
-func fetchArtPhotos(app *pixiv.AppPixivAPI, link *url.URL, metadata *artwork, force bool) ([]any, error) {
+func fetchArtPhotos(app *pixiv.AppPixivAPI, link *url.URL, metadata *artwork, merge string) ([]any, error) {
 	var photos []any
 	var err error
 	switch link.Host {
@@ -206,8 +206,8 @@ func fetchArtPhotos(app *pixiv.AppPixivAPI, link *url.URL, metadata *artwork, fo
 	if err != nil {
 		return nil, err
 	}
-	if force {
-		return forceMergeArtPhotos(photos)
+	if merge != "" {
+		return forceMergePanels(photos, merge == "bars")
 	}
 	if xPhotoIndex(link) > 0 {
 		return photos, nil
@@ -236,7 +236,7 @@ func processLink(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, messa
 		a.ID, a.URL = artworkID(valid), valid.String()
 	}
 	stop := showProcessing(bot, message.Chat.ID, tgbotapi.ChatTyping)
-	photos, err := fetchArtPhotos(app, link, &a, false)
+	photos, err := fetchArtPhotos(app, link, &a, "")
 	stop()
 	if err != nil {
 		return err

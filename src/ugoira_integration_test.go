@@ -170,7 +170,7 @@ func checkPixivInlineFlow(t *testing.T, server *httptest.Server, app *pixiv.AppP
 		Query: "https://www.pixiv.net/en/artworks/152026329",
 	}
 	handleInlineQuery(bot, db, query, testPreviews(t, db, bot))
-	if len(*answer) != 2 || (*answer)[0]["id"] != inlineResultID {
+	if len(*answer) != 3 || (*answer)[0]["id"] != inlineResultID {
 		t.Fatalf("inline answer: %v", *answer)
 	}
 	chosen := &tgbotapi.ChosenInlineResult{
@@ -183,7 +183,7 @@ func checkPixivInlineFlow(t *testing.T, server *httptest.Server, app *pixiv.AppP
 		t.Fatalf("inline edit: %v", *edit)
 	}
 	handleInlineQuery(bot, db, query, testPreviews(t, db, bot))
-	if len(*answer) != 2 || (*answer)[0]["type"] != "photo" || (*answer)[0]["photo_url"] != "https://preview.example.com/thumbnail-placeholder-pixiv.jpg" {
+	if len(*answer) != 3 || (*answer)[0]["type"] != "photo" || (*answer)[0]["photo_url"] != "https://preview.example.com/thumbnail-placeholder-pixiv.jpg" {
 		t.Fatalf("cached inline answer: %v", *answer)
 	}
 	rich := (*answer)[0]["input_message_content"].(map[string]any)["rich_message"].(map[string]any)

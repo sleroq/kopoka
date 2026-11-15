@@ -14,6 +14,7 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"golang.org/x/image/draw"
+	"golang.org/x/image/vector"
 	_ "golang.org/x/image/webp"
 )
 
@@ -91,7 +92,7 @@ func mergeArtPhotos(photos []any) []any {
 	return merged
 }
 
-func forceMergeArtPhotos(photos []any) ([]any, error) {
+func forceMergePanels(photos []any, bars bool) ([]any, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	result := make([]any, 0, len(photos))
 
@@ -126,13 +127,39 @@ func forceMergeArtPhotos(photos []any) ([]any, error) {
 			height = max(height, img.Bounds().Dy())
 		}
 
+		gap := 0
+		background := color.White
+		if bars {
+			gap = max(1, height*8/905)
+			width += gap * (len(images) - 1)
+			background = color.Black
+		}
 		canvas := image.NewRGBA(image.Rect(0, 0, width, height))
-		draw.Draw(canvas, canvas.Bounds(), image.NewUniform(color.White), image.Point{}, draw.Src)
+		draw.Draw(canvas, canvas.Bounds(), image.NewUniform(background), image.Point{}, draw.Src)
 		x := 0
 		for _, img := range images {
 			size := img.Bounds().Size()
-			draw.Draw(canvas, image.Rect(x, 0, x+size.X, size.Y), img, img.Bounds().Min, draw.Over)
-			x += size.X
+			if bars {
+				radius := float32(min(max(1, size.Y*12/905), min(size.X, size.Y)/2))
+				mask := image.NewAlpha(image.Rect(0, 0, size.X, size.Y))
+				z := vector.NewRasterizer(size.X, size.Y)
+				w, h := float32(size.X), float32(size.Y)
+				z.MoveTo(radius, 0)
+				z.LineTo(w-radius, 0)
+				z.QuadTo(w, 0, w, radius)
+				z.LineTo(w, h-radius)
+				z.QuadTo(w, h, w-radius, h)
+				z.LineTo(radius, h)
+				z.QuadTo(0, h, 0, h-radius)
+				z.LineTo(0, radius)
+				z.QuadTo(0, 0, radius, 0)
+				z.ClosePath()
+				z.Draw(mask, mask.Bounds(), image.Opaque, image.Point{})
+				draw.DrawMask(canvas, image.Rect(x, 0, x+size.X, size.Y), img, img.Bounds().Min, mask, image.Point{}, draw.Over)
+			} else {
+				draw.Draw(canvas, image.Rect(x, 0, x+size.X, size.Y), img, img.Bounds().Min, draw.Over)
+			}
+			x += size.X + gap
 		}
 
 		file, err := mergedPhotoFile(canvas)

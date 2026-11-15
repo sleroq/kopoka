@@ -16,6 +16,7 @@ import (
 
 const inlineResultID = "artwork"
 const inlineMergedResultID = "artwork:merged"
+const inlineBarsResultID = "artwork:merged:bars"
 
 func inlineLink(text string) *url.URL {
 	link, err := url.Parse(strings.TrimSpace(text))
@@ -240,13 +241,16 @@ func inlineArtworkResult(db *sql.DB, link *url.URL, previews *thumbnails, instan
 	return result
 }
 
-func inlineMergedResult(link *url.URL, previews *thumbnails, instant bool) map[string]any {
-	photo, ok := previews.mergedPhoto(link, instant)
+func inlineMergedResult(link *url.URL, previews *thumbnails, instant bool, bars bool) map[string]any {
+	photo, ok := previews.mergedPhotoVariant(link, instant, bars)
 	if !ok {
 		return nil
 	}
 	result := inlinePhoto(photo)
 	result["id"], result["title"] = inlineMergedResultID, "Merged"
+	if bars {
+		result["id"], result["title"] = inlineBarsResultID, "Merged with bars"
+	}
 	result["input_message_content"] = map[string]any{
 		"message_text": "Loading merged artwork…", "disable_web_page_preview": true,
 		"entities": []any{map[string]any{"type": "text_link", "offset": 0, "length": 23, "url": link.String()}},
@@ -268,8 +272,10 @@ func inlineArtworkResults(db *sql.DB, user int64, link *url.URL, previews *thumb
 	}
 	normal := make(chan map[string]any, 1)
 	merged := make(chan map[string]any, 1)
+	bars := make(chan map[string]any, 1)
 	go func() { normal <- inlineArtworkResult(db, link, previews, instant) }()
-	go func() { merged <- inlineMergedResult(link, previews, instant) }()
+	go func() { merged <- inlineMergedResult(link, previews, instant, false) }()
+	go func() { bars <- inlineMergedResult(link, previews, instant, true) }()
 	var light, dark chan map[string]any
 	if xLinkHosts[strings.ToLower(link.Host)] {
 		zone, err := loadUserTimezone(db, user)
@@ -283,6 +289,9 @@ func inlineArtworkResults(db *sql.DB, user int64, link *url.URL, previews *thumb
 	}
 	results := []any{<-normal}
 	if result := <-merged; result != nil {
+		results = append(results, result)
+	}
+	if result := <-bars; result != nil {
 		results = append(results, result)
 	}
 	if light != nil {
@@ -331,7 +340,7 @@ func handleChosenInlineResult(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *
 	if link != nil && link.Host != "pixiv.net" && link.Host != "www.pixiv.net" {
 		theme = postImageTheme(chosen.ResultID, link)
 	}
-	if theme == "" && chosen.ResultID != inlineResultID && chosen.ResultID != inlineMergedResultID {
+	if theme == "" && chosen.ResultID != inlineResultID && chosen.ResultID != inlineMergedResultID && chosen.ResultID != inlineBarsResultID {
 		id := chosen.ResultID
 		if parent, index, ok := strings.Cut(id, ":item:"); ok {
 			if n, err := strconv.Atoi(index); err == nil && n >= 0 {
@@ -394,11 +403,16 @@ func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB,
 		return err
 	}
 	a := artwork{ID: artworkID(link), URL: link.String()}
-	force := chosen.ResultID == inlineMergedResultID
-	if force {
+	merge := ""
+	switch chosen.ResultID {
+	case inlineMergedResultID:
+		merge = "1"
 		a.ID += ":merged"
+	case inlineBarsResultID:
+		merge = "bars"
+		a.ID += ":merged:bars"
 	}
-	photos, err := fetchArtPhotos(app, link, &a, force)
+	photos, err := fetchArtPhotos(app, link, &a, merge)
 	if err != nil {
 		return err
 	}
@@ -446,7 +460,7 @@ func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB,
 
 	if err := saveSelection(db, chosen.From.ID, a); err != nil {
 		log.Printf("saving inline artwork: %v", err)
-	} else if previews != nil && !force {
+	} else if previews != nil && merge == "" {
 		previews.warmArtwork(inlineLink(a.URL), len(a.Photos))
 	}
 	return nil

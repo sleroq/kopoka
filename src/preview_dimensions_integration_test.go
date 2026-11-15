@@ -339,8 +339,19 @@ func TestMergedInlinePreview(t *testing.T) {
 			query := &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 1}, Query: "https://x.com/user/status/" + tc.id}
 			handleInlineQuery(bot, previews.db, query, previews)
 			results := <-f.answers
-			if len(results) != 4 || results[1]["id"] != inlineMergedResultID {
+			if len(results) != 5 || results[1]["id"] != inlineMergedResultID {
 				t.Fatalf("results: %#v", results)
+			}
+
+			barsURL, err := url.Parse(results[2]["photo_url"].(string))
+			if err != nil || results[2]["id"] != inlineBarsResultID || barsURL.Query().Get("merge") != "bars" {
+				t.Fatalf("bars result: %#v", results[2])
+			}
+			barsResponse := httptest.NewRecorder()
+			previews.ServeHTTP(barsResponse, httptest.NewRequest("GET", barsURL.RequestURI(), nil))
+			barsImage, _, err := image.Decode(bytes.NewReader(barsResponse.Body.Bytes()))
+			if barsResponse.Code != 200 || err != nil || barsImage.Bounds().Dx() <= tc.size.X {
+				t.Fatalf("bars preview: %d %v", barsResponse.Code, err)
 			}
 
 			u, err := url.Parse(results[1]["photo_url"].(string))

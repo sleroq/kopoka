@@ -183,12 +183,12 @@ func (s *instantSettingsScenario) inline(user int64, link string, merged bool) m
 	previews.client = &http.Client{Transport: s.network}
 	handleInlineQuery(s.bot, s.db, query, previews)
 	results := s.api.snapshot().results
-	want := 4
+	want := 5
 	if strings.Contains(link, "pixiv.net") {
-		want = 2
+		want = 3
 	}
 	if !merged {
-		want--
+		want -= 2
 	}
 	if len(results) != want {
 		s.t.Fatalf("inline results: %#v", results)

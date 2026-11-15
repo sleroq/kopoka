@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"image"
 	"image/color"
@@ -30,9 +31,9 @@ func TestInlineForceMerge(t *testing.T) {
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "tweet": tweet})
 		case r.URL.Path == "/red" || r.URL.Path == "/blue":
-			bounds, c := image.Rect(0, 0, 20, 30), color.RGBA{255, 0, 0, 255}
+			bounds, c := image.Rect(0, 0, 200, 300), color.RGBA{255, 0, 0, 255}
 			if r.URL.Path == "/blue" {
-				bounds, c = image.Rect(0, 0, 10, 10), color.RGBA{0, 0, 255, 255}
+				bounds, c = image.Rect(0, 0, 100, 100), color.RGBA{0, 0, 255, 255}
 			}
 			img := image.NewRGBA(bounds)
 			draw.Draw(img, bounds, image.NewUniform(c), image.Point{}, draw.Src)
@@ -75,7 +76,7 @@ func TestInlineForceMerge(t *testing.T) {
 	query := &tgbotapi.InlineQuery{ID: "query", From: &tgbotapi.User{ID: 1}, Query: "https://x.com/user/status/42"}
 	previews := testPreviews(t, db, bot)
 	handleInlineQuery(bot, db, query, previews)
-	if len(answer) != 4 || answer[0]["id"] != inlineResultID || answer[1]["id"] != inlineMergedResultID {
+	if len(answer) != 5 || answer[0]["id"] != inlineResultID || answer[1]["id"] != inlineMergedResultID {
 		t.Fatalf("uncached: %#v", answer)
 	}
 
@@ -84,7 +85,7 @@ func TestInlineForceMerge(t *testing.T) {
 		t.Fatal(err)
 	}
 	handleInlineQuery(bot, db, query, previews)
-	if len(answer) != 4 || answer[0]["id"] != "x:42" || answer[1]["id"] != inlineMergedResultID {
+	if len(answer) != 5 || answer[0]["id"] != "x:42" || answer[1]["id"] != inlineMergedResultID {
 		t.Fatalf("cached: %#v", answer)
 	}
 
@@ -93,7 +94,7 @@ func TestInlineForceMerge(t *testing.T) {
 		From: query.From, ResultID: inlineMergedResultID, InlineMessageID: "inline", Query: query.Query,
 	}
 	handleChosenInlineResult(bot, nil, db, chosen, "@cache", queue, nil)
-	if merged == nil || merged.Bounds().Size() != image.Pt(30, 30) {
+	if merged == nil || merged.Bounds().Size() != image.Pt(300, 300) {
 		t.Fatalf("merged image: %v", merged)
 	}
 
@@ -103,9 +104,32 @@ func TestInlineForceMerge(t *testing.T) {
 	if err != nil || saved == nil || len(saved.Photos) != 1 || saved.Photos[0] != "merged-file" || !strings.Contains(saved.Caption, "Artist") {
 		t.Fatalf("merged saved: %#v, %v", saved, err)
 	}
+	checkBarsSelection(t, bot, db, chosen, queue, previews, &merged)
 	unchanged, err := findArtwork(db, "x:42")
 	if err != nil || unchanged == nil || strings.Join(unchanged.Photos, ",") != "normal-1,normal-2" {
 		t.Fatalf("normal saved: %#v, %v", unchanged, err)
+	}
+}
+
+func checkBarsSelection(t *testing.T, bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, queue *mediaQueue, previews *thumbnails, merged *image.Image) {
+	t.Helper()
+	chosen.ResultID = inlineBarsResultID
+	handleChosenInlineResult(bot, nil, db, chosen, "@cache", queue, previews)
+	if *merged == nil || (*merged).Bounds().Size() != image.Pt(302, 300) {
+		t.Fatalf("bars image: %v", merged)
+	}
+	for _, p := range []image.Point{{200, 150}, {201, 150}, {0, 0}, {201, 0}, {250, 250}} {
+		r, g, b, _ := (*merged).At(p.X, p.Y).RGBA()
+		if r > 0xa000 || g > 0xa000 || b > 0xa000 {
+			t.Fatalf("expected black at %v: %x %x %x", p, r, g, b)
+		}
+	}
+	bars, err := findArtwork(db, "x:42:merged:bars")
+	if err != nil || bars == nil || len(bars.Photos) != 1 || bars.Photos[0] != "merged-file" {
+		t.Fatalf("bars saved: %#v, %v", bars, err)
+	}
+	if photo := previews.savedPhoto(*bars); photo.fileID != "merged-file" {
+		t.Fatalf("bars history preview: %#v", photo)
 	}
 }
 
@@ -114,7 +138,7 @@ func checkForcedMergePixels(t *testing.T, merged image.Image) {
 	for _, sample := range []struct {
 		p    image.Point
 		want color.RGBA
-	}{{image.Pt(5, 5), color.RGBA{255, 0, 0, 255}}, {image.Pt(25, 5), color.RGBA{0, 0, 255, 255}}, {image.Pt(25, 25), color.RGBA{255, 255, 255, 255}}} {
+	}{{image.Pt(50, 50), color.RGBA{255, 0, 0, 255}}, {image.Pt(250, 50), color.RGBA{0, 0, 255, 255}}, {image.Pt(250, 250), color.RGBA{255, 255, 255, 255}}} {
 		got := color.RGBAModel.Convert(merged.At(sample.p.X, sample.p.Y)).(color.RGBA)
 		for _, delta := range []int{int(got.R) - int(sample.want.R), int(got.G) - int(sample.want.G), int(got.B) - int(sample.want.B)} {
 			if delta < -20 || delta > 20 {

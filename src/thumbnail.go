@@ -40,6 +40,8 @@ var pixivLogo []byte
 type thumbnailWork struct {
 	done          chan struct{}
 	forcedDone    chan struct{}
+	barsDone      chan struct{}
+	bars          thumbnailVariant
 	forced        thumbnailVariant
 	photoCount    int
 	sourceOK      bool
@@ -187,7 +189,7 @@ func (t *thumbnails) cached(link *url.URL, count int) string {
 }
 
 func (t *thumbnails) savedPhoto(a artwork) previewPhoto {
-	if strings.HasSuffix(a.ID, ":merged") && mediaType(a, 0) == "photo" {
+	if (strings.HasSuffix(a.ID, ":merged") || strings.HasSuffix(a.ID, ":merged:bars")) && mediaType(a, 0) == "photo" {
 		return previewPhoto{fileID: a.Photos[0]}
 	}
 	if link := inlineLink(a.URL); link != nil {
@@ -243,6 +245,10 @@ func (t *thumbnails) mergedPlaceholderPhoto() previewPhoto {
 }
 
 func (t *thumbnails) mergedPhoto(link *url.URL, instant bool) (previewPhoto, bool) {
+	return t.mergedPhotoVariant(link, instant, false)
+}
+
+func (t *thumbnails) mergedPhotoVariant(link *url.URL, instant, bars bool) (previewPhoto, bool) {
 	if xPhotoIndex(link) > 0 {
 		return previewPhoto{}, false
 	}
@@ -268,21 +274,25 @@ func (t *thumbnails) mergedPhoto(link *url.URL, instant bool) (previewPhoto, boo
 		return t.mergedPlaceholderPhoto(), true
 	}
 	work = t.warmup(link, 0)
+	done, variant, mode := work.forcedDone, &work.forced, "1"
+	if bars {
+		done, variant, mode = work.barsDone, &work.bars, "bars"
+	}
 	select {
-	case <-work.forcedDone:
+	case <-done:
 		if work.sourceOK && work.photoCount < 2 {
 			return previewPhoto{}, false
 		}
-		if work.forced.err == nil {
+		if variant.err == nil {
 			address := *t.base
 			address.Path += "/thumbnail"
 			address.RawQuery = url.Values{
-				"url": {link.String()}, "v": {strconv.Itoa(thumbnailRenderVersion)}, "merge": {"1"},
+				"url": {link.String()}, "v": {strconv.Itoa(thumbnailRenderVersion)}, "merge": {mode},
 			}.Encode()
 			u := address.String()
 			return previewPhoto{
 				photoURL: u + "&size=large", thumbnailURL: u,
-				width: work.forced.width, height: work.forced.height,
+				width: variant.width, height: variant.height,
 			}, true
 		}
 	case <-time.After(8 * time.Second):
@@ -373,19 +383,24 @@ func (t *thumbnails) start(link *url.URL) *thumbnailWork {
 		}
 		if oldestKey == "" {
 			w := &thumbnailWork{
-				done: make(chan struct{}), forcedDone: make(chan struct{}),
+				done: make(chan struct{}), forcedDone: make(chan struct{}), barsDone: make(chan struct{}),
 				err: fmt.Errorf("thumbnail service busy"),
 			}
 			w.forced.err = w.err
+			w.bars.err = w.err
 			w.caching = make(map[int]bool)
 			close(w.done)
 			close(w.forcedDone)
+			close(w.barsDone)
 			return w
 		}
 		delete(t.work, oldestKey)
 	}
 
-	w := &thumbnailWork{done: make(chan struct{}), forcedDone: make(chan struct{}), caching: make(map[int]bool)}
+	w := &thumbnailWork{
+		done: make(chan struct{}), forcedDone: make(chan struct{}), barsDone: make(chan struct{}),
+		caching: make(map[int]bool),
+	}
 	t.work[key] = w
 	go func() {
 		t.workers <- struct{}{}
@@ -400,20 +415,29 @@ func (t *thumbnails) start(link *url.URL) *thumbnailWork {
 				w.photoCount++
 			}
 		}
-		go func(sourceErr error) {
-			defer close(w.forcedDone)
-			w.forced.err = sourceErr
-			if sourceErr == nil {
-				w.forced.data, w.forced.large, _, w.forced.err = t.render(source, media, true)
-				if w.forced.err == nil {
-					var config image.Config
-					config, w.forced.err = jpeg.DecodeConfig(bytes.NewReader(w.forced.large))
-					w.forced.width, w.forced.height = config.Width, config.Height
+		sourceErr := err
+		for _, item := range []struct {
+			done    chan struct{}
+			variant *thumbnailVariant
+			mode    string
+		}{
+			{w.forcedDone, &w.forced, "1"}, {w.barsDone, &w.bars, "bars"},
+		} {
+			go func() {
+				defer close(item.done)
+				item.variant.err = sourceErr
+				if sourceErr == nil {
+					item.variant.data, item.variant.large, _, item.variant.err = t.render(source, media, item.mode)
+					if item.variant.err == nil {
+						var config image.Config
+						config, item.variant.err = jpeg.DecodeConfig(bytes.NewReader(item.variant.large))
+						item.variant.width, item.variant.height = config.Width, config.Height
+					}
 				}
-			}
-		}(err)
+			}()
+		}
 		if err == nil {
-			w.data, w.large, w.actual, err = t.render(source, media, false)
+			w.data, w.large, w.actual, err = t.render(source, media, "")
 		}
 		if err == nil {
 			var config image.Config
@@ -526,8 +550,11 @@ func (t *thumbnails) serveThumbnail(w http.ResponseWriter, r *http.Request) {
 	}
 	work := t.start(link)
 	done := work.done
-	if r.URL.Query().Get("merge") == "1" {
+	switch r.URL.Query().Get("merge") {
+	case "1":
 		done = work.forcedDone
+	case "bars":
+		done = work.barsDone
 	}
 	select {
 	case <-r.Context().Done():
@@ -535,9 +562,12 @@ func (t *thumbnails) serveThumbnail(w http.ResponseWriter, r *http.Request) {
 	case <-done:
 		var data, large []byte
 		var err error
-		if r.URL.Query().Get("merge") == "1" {
+		switch r.URL.Query().Get("merge") {
+		case "1":
 			data, large, err = work.forced.data, work.forced.large, work.forced.err
-		} else {
+		case "bars":
+			data, large, err = work.bars.data, work.bars.large, work.bars.err
+		default:
 			data, large, err = work.data, work.large, work.err
 		}
 		if r.URL.Query().Get("size") == "large" {
@@ -716,11 +746,11 @@ func (t *thumbnails) downloadSource(source thumbnailSource) ([]any, error) {
 	return media, nil
 }
 
-func (t *thumbnails) mergeSource(source thumbnailSource, media []any, force bool) (image.Image, int, bool, error) {
+func (t *thumbnails) mergeSource(source thumbnailSource, media []any, mode string) (image.Image, int, bool, error) {
 	first, isPhoto := media[0].(tgbotapi.InputMediaPhoto)
-	if force {
+	if mode != "" {
 		var err error
-		media, err = forceMergeArtPhotos(media)
+		media, err = forceMergePanels(media, mode == "bars")
 		if err != nil {
 			return nil, 0, false, err
 		}
@@ -749,11 +779,11 @@ func (t *thumbnails) generate(link *url.URL) ([]byte, []byte, int, error) {
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	return t.render(source, media, false)
+	return t.render(source, media, "")
 }
 
-func (t *thumbnails) render(source thumbnailSource, media []any, force bool) ([]byte, []byte, int, error) {
-	img, actual, merged, err := t.mergeSource(source, media, force)
+func (t *thumbnails) render(source thumbnailSource, media []any, mode string) ([]byte, []byte, int, error) {
+	img, actual, merged, err := t.mergeSource(source, media, mode)
 	if err != nil {
 		return nil, nil, 0, err
 	}
