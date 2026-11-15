@@ -74,9 +74,6 @@ type fxImage struct {
 	URL          string `json:"url"`
 	ThumbnailURL string `json:"thumbnail_url"`
 	Type         string `json:"type"`
-	Formats      struct {
-		JPEG string `json:"jpeg"`
-	} `json:"formats"`
 }
 type fxRichPost struct {
 	ID       string `json:"id"`
@@ -110,7 +107,11 @@ type fxRichMedia struct {
 	Photos []fxImage `json:"photos"`
 	Videos []fxImage `json:"videos"`
 	All    []fxImage `json:"all"`
-	Mosaic *fxImage  `json:"mosaic"`
+	Mosaic *struct {
+		Formats struct {
+			JPEG string `json:"jpeg"`
+		} `json:"formats"`
+	} `json:"mosaic"`
 }
 
 type fxLinkCard struct {

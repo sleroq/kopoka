@@ -63,7 +63,10 @@ cat "$PREVIEW_TEST_IMAGE"
 			asset := server.URL + "/asset"
 			_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "tweet": map[string]any{
 				"text": "hello", "author": map[string]string{"name": "Artist", "screen_name": "user", "avatar_url": asset},
-				"media": map[string]any{"photos": []postImage{{URL: asset}, {URL: asset}}},
+				"media": map[string]any{
+					"photos": []map[string]any{{"url": asset, "formats": []any{}}, {"url": asset, "formats": []any{}}},
+					"all":    []map[string]any{{"url": asset, "type": "photo", "formats": []any{}}},
+				},
 			}})
 		case r.URL.Path == "/asset":
 			assets.Add(1)
