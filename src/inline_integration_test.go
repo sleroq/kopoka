@@ -392,7 +392,7 @@ func TestInlineEmptyAnswers(t *testing.T) {
 func TestInlineChosenFailures(t *testing.T) {
 	queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})
 
-	for _, query := range []string{"invalid", "https://x.com/user/status/1"} {
+	for _, query := range []string{"invalid", "https://x.com/user/status/1", "look https://x.com/user/status/1?ref=original#photo"} {
 		t.Run(query, func(t *testing.T) {
 			db := testArtworkDB(t)
 			var edits int
@@ -407,6 +407,9 @@ func TestInlineChosenFailures(t *testing.T) {
 					edits++
 					if r.FormValue("inline_message_id") != "inline" || !strings.Contains(r.FormValue("text"), "Could not load artwork") || r.FormValue("reply_markup") != `{"inline_keyboard":[]}` {
 						t.Errorf("edit: %v", r.Form)
+					}
+					if link := strings.TrimPrefix(query, "look "); link != "invalid" && !strings.Contains(r.FormValue("text"), link) {
+						t.Errorf("failure did not preserve link: %v", r.Form)
 					}
 					_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
 				default:

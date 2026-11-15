@@ -394,6 +394,12 @@ func handleChosenInlineResult(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *
 		}
 	}
 	if failure != "" {
+		for word := range strings.FieldsSeq(chosen.Query) {
+			if inlineLink(word) != nil {
+				failure += "\n\n" + word
+				break
+			}
+		}
 		params := tgbotapi.Params{
 			"inline_message_id": chosen.InlineMessageID, "text": failure,
 			"reply_markup": `{"inline_keyboard":[]}`,
