@@ -48,6 +48,9 @@ func testPostImageRenderer(t *testing.T) string {
 func testPostImageInlineFlow(t *testing.T, realRenderer string) {
 	t.Helper()
 	db := testArtworkDB(t)
+	if _, err := db.Exec(`INSERT INTO instant_inline_settings(user_id,x) VALUES (1,1)`); err != nil {
+		t.Fatal(err)
+	}
 
 	var jpg bytes.Buffer
 	img := image.NewRGBA(image.Rect(0, 0, 64, 64))
@@ -87,7 +90,7 @@ func testPostImageInlineFlow(t *testing.T, realRenderer string) {
 	previews := testPreviews(t, db, bot)
 	query := &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 1}, Query: "https://x.com/user/status/42/photo/2"}
 	handleInlineQuery(bot, db, query, previews)
-	if len(results) != 4 || results[2]["id"] != "post-image:light:42" || results[3]["id"] != "post-image:dark:42" || strings.Join(calls, ",") != "answer" {
+	if len(results) != 3 || results[1]["id"] != "post-image:light:42" || results[2]["id"] != "post-image:dark:42" || strings.Join(calls, ",") != "answer" {
 		t.Fatalf("results %v calls %v", results, calls)
 	}
 	queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})
@@ -111,7 +114,7 @@ func testPostImageInlineFlow(t *testing.T, realRenderer string) {
 	}
 	before := len(calls)
 	handleInlineQuery(bot, db, query, previews)
-	if len(calls) != before+1 || results[2]["photo_file_id"] != "card" || results[3]["photo_file_id"] != "card" || !strings.Contains(results[2]["caption"].(string), "/status/42") {
+	if len(calls) != before+1 || results[1]["photo_file_id"] != "card" || results[2]["photo_file_id"] != "card" || !strings.Contains(results[1]["caption"].(string), "/status/42") {
 		t.Fatalf("cached results %v calls %v", results, calls)
 	}
 	before = len(calls)

@@ -155,7 +155,7 @@ func TestInlineArtworkLoadingAndCaption(t *testing.T) {
 	db := testArtworkDB(t)
 	bot := &tgbotapi.BotAPI{}
 	link := inlineLink("https://www.pixiv.net/artworks/123")
-	result := inlineArtworkResult(db, 11, link, testPreviews(t, db, bot))
+	result := inlineArtworkResult(db, link, testPreviews(t, db, bot), false)
 	content := result["input_message_content"].(map[string]any)
 	encoded, err := json.Marshal(content["entities"])
 	if err != nil {

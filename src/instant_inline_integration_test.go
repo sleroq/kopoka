@@ -173,7 +173,7 @@ func (s *instantSettingsScenario) tap(label string, actor int64) {
 	s.t.Fatalf("button %q not found", label)
 }
 
-func (s *instantSettingsScenario) inline(user int64, link string) map[string]any {
+func (s *instantSettingsScenario) inline(user int64, link string, merged bool) map[string]any {
 	s.t.Helper()
 	query := &tgbotapi.InlineQuery{ID: "query", From: &tgbotapi.User{ID: user}, Query: link}
 	previews, err := newThumbnails("https://preview.example.com", s.app, s.bot, s.db, "@cache")
@@ -187,6 +187,9 @@ func (s *instantSettingsScenario) inline(user int64, link string) map[string]any
 	if strings.Contains(link, "pixiv.net") {
 		want = 2
 	}
+	if !merged {
+		want--
+	}
 	if len(results) != want {
 		s.t.Fatalf("inline results: %#v", results)
 	}
@@ -198,7 +201,7 @@ func (s *instantSettingsScenario) expectThumbnail(user int64, link string, withP
 	before := s.api.sources.Load()
 	attempts := s.network.attempts.Load()
 	s.network.previews.Store(withPreview)
-	result := s.inline(user, link)
+	result := s.inline(user, link, !withPreview)
 	if withPreview {
 		if s.api.sources.Load() <= before {
 			s.t.Fatalf("no source fetch for %s", link)
@@ -357,7 +360,7 @@ func verifyInstantInlineSelection(t *testing.T, s *instantSettingsScenario) {
 	if attempts, edits := s.network.attempts.Load(), s.api.snapshot().mediaEdits; attempts != before+1 || edits != 1 {
 		t.Fatalf("selection: upstream requests %d, media edits %d", attempts, edits)
 	}
-	result := s.inline(1, link)
+	result := s.inline(1, link, true)
 	if result["type"] != "photo" || result["photo_file_id"] != "file" {
 		t.Fatalf("cached result: %#v", result)
 	}

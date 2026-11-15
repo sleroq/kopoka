@@ -275,6 +275,9 @@ func reopenCachedThumbnail(t *testing.T, s *thumbnailTestServer, bot *tgbotapi.B
 	if err != nil || version != 7 {
 		t.Fatalf("cached render version: %d, %v", version, err)
 	}
+	if err := toggleInstantInline(db, query.From.ID, "x"); err != nil {
+		t.Fatal(err)
+	}
 	before := s.upstream.Load()
 	handleInlineQuery(bot, db, query, previews)
 	if cached := (<-s.answers)[0]; cached["photo_file_id"] != "thumbnail-2" || cached["photo_url"] != nil || cached["thumbnail_url"] != nil {
@@ -301,9 +304,12 @@ func reopenCachedThumbnail(t *testing.T, s *thumbnailTestServer, bot *tgbotapi.B
 		t.Fatalf("thumbnail via alternate host: %#v", cached)
 	}
 	query.Query = "https://x.com/user/status/1"
-	if s.upstream.Load() != 1 || s.downloads.Load() != 2 {
-		t.Fatalf("metadata requests = %d, image downloads = %d; want 1 and 2",
-			s.upstream.Load(), s.downloads.Load())
+	if s.upstream.Load() != before || s.downloads.Load() != 2 {
+		t.Fatalf("metadata requests = %d (before %d), image downloads = %d; want no new metadata and 2 downloads",
+			s.upstream.Load(), before, s.downloads.Load())
+	}
+	if err := toggleInstantInline(db, query.From.ID, "x"); err != nil {
+		t.Fatal(err)
 	}
 	return db
 }
@@ -1041,7 +1047,7 @@ func TestThumbnailAspectRatios(t *testing.T) {
 				t.Fatalf("post-merge cache alias = %q", id)
 			}
 			// A cached artwork can request a preview under its post-merge count before the upload is available.
-			cachedWork := previews.start(link, 1)
+			cachedWork := previews.start(link)
 			<-cachedWork.done
 			if cachedWork.err != nil {
 				t.Fatal(cachedWork.err)

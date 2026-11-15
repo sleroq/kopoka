@@ -216,8 +216,10 @@ func fetchRichPost(client *http.Client, link *url.URL) (*fxRichPost, error) {
 	return response.Tweet, nil
 }
 func preparePostImage(link *url.URL, theme string) (renderRequest, error) {
-	client := &http.Client{Timeout: 10 * time.Second}
+	return preparePostImageWithClient(&http.Client{Timeout: 10 * time.Second}, link, theme)
+}
 
+func preparePostImageWithClient(client *http.Client, link *url.URL, theme string) (renderRequest, error) {
 	source, err := fetchRichPost(client, xPostLink(link))
 	if err != nil {
 		return renderRequest{}, err
@@ -375,14 +377,16 @@ func findPostImage(db *sql.DB, id, theme string) (string, string, error) {
 	}
 	return file, caption, err
 }
-func postImageResult(db *sql.DB, link *url.URL, theme string, previews *thumbnails) map[string]any {
+func postImageResult(db *sql.DB, link *url.URL, theme string, previews *thumbnails, instant bool) map[string]any {
 	file, caption, err := findPostImage(db, artworkID(xPostLink(link)), theme)
 	if err != nil {
 		log.Printf("loading cached post image: %v", err)
 	}
-	photo := previews.postImagePlaceholder(theme)
+	var photo previewPhoto
 	if file != "" {
 		photo = previewPhoto{fileID: file}
+	} else {
+		photo = previews.postImagePreview(link, theme, instant)
 	}
 	result := inlinePhoto(photo)
 	result["id"] = postImageID(link, theme)
@@ -400,7 +404,7 @@ func postImageResult(db *sql.DB, link *url.URL, theme string, previews *thumbnai
 	result["reply_markup"] = map[string]any{"inline_keyboard": []any{[]any{wait}}}
 	return result
 }
-func postImagePhoto(db *sql.DB, link *url.URL, theme string) (tgbotapi.InputMediaPhoto, error) {
+func postImagePhoto(db *sql.DB, link *url.URL, theme string, previews *thumbnails) (tgbotapi.InputMediaPhoto, error) {
 	file, caption, err := findPostImage(db, artworkID(xPostLink(link)), theme)
 	if err != nil {
 		return tgbotapi.InputMediaPhoto{}, err
@@ -409,6 +413,15 @@ func postImagePhoto(db *sql.DB, link *url.URL, theme string) (tgbotapi.InputMedi
 		photo := tgbotapi.NewInputMediaPhoto(tgbotapi.FileID(file))
 		photo.Caption, photo.ParseMode = caption, "HTML"
 		return photo, nil
+	}
+	if previews != nil {
+		if variant := previews.existingPostImagePreview(link, theme); variant != nil {
+			photo, err := variant.photo()
+			if err == nil {
+				return photo, nil
+			}
+			log.Printf("reusing post image preview for %s (%s): %v", link, theme, err)
+		}
 	}
 	request, err := preparePostImage(link, theme)
 	if err != nil {
@@ -419,10 +432,14 @@ func postImagePhoto(db *sql.DB, link *url.URL, theme string) (tgbotapi.InputMedi
 		return tgbotapi.InputMediaPhoto{}, err
 	}
 	photo := tgbotapi.NewInputMediaPhoto(tgbotapi.FileBytes{Name: "post.jpg", Bytes: data})
-	photo.Caption = fmt.Sprintf(`<a href="%s">%s</a>`,
-		html.EscapeString(xPostLink(link).String()), html.EscapeString(request.Post.AuthorName))
+	photo.Caption = postImageCaption(link, request)
 	photo.ParseMode = "HTML"
 	return photo, nil
+}
+
+func postImageCaption(link *url.URL, request renderRequest) string {
+	return fmt.Sprintf(`<a href="%s">%s</a>`,
+		html.EscapeString(xPostLink(link).String()), html.EscapeString(request.Post.AuthorName))
 }
 
 func savePostImage(db *sql.DB, link *url.URL, theme, fileID, caption string) error {
@@ -433,7 +450,7 @@ func savePostImage(db *sql.DB, link *url.URL, theme, fileID, caption string) err
 }
 
 func sendPostImage(bot *tgbotapi.BotAPI, db *sql.DB, message *tgbotapi.Message, link *url.URL, theme string) error {
-	photo, err := postImagePhoto(db, link, theme)
+	photo, err := postImagePhoto(db, link, theme, nil)
 	if err != nil {
 		return err
 	}
@@ -449,8 +466,8 @@ func sendPostImage(bot *tgbotapi.BotAPI, db *sql.DB, message *tgbotapi.Message, 
 	return nil
 }
 
-func editInlinePostImage(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, cacheChat string, link *url.URL, theme string) error {
-	photo, err := postImagePhoto(db, link, theme)
+func editInlinePostImage(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, cacheChat string, link *url.URL, theme string, previews *thumbnails) error {
+	photo, err := postImagePhoto(db, link, theme, previews)
 	if err != nil {
 		return err
 	}

@@ -211,7 +211,7 @@ func cachedPictureResult(a artwork, i int) map[string]any {
 	return result
 }
 
-func inlineArtworkResult(db *sql.DB, user int64, link *url.URL, previews *thumbnails) map[string]any {
+func inlineArtworkResult(db *sql.DB, link *url.URL, previews *thumbnails, instant bool) map[string]any {
 	a, err := findArtwork(db, artworkID(link))
 	if err != nil {
 		log.Printf("loading cached artwork: %v", err)
@@ -220,16 +220,7 @@ func inlineArtworkResult(db *sql.DB, user int64, link *url.URL, previews *thumbn
 		return cachedInlineResult(*a, previews)
 	}
 
-	settings, err := loadInstantInlineSettings(db, user)
-	pixiv := link.Host == "pixiv.net" || link.Host == "www.pixiv.net"
-	instant := settings.X
-	if pixiv {
-		instant = settings.Pixiv
-	}
-	if err != nil {
-		log.Printf("loading instant inline settings: %v", err)
-	}
-	result := inlinePhoto(previews.newPhoto(link, err != nil || instant))
+	result := inlinePhoto(previews.newPhoto(link, instant))
 	result["id"], result["title"] = inlineResultID, "Artwork"
 	result["input_message_content"] = map[string]any{
 		"message_text": "Loading artwork…", "disable_web_page_preview": true,
@@ -240,8 +231,12 @@ func inlineArtworkResult(db *sql.DB, user int64, link *url.URL, previews *thumbn
 	return result
 }
 
-func inlineMergedResult(link *url.URL, previews *thumbnails) map[string]any {
-	result := inlinePhoto(previews.placeholder(link.Host == "pixiv.net" || link.Host == "www.pixiv.net"))
+func inlineMergedResult(link *url.URL, previews *thumbnails, instant bool) map[string]any {
+	photo, ok := previews.mergedPhoto(link, instant)
+	if !ok {
+		return nil
+	}
+	result := inlinePhoto(photo)
 	result["id"], result["title"] = inlineMergedResultID, "Merged"
 	result["input_message_content"] = map[string]any{
 		"message_text": "Loading merged artwork…", "disable_web_page_preview": true,
@@ -250,6 +245,36 @@ func inlineMergedResult(link *url.URL, previews *thumbnails) map[string]any {
 	wait := map[string]any{"text": "Please wait…", "disabled": map[string]any{}}
 	result["reply_markup"] = map[string]any{"inline_keyboard": []any{[]any{wait}}}
 	return result
+}
+
+func inlineArtworkResults(db *sql.DB, user int64, link *url.URL, previews *thumbnails) []any {
+	settings, err := loadInstantInlineSettings(db, user)
+	instant := settings.X
+	if link.Host == "pixiv.net" || link.Host == "www.pixiv.net" {
+		instant = settings.Pixiv
+	}
+	if err != nil {
+		instant = true
+		log.Printf("loading instant inline settings: %v", err)
+	}
+	normal := make(chan map[string]any, 1)
+	merged := make(chan map[string]any, 1)
+	go func() { normal <- inlineArtworkResult(db, link, previews, instant) }()
+	go func() { merged <- inlineMergedResult(link, previews, instant) }()
+	var light, dark chan map[string]any
+	if xLinkHosts[strings.ToLower(link.Host)] {
+		light, dark = make(chan map[string]any, 1), make(chan map[string]any, 1)
+		go func() { light <- postImageResult(db, link, "light", previews, instant) }()
+		go func() { dark <- postImageResult(db, link, "dark", previews, instant) }()
+	}
+	results := []any{<-normal}
+	if result := <-merged; result != nil {
+		results = append(results, result)
+	}
+	if light != nil {
+		results = append(results, <-light, <-dark)
+	}
+	return results
 }
 
 func handleInlineQuery(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.InlineQuery, previews *thumbnails) {
@@ -263,13 +288,7 @@ func handleInlineQuery(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.InlineQ
 		if err != nil {
 			log.Printf("loading photo preference: %v", err)
 		} else {
-			normal := make(chan map[string]any, 1)
-			go func() { normal <- inlineArtworkResult(db, query.From.ID, link, previews) }()
-			merged := inlineMergedResult(link, previews)
-			results = append(results, <-normal, merged)
-			if link.Host != "pixiv.net" && link.Host != "www.pixiv.net" {
-				results = append(results, postImageResult(db, link, "light", previews), postImageResult(db, link, "dark", previews))
-			}
+			results = append(results, inlineArtworkResults(db, query.From.ID, link, previews)...)
 		}
 	}
 	encoded, err := json.Marshal(results)
@@ -317,7 +336,7 @@ func handleChosenInlineResult(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *
 	}
 	result, err := queue.submit(chosen.From.ID, func() error {
 		if theme != "" {
-			return editInlinePostImage(bot, db, chosen, cacheChat, link, theme)
+			return editInlinePostImage(bot, db, chosen, cacheChat, link, theme, previews)
 		}
 		return editInlineArtwork(bot, app, db, chosen, cacheChat, previews)
 	})
@@ -365,7 +384,7 @@ func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB,
 	}
 	if len(photos) == 0 {
 		if xLinkHosts[strings.ToLower(link.Host)] {
-			return editInlinePostImage(bot, db, chosen, cacheChat, link, defaultPostImageTheme)
+			return editInlinePostImage(bot, db, chosen, cacheChat, link, defaultPostImageTheme, previews)
 		}
 		return fmt.Errorf("artwork has no photos")
 	}

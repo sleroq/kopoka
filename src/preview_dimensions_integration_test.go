@@ -24,13 +24,14 @@ type previewFlowServer struct {
 	images                       map[string][]byte
 	answers                      chan []map[string]any
 	sourceStarted, sourceRelease chan struct{}
-	sourceOnce                   sync.Once
+	sourceOnce, startedOnce      sync.Once
 	uploadStarted                chan struct{}
 	uploadRelease                chan struct{}
 	uploadFailed                 chan struct{}
 	uploadOnce, releaseOnce      sync.Once
 	failUpload                   atomic.Bool
 	source3                      atomic.Int32
+	sourceCalls, imageCalls      atomic.Int32
 }
 
 func newPreviewFlowServer(t *testing.T) *previewFlowServer {
@@ -62,9 +63,10 @@ func (f *previewFlowServer) serve(w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path == "/bottoken/getMe":
 		_, _ = fmt.Fprint(w, `{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`)
 	case strings.HasPrefix(r.URL.Path, "/user/status/"):
+		f.sourceCalls.Add(1)
 		id := strings.TrimPrefix(r.URL.Path, "/user/status/")
 		if id == "7" {
-			close(f.sourceStarted)
+			f.startedOnce.Do(func() { close(f.sourceStarted) })
 			<-f.sourceRelease
 		}
 
@@ -73,8 +75,11 @@ func (f *previewFlowServer) serve(w http.ResponseWriter, r *http.Request) {
 		}
 
 		paths := []string{"/portrait"}
-		if id == "2" {
+		switch id {
+		case "2":
 			paths = []string{"/panel0", "/panel1"}
+		case "4":
+			paths = []string{"/portrait", "/panel0"}
 		}
 		photos := make([]map[string]string, 0, len(paths))
 		for _, p := range paths {
@@ -83,6 +88,7 @@ func (f *previewFlowServer) serve(w http.ResponseWriter, r *http.Request) {
 		tweet := map[string]any{"author": map[string]string{"name": "Artist"}, "media": map[string]any{"photos": photos}}
 		_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "tweet": tweet})
 	case f.images[r.URL.Path] != nil:
+		f.imageCalls.Add(1)
 		_, _ = w.Write(f.images[r.URL.Path])
 	case r.URL.Path == "/bottoken/answerInlineQuery":
 		_ = r.ParseForm()
@@ -189,7 +195,11 @@ func TestHistoryPreviewDoesNotWait(t *testing.T) {
 		t.Fatal(err)
 	}
 	done := make(chan map[string]any, 1)
-	go func() { done <- f.answer(t, bot, previews, "7") }()
+	go func() {
+		query := &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 1}}
+		handleInlineQuery(bot, previews.db, query, previews)
+		done <- (<-f.answers)[0]
+	}()
 	select {
 	case result := <-done:
 		uncachedThumbnailURLs(t, result)
@@ -255,7 +265,7 @@ func TestPreviewWarmupAfterSave(t *testing.T) {
 				}
 				time.Sleep(10 * time.Millisecond)
 			}
-			if mode == "inline-after-preview" && f.source3.Load() != 2 {
+			if mode == "inline-after-preview" && f.source3.Load() != 3 {
 				t.Fatalf("source requests with existing preview: %d", f.source3.Load())
 			}
 			f.release()
@@ -314,4 +324,82 @@ func TestPreviewInlineTimeoutCompletesInBackground(t *testing.T) {
 	f.sourceOnce.Do(func() { close(f.sourceRelease) })
 	f.release()
 	awaitCachedThumbnail(t, previews.db, "x:7", 0)
+}
+
+func TestMergedInlinePreview(t *testing.T) {
+	for _, tc := range []struct {
+		id     string
+		actual int
+		size   image.Point
+	}{{"2", 1, image.Pt(400, 320)}, {"4", 2, image.Pt(960, 1280)}} {
+		t.Run(tc.id, func(t *testing.T) {
+			f := newPreviewFlowServer(t)
+			previews, bot := f.setup(t)
+
+			query := &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 1}, Query: "https://x.com/user/status/" + tc.id}
+			handleInlineQuery(bot, previews.db, query, previews)
+			results := <-f.answers
+			if len(results) != 4 || results[1]["id"] != inlineMergedResultID {
+				t.Fatalf("results: %#v", results)
+			}
+
+			u, err := url.Parse(results[1]["photo_url"].(string))
+			if err != nil || u.Query().Get("merge") != "1" {
+				t.Fatalf("merged URL: %s", u)
+			}
+			response := httptest.NewRecorder()
+			previews.ServeHTTP(response, httptest.NewRequest("GET", u.RequestURI(), nil))
+			img, format, err := image.Decode(bytes.NewReader(response.Body.Bytes()))
+			if response.Code != 200 || err != nil || format != "jpeg" {
+				t.Fatalf("merged image: %d %s %v", response.Code, format, err)
+			}
+			if img.Bounds().Size() != tc.size || results[1]["photo_width"] != float64(tc.size.X) || results[1]["photo_height"] != float64(tc.size.Y) {
+				t.Fatalf("merged dimensions: %v, result: %#v", img.Bounds().Size(), results[1])
+			}
+
+			work := previews.start(inlineLink(query.Query))
+			<-work.done
+			if f.sourceCalls.Load() != 2 || f.imageCalls.Load() != 2 {
+				t.Fatalf("requests: source=%d images=%d", f.sourceCalls.Load(), f.imageCalls.Load())
+			}
+			if work.actual != tc.actual || work.photoCount != 2 {
+				t.Fatalf("source: actual=%d photos=%d", work.actual, work.photoCount)
+			}
+			f.release()
+			awaitCachedThumbnail(t, previews.db, "x:"+tc.id, 0)
+		})
+	}
+}
+
+func TestMergedInlineSingletonAndInstant(t *testing.T) {
+	f := newPreviewFlowServer(t)
+	previews, bot := f.setup(t)
+	link := inlineLink("https://x.com/user/status/1")
+	photo, ok := previews.mergedPhoto(link, true)
+	if !ok || !strings.HasSuffix(photo.photoURL, "/thumbnail-placeholder-merged.jpg") || len(previews.work) != 0 {
+		t.Fatalf("instant preview: %#v %v", photo, ok)
+	}
+	response := httptest.NewRecorder()
+	previews.ServeHTTP(response, httptest.NewRequest("GET", photo.photoURL, nil))
+	if _, format, err := image.Decode(bytes.NewReader(response.Body.Bytes())); response.Code != 200 || err != nil || format != "jpeg" {
+		t.Fatalf("placeholder: %d %s %v", response.Code, format, err)
+	}
+	if _, ok := previews.mergedPhoto(inlineLink("https://x.com/user/status/1/photo/1"), true); ok {
+		t.Fatal("selected photo offered merge")
+	}
+	a := artwork{ID: "x:1", URL: link.String(), Photos: []string{"art-file"}}
+	if err := saveSelection(previews.db, 1, a); err != nil {
+		t.Fatal(err)
+	}
+	query := &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 1}, Query: link.String()}
+	handleInlineQuery(bot, previews.db, query, previews)
+	if results := <-f.answers; len(results) != 3 {
+		t.Fatalf("cached singleton: %#v", results)
+	}
+	if _, ok := previews.mergedPhoto(link, true); ok {
+		t.Fatal("known singleton offered instant merge")
+	}
+	f.release()
+	awaitCachedThumbnail(t, previews.db, "x:1", 0)
+	awaitCachedThumbnail(t, previews.db, "x:1", 1)
 }

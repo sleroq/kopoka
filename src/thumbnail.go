@@ -39,7 +39,11 @@ var pixivLogo []byte
 
 type thumbnailWork struct {
 	done          chan struct{}
-	caching       bool
+	forcedDone    chan struct{}
+	forced        thumbnailVariant
+	photoCount    int
+	sourceOK      bool
+	caching       map[int]bool
 	data          []byte
 	large         []byte
 	actual        int
@@ -48,25 +52,33 @@ type thumbnailWork struct {
 	finished      time.Time
 }
 
+type thumbnailVariant struct {
+	data, large   []byte
+	width, height int
+	err           error
+}
+
 type previewPhoto struct {
 	fileID, photoURL, thumbnailURL string
 	width, height                  int
 }
 
 type thumbnails struct {
-	base         *url.URL
-	app          *pixiv.AppPixivAPI
-	bot          *tgbotapi.BotAPI
-	db           *sql.DB
-	cacheChat    string
-	placeholders map[bool][]byte
-	postImages   map[string][]byte
-	client       *http.Client
-	mu           sync.Mutex
-	work         map[string]*thumbnailWork
-	workers      chan struct{}
-	logos        map[bool]image.Image
-	font         *opentype.Font
+	base              *url.URL
+	app               *pixiv.AppPixivAPI
+	bot               *tgbotapi.BotAPI
+	db                *sql.DB
+	cacheChat         string
+	placeholders      map[bool][]byte
+	postImages        map[string][]byte
+	mergedPlaceholder []byte
+	client            *http.Client
+	mu                sync.Mutex
+	work              map[string]*thumbnailWork
+	postImageWork     map[string]*postImagePreviewWork
+	workers           chan struct{}
+	logos             map[bool]image.Image
+	font              *opentype.Font
 }
 
 func startThumbnails(app *pixiv.AppPixivAPI, bot *tgbotapi.BotAPI, db *sql.DB, cacheChat string) (*thumbnails, error) {
@@ -145,13 +157,23 @@ func newThumbnails(baseURL string, app *pixiv.AppPixivAPI, bot *tgbotapi.BotAPI,
 		}
 		placeholders[isPixiv] = out.Bytes()
 	}
+	canvas := image.NewRGBA(image.Rect(0, 0, 384, 384))
+	draw.Draw(canvas, canvas.Bounds(), image.NewUniform(color.NRGBA{20, 22, 27, 255}), image.Point{}, draw.Src)
+	for i := range 4 {
+		x := 102 + i*47
+		rounded(canvas, image.Rect(x, 120, x+30, 264), 8, color.NRGBA{255, 255, 255, 255})
+	}
+	var mergedPlaceholder bytes.Buffer
+	if err := jpeg.Encode(&mergedPlaceholder, canvas, &jpeg.Options{Quality: 90}); err != nil {
+		return nil, err
+	}
 	postImages, err := renderPostImagePlaceholders(bold)
 	if err != nil {
 		return nil, err
 	}
 	return &thumbnails{
-		base: base, app: app, bot: bot, db: db, cacheChat: cacheChat, placeholders: placeholders, postImages: postImages, client: &http.Client{Timeout: 15 * time.Second},
-		work: make(map[string]*thumbnailWork), workers: make(chan struct{}, 6),
+		base: base, app: app, bot: bot, db: db, cacheChat: cacheChat, placeholders: placeholders, postImages: postImages, mergedPlaceholder: mergedPlaceholder.Bytes(), client: &http.Client{Timeout: 15 * time.Second},
+		work: make(map[string]*thumbnailWork), postImageWork: make(map[string]*postImagePreviewWork), workers: make(chan struct{}, 6),
 		logos: logos, font: bold,
 	}, nil
 }
@@ -214,6 +236,60 @@ func (t *thumbnails) placeholder(pixiv bool) previewPhoto {
 	return previewPhoto{photoURL: address, thumbnailURL: address, width: 384, height: 384}
 }
 
+func (t *thumbnails) mergedPlaceholderPhoto() previewPhoto {
+	address := *t.base
+	address.Path += "/thumbnail-placeholder-merged.jpg"
+	return previewPhoto{photoURL: address.String(), thumbnailURL: address.String(), width: 384, height: 384}
+}
+
+func (t *thumbnails) mergedPhoto(link *url.URL, instant bool) (previewPhoto, bool) {
+	if xPhotoIndex(link) > 0 {
+		return previewPhoto{}, false
+	}
+
+	var work *thumbnailWork
+	if instant {
+		t.mu.Lock()
+		work = t.work[link.String()]
+		t.mu.Unlock()
+		if work != nil {
+			select {
+			case <-work.done:
+				if work.sourceOK && work.photoCount < 2 {
+					return previewPhoto{}, false
+				}
+			case <-work.forcedDone:
+				if work.sourceOK && work.photoCount < 2 {
+					return previewPhoto{}, false
+				}
+			default:
+			}
+		}
+		return t.mergedPlaceholderPhoto(), true
+	}
+	work = t.warmup(link, 0)
+	select {
+	case <-work.forcedDone:
+		if work.sourceOK && work.photoCount < 2 {
+			return previewPhoto{}, false
+		}
+		if work.forced.err == nil {
+			address := *t.base
+			address.Path += "/thumbnail"
+			address.RawQuery = url.Values{
+				"url": {link.String()}, "v": {strconv.Itoa(thumbnailRenderVersion)}, "merge": {"1"},
+			}.Encode()
+			u := address.String()
+			return previewPhoto{
+				photoURL: u + "&size=large", thumbnailURL: u,
+				width: work.forced.width, height: work.forced.height,
+			}, true
+		}
+	case <-time.After(8 * time.Second):
+	}
+	return t.mergedPlaceholderPhoto(), true
+}
+
 func (t *thumbnails) postImagePlaceholder(theme string) previewPhoto {
 	address := *t.base
 	address.Path += "/post-image-placeholder-" + theme + ".jpg"
@@ -267,13 +343,13 @@ func (t *thumbnails) url(link *url.URL, count int) string {
 		q.Set("count", strconv.Itoa(count))
 	}
 	result.RawQuery = q.Encode()
-	work := t.start(link, count)
+	work := t.start(link)
 	t.cacheWork(link, count, work)
 	return result.String()
 }
 
-func (t *thumbnails) start(link *url.URL, count int) *thumbnailWork {
-	key := link.String() + "\n" + strconv.Itoa(count)
+func (t *thumbnails) start(link *url.URL) *thumbnailWork {
+	key := link.String()
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -296,29 +372,57 @@ func (t *thumbnails) start(link *url.URL, count int) *thumbnailWork {
 			}
 		}
 		if oldestKey == "" {
-			w := &thumbnailWork{done: make(chan struct{}), err: fmt.Errorf("thumbnail service busy")}
+			w := &thumbnailWork{
+				done: make(chan struct{}), forcedDone: make(chan struct{}),
+				err: fmt.Errorf("thumbnail service busy"),
+			}
+			w.forced.err = w.err
+			w.caching = make(map[int]bool)
 			close(w.done)
+			close(w.forcedDone)
 			return w
 		}
 		delete(t.work, oldestKey)
 	}
 
-	w := &thumbnailWork{done: make(chan struct{})}
+	w := &thumbnailWork{done: make(chan struct{}), forcedDone: make(chan struct{}), caching: make(map[int]bool)}
 	t.work[key] = w
 	go func() {
 		t.workers <- struct{}{}
-		data, large, actual, err := t.generate(link)
-		t.mu.Lock()
-		w.data, w.large, w.actual, w.err, w.finished = data, large, actual, err, time.Now()
+		source, err := t.source(link)
+		w.sourceOK = err == nil
+		var media []any
 		if err == nil {
-			config, decodeErr := jpeg.DecodeConfig(bytes.NewReader(large))
-			if decodeErr != nil {
-				w.err = decodeErr
-			} else {
-				w.width, w.height = config.Width, config.Height
+			media, err = t.downloadSource(source)
+		}
+		for _, item := range source.media {
+			if item.Type == "" || item.Type == "photo" {
+				w.photoCount++
 			}
 		}
-		if w.err != nil {
+		go func(sourceErr error) {
+			defer close(w.forcedDone)
+			w.forced.err = sourceErr
+			if sourceErr == nil {
+				w.forced.data, w.forced.large, _, w.forced.err = t.render(source, media, true)
+				if w.forced.err == nil {
+					var config image.Config
+					config, w.forced.err = jpeg.DecodeConfig(bytes.NewReader(w.forced.large))
+					w.forced.width, w.forced.height = config.Width, config.Height
+				}
+			}
+		}(err)
+		if err == nil {
+			w.data, w.large, w.actual, err = t.render(source, media, false)
+		}
+		if err == nil {
+			var config image.Config
+			config, err = jpeg.DecodeConfig(bytes.NewReader(w.large))
+			w.width, w.height = config.Width, config.Height
+		}
+		t.mu.Lock()
+		w.err, w.finished = err, time.Now()
+		if err != nil {
 			delete(t.work, key)
 		}
 		close(w.done)
@@ -330,11 +434,11 @@ func (t *thumbnails) start(link *url.URL, count int) *thumbnailWork {
 
 func (t *thumbnails) cacheWork(link *url.URL, count int, work *thumbnailWork) {
 	t.mu.Lock()
-	if work.caching {
+	if work.caching[count] {
 		t.mu.Unlock()
 		return
 	}
-	work.caching = true
+	work.caching[count] = true
 	t.mu.Unlock()
 	go func() {
 		<-work.done
@@ -347,7 +451,7 @@ func (t *thumbnails) cacheWork(link *url.URL, count int, work *thumbnailWork) {
 			if err := t.cachePhoto(link, count, work.actual, work.large); err != nil {
 				log.Printf("caching thumbnail for %s: %v", link, err)
 				t.mu.Lock()
-				work.caching = false
+				work.caching[count] = false
 				t.mu.Unlock()
 			}
 		}
@@ -376,6 +480,8 @@ func (t *thumbnails) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	var placeholder []byte
 	switch {
+	case strings.HasSuffix(r.URL.Path, "/thumbnail-placeholder-merged.jpg"):
+		placeholder = t.mergedPlaceholder
 	case strings.HasSuffix(r.URL.Path, "/thumbnail-placeholder-x.jpg"):
 		placeholder = t.placeholders[false]
 	case strings.HasSuffix(r.URL.Path, "/thumbnail-placeholder-pixiv.jpg"):
@@ -384,6 +490,9 @@ func (t *thumbnails) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		placeholder = t.postImages["light"]
 	case strings.HasSuffix(r.URL.Path, "/post-image-placeholder-dark.jpg"):
 		placeholder = t.postImages["dark"]
+	case strings.HasSuffix(r.URL.Path, "/post-image-preview"):
+		t.servePostImagePreview(w, r)
+		return
 	case strings.HasSuffix(r.URL.Path, "/thumbnail"):
 		t.serveThumbnail(w, r)
 		return
@@ -408,26 +517,34 @@ func (t *thumbnails) serveThumbnail(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid URL", http.StatusBadRequest)
 		return
 	}
-	count := 0
 	if r.URL.Query().Has("count") {
-		var err error
-		count, err = strconv.Atoi(r.URL.Query().Get("count"))
+		count, err := strconv.Atoi(r.URL.Query().Get("count"))
 		if err != nil || count <= 0 {
 			http.Error(w, "invalid count", http.StatusBadRequest)
 			return
 		}
 	}
-	work := t.start(link, count)
+	work := t.start(link)
+	done := work.done
+	if r.URL.Query().Get("merge") == "1" {
+		done = work.forcedDone
+	}
 	select {
 	case <-r.Context().Done():
 		return
-	case <-work.done:
-		data := work.data
-		if r.URL.Query().Get("size") == "large" {
-			data = work.large
+	case <-done:
+		var data, large []byte
+		var err error
+		if r.URL.Query().Get("merge") == "1" {
+			data, large, err = work.forced.data, work.forced.large, work.forced.err
+		} else {
+			data, large, err = work.data, work.large, work.err
 		}
-		if work.err != nil {
-			log.Printf("generating thumbnail for %s: %v", link, work.err)
+		if r.URL.Query().Get("size") == "large" {
+			data = large
+		}
+		if err != nil {
+			log.Printf("generating thumbnail for %s: %v", link, err)
 			http.Error(w, "thumbnail generation failed", http.StatusBadGateway)
 			return
 		}
@@ -569,11 +686,19 @@ func (t *thumbnails) xSource(link *url.URL) (thumbnailSource, error) {
 	return thumbnailSource{media: items, count: count, selected: selected}, nil
 }
 
-func (t *thumbnails) mergeSource(source thumbnailSource) (image.Image, int, bool, error) {
+func (t *thumbnails) downloadSource(source thumbnailSource) ([]any, error) {
 	media := make([]any, 0, len(source.media))
-	for _, item := range source.media {
+	for i, item := range source.media {
 		if item.Type == "video" || item.Type == "gif" {
-			media = append(media, tgbotapi.NewInputMediaVideo(tgbotapi.FileURL(item.ThumbnailURL)))
+			if i > 0 {
+				media = append(media, tgbotapi.NewInputMediaVideo(tgbotapi.FileURL(item.ThumbnailURL)))
+				continue
+			}
+			file, err := downloadArtFile(t.client, tgbotapi.FileURL(item.ThumbnailURL))
+			if err != nil {
+				return nil, err
+			}
+			media = append(media, tgbotapi.NewInputMediaVideo(file))
 			continue
 		}
 		var file tgbotapi.FileBytes
@@ -584,12 +709,24 @@ func (t *thumbnails) mergeSource(source thumbnailSource) (image.Image, int, bool
 			file, err = downloadArtFile(t.client, tgbotapi.FileURL(xPhotoURL(item.URL)))
 		}
 		if err != nil {
-			return nil, 0, false, err
+			return nil, err
 		}
 		media = append(media, tgbotapi.NewInputMediaPhoto(file))
 	}
+	return media, nil
+}
+
+func (t *thumbnails) mergeSource(source thumbnailSource, media []any, force bool) (image.Image, int, bool, error) {
 	first, isPhoto := media[0].(tgbotapi.InputMediaPhoto)
-	media = mergeArtPhotos(media)
+	if force {
+		var err error
+		media, err = forceMergeArtPhotos(media)
+		if err != nil {
+			return nil, 0, false, err
+		}
+	} else {
+		media = mergeArtPhotos(media)
+	}
 	merged := false
 	if isPhoto {
 		joined := media[0].(tgbotapi.InputMediaPhoto)
@@ -608,7 +745,15 @@ func (t *thumbnails) generate(link *url.URL) ([]byte, []byte, int, error) {
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	img, actual, merged, err := t.mergeSource(source)
+	media, err := t.downloadSource(source)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	return t.render(source, media, false)
+}
+
+func (t *thumbnails) render(source thumbnailSource, media []any, force bool) ([]byte, []byte, int, error) {
+	img, actual, merged, err := t.mergeSource(source, media, force)
 	if err != nil {
 		return nil, nil, 0, err
 	}
@@ -731,7 +876,7 @@ func badgeBackground(dst *image.RGBA, left, right int) {
 }
 
 func (t *thumbnails) warmup(link *url.URL, count int) *thumbnailWork {
-	work := t.start(link, count)
+	work := t.start(link)
 	t.cacheWork(link, count, work)
 	return work
 }
@@ -747,7 +892,7 @@ func (t *thumbnails) saveGeneratedDimensions(link *url.URL, work *thumbnailWork)
 func (t *thumbnails) warmArtwork(link *url.URL, count int) {
 	go func() {
 		t.mu.Lock()
-		work := t.work[link.String()+"\n0"]
+		work := t.work[link.String()]
 		t.mu.Unlock()
 		if work == nil {
 			work = t.warmup(link, count)
