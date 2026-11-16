@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"slices"
@@ -131,6 +132,23 @@ func richPostMedia(markup *strings.Builder, media []cachedPostMedia, offset int)
 	}
 }
 
+func (p *postPoll) text() string {
+	if p == nil {
+		return ""
+	}
+	var lines []string
+	for _, choice := range p.Choices {
+		filled := int(math.Round(max(0, min(100, choice.Percentage)) / 10))
+		bar := strings.Repeat("■", filled) + strings.Repeat("□", 10-filled)
+		lines = append(lines, fmt.Sprintf("%s %s %g%%", bar, choice.Label, choice.Percentage))
+	}
+	footer := fmt.Sprintf("%d votes", p.TotalVotes)
+	if display := p.forDisplay(); display.TimeLeftEN != "" {
+		footer += " · " + display.TimeLeftEN
+	}
+	return strings.Join(append(lines, footer), "\n")
+}
+
 func richPostBody(text string) string {
 	return strings.ReplaceAll(html.EscapeString(text), "\n", "<br>")
 }
@@ -143,7 +161,7 @@ func richPostAuthor(post *fxRichPost) string {
 	return author
 }
 
-func limitRichPostText(post *fxRichPost, parents []*fxRichPost) {
+func limitRichPostText(post *fxRichPost, parents []*fxRichPost) map[*fxRichPost]string {
 	posts := []*fxRichPost{post}
 	if post.Quote != nil {
 		posts = append(posts, post.Quote)
@@ -155,23 +173,29 @@ func limitRichPostText(post *fxRichPost, parents []*fxRichPost) {
 	for _, p := range posts {
 		remaining -= utf8.RuneCountInString(p.Author.Name) + utf8.RuneCountInString(p.Author.ScreenName) + 4
 	}
-	for _, p := range posts {
-		runes := []rune(p.Text)
-		if len(runes) > remaining {
-			if remaining > 0 {
-				p.Text = string(runes[:remaining-1]) + "…"
-			} else {
-				p.Text = ""
-			}
-			remaining = 0
-		} else {
+	polls := make(map[*fxRichPost]string, len(posts))
+	limit := func(value string) string {
+		runes := []rune(value)
+		if len(runes) <= remaining {
 			remaining -= len(runes)
+			return value
 		}
+		if remaining <= 0 {
+			return ""
+		}
+		value = string(runes[:remaining-1]) + "…"
+		remaining = 0
+		return value
 	}
+	for _, p := range posts {
+		p.Text = limit(p.Text)
+		polls[p] = limit(p.Poll.text())
+	}
+	return polls
 }
 
 func richXPost(post *fxRichPost, parents []*fxRichPost, more bool, own, quote []cachedPostMedia) map[string]any {
-	limitRichPostText(post, parents)
+	polls := limitRichPostText(post, parents)
 	var markup strings.Builder
 	if len(parents) > 0 || more {
 		markup.WriteString(`<p>Reply thread from `)
@@ -191,6 +215,10 @@ func richXPost(post *fxRichPost, parents []*fxRichPost, more bool, own, quote []
 				markup.WriteString("<br>")
 				markup.WriteString(richPostBody(parent.Text))
 			}
+			if polls[parent] != "" {
+				markup.WriteString("<br>")
+				markup.WriteString(richPostBody(polls[parent]))
+			}
 			markup.WriteString("</blockquote>")
 		}
 	}
@@ -202,6 +230,11 @@ func richXPost(post *fxRichPost, parents []*fxRichPost, more bool, own, quote []
 		markup.WriteString(richPostBody(post.Text))
 		markup.WriteString("</p>")
 	}
+	if polls[post] != "" {
+		markup.WriteString("<p>")
+		markup.WriteString(richPostBody(polls[post]))
+		markup.WriteString("</p>")
+	}
 	richPostMedia(&markup, own, 0)
 	if post.Quote != nil {
 		markup.WriteString("<blockquote><p>")
@@ -210,6 +243,11 @@ func richXPost(post *fxRichPost, parents []*fxRichPost, more bool, own, quote []
 		if post.Quote.Text != "" {
 			markup.WriteString("<p>")
 			markup.WriteString(richPostBody(post.Quote.Text))
+			markup.WriteString("</p>")
+		}
+		if polls[post.Quote] != "" {
+			markup.WriteString("<p>")
+			markup.WriteString(richPostBody(polls[post.Quote]))
 			markup.WriteString("</p>")
 		}
 		richPostMedia(&markup, quote, len(own))

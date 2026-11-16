@@ -46,6 +46,10 @@ func normalXPost(post *fxRichPost, parents []*fxRichPost, more, hasMedia bool) s
 				add(":\n", ":\n")
 				addText(parent.Text)
 			}
+			if poll := parent.Poll.text(); poll != "" {
+				add("\n", "\n")
+				addText(poll)
+			}
 			add("</blockquote>\n", "\n")
 		}
 		add("\n", "\n")
@@ -56,12 +60,20 @@ func normalXPost(post *fxRichPost, parents []*fxRichPost, more, hasMedia bool) s
 		add("\n\n", "\n\n")
 		addText(post.Text)
 	}
+	if poll := post.Poll.text(); poll != "" {
+		add("\n\n", "\n\n")
+		addText(poll)
+	}
 	if post.Quote != nil {
 		add("\n\n<blockquote>", "\n\n")
 		addAuthor(post.Quote)
 		if post.Quote.Text != "" {
 			add("\n", "\n")
 			addText(post.Quote.Text)
+		}
+		if poll := post.Quote.Poll.text(); poll != "" {
+			add("\n", "\n")
+			addText(poll)
 		}
 		add("</blockquote>", "")
 	}

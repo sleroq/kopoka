@@ -40,6 +40,18 @@ struct Post {
     quote: Option<Box<Post>>,
     article: Option<Article>,
     card: Option<LinkCard>,
+    poll: Option<Poll>,
+}
+#[derive(Deserialize)]
+struct Poll {
+    choices: Vec<PollChoice>,
+    total_votes: u64,
+    time_left_en: String,
+}
+#[derive(Deserialize)]
+struct PollChoice {
+    label: String,
+    percentage: f64,
 }
 #[derive(Deserialize)]
 struct Media {
@@ -265,8 +277,51 @@ impl Card<'_> {
         Ok(column(nodes, "gap:12px;min-width:0"))
     }
 
+    fn poll(&self, poll: &Poll, width: f32, compact: bool) -> Node {
+        let size = if compact { 14 } else { 16 };
+        let mut choices = Vec::new();
+        for choice in &poll.choices {
+            let fill = width * choice.percentage.clamp(0.0, 100.0) as f32 / 100.0;
+            choices.push(row(
+                vec![
+                    column(vec![], &format!("position:absolute;left:0;top:0;bottom:0;width:{fill}px;background:{};border-radius:4px", self.border)),
+                    text(&choice.label, &format!("position:relative;color:{};font-size:{size}px;line-height:1.4;white-space:pre-wrap;overflow-wrap:anywhere;flex:1;min-width:0", self.text)),
+                    text(format!("{}%", choice.percentage), &format!("color:{};font-size:{size}px;flex-shrink:0", self.text)),
+                ],
+                "position:relative;align-items:center;gap:12px;padding:8px 10px;min-width:0",
+            ));
+        }
+        let votes = poll.total_votes.to_string();
+        let mut formatted = String::new();
+        for (i, ch) in votes.chars().enumerate() {
+            if i > 0 && (votes.len() - i).is_multiple_of(3) {
+                formatted.push(',');
+            }
+            formatted.push(ch);
+        }
+        let suffix = if poll.total_votes == 1 {
+            "vote"
+        } else {
+            "votes"
+        };
+        let mut summary = format!("{formatted} {suffix}");
+        if !poll.time_left_en.is_empty() {
+            summary.push_str(&format!(" · {}", poll.time_left_en));
+        }
+        column(
+            vec![
+                column(choices, "gap:4px"),
+                text(summary, &format!("color:{};font-size:13px", self.secondary)),
+            ],
+            "gap:12px;min-width:0",
+        )
+    }
+
     fn extras(&self, post: &Post, width: f32, compact: bool) -> Result<Vec<Node>> {
         let mut nodes = Vec::new();
+        if let Some(poll) = &post.poll {
+            nodes.push(self.poll(poll, width, compact));
+        }
         if let Some(media) = &post.media {
             if let Some(mosaic) = &media.mosaic {
                 nodes.push(self.photo(&mosaic.url, width)?);

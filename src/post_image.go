@@ -21,7 +21,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-const postImageVersion = 10
+const postImageVersion = 11
 const defaultPostImageTheme = "dark"
 
 type postImage struct {
@@ -47,6 +47,15 @@ type postCard struct {
 	Domain string     `json:"domain"`
 	Image  *postImage `json:"image,omitempty"`
 }
+type postPoll struct {
+	Choices []struct {
+		Label      string  `json:"label"`
+		Percentage float64 `json:"percentage"`
+	} `json:"choices"`
+	TotalVotes uint64 `json:"total_votes"`
+	TimeLeftEN string `json:"time_left_en"`
+}
+
 type renderPost struct {
 	AuthorName       string       `json:"author_name"`
 	AuthorUsername   string       `json:"author_username"`
@@ -61,6 +70,7 @@ type renderPost struct {
 	Quote            *renderPost  `json:"quote,omitempty"`
 	Article          *postArticle `json:"article,omitempty"`
 	Card             *postCard    `json:"card,omitempty"`
+	Poll             *postPoll    `json:"poll,omitempty"`
 }
 type renderRequest struct {
 	Theme      string            `json:"theme"`
@@ -101,6 +111,7 @@ type fxRichPost struct {
 		} `json:"cover_media"`
 	} `json:"article"`
 	Card *fxLinkCard `json:"card"`
+	Poll *postPoll   `json:"poll"`
 }
 
 type fxRichMedia struct {
@@ -131,7 +142,7 @@ func (p fxRichPost) normalize() (renderPost, error) {
 		AuthorName: p.Author.Name, AuthorUsername: p.Author.ScreenName,
 		AuthorAvatarURL: p.Author.AvatarURL, Text: p.Text,
 		CreatedTimestamp: p.Created, Likes: p.Likes, Retweets: p.Retweets, Replies: p.Replies,
-		Media: p.Media.normalize(),
+		Media: p.Media.normalize(), Poll: p.Poll.forDisplay(),
 	}
 	if p.Quote != nil {
 		q, err := p.Quote.normalize()
@@ -155,6 +166,17 @@ func (p fxRichPost) normalize() (renderPost, error) {
 		}
 	}
 	return out, nil
+}
+
+func (p *postPoll) forDisplay() *postPoll {
+	if p == nil {
+		return nil
+	}
+	poll := *p
+	if poll.TimeLeftEN != "" && poll.TimeLeftEN != "Final results" && !strings.HasSuffix(poll.TimeLeftEN, " left") {
+		poll.TimeLeftEN += " left"
+	}
+	return &poll
 }
 
 func (m *fxRichMedia) normalize() *postMedia {

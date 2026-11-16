@@ -49,6 +49,55 @@ fn height(output: &Output) -> u32 {
 }
 
 #[test]
+fn cli_renders_polls_in_posts_quotes_and_replies() {
+    let poll = json!({"choices":[{"label":"A long choice that wraps inside the narrower quoted and reply posts when needed", "percentage":55.2},{"label":"Other", "percentage":18.0}], "total_votes":1019, "time_left_en":"21 hours left"});
+    let post =
+        json!({"author_name":"A", "author_username":"a", "author_avatar_url":"", "text":"Hello"});
+    for theme in ["light", "warm", "dark", "dim"] {
+        let mut with_poll = post.clone();
+        with_poll["poll"] = poll.clone();
+        let cases = [
+            (
+                json!({"theme":theme,"post":post}),
+                json!({"theme":theme,"post":with_poll}),
+            ),
+            (
+                json!({"theme":theme,"post":{ "author_name":"A", "author_username":"a", "author_avatar_url":"", "text":"Hello", "quote":post }}),
+                json!({"theme":theme,"post":{ "author_name":"A", "author_username":"a", "author_avatar_url":"", "text":"Hello", "quote":with_poll }}),
+            ),
+            (
+                json!({"theme":theme,"post":post,"reply_chain":[post]}),
+                json!({"theme":theme,"post":post,"reply_chain":[with_poll]}),
+            ),
+        ];
+        for (index, (plain, polled)) in cases.into_iter().enumerate() {
+            let plain = render_request(plain);
+            let polled = render_request(polled);
+            assert!(height(&polled) > height(&plain) + 100, "{theme}");
+            assert_ne!(plain.stdout, polled.stdout);
+            if theme == "light" && index == 0 {
+                let image = image::load_from_memory(&polled.stdout).unwrap().to_rgb8();
+                let is_fill = |p: &Rgb<u8>| {
+                    p.0.iter()
+                        .zip([207, 217, 222])
+                        .all(|(a, b)| a.abs_diff(b) < 10)
+                };
+                let top = (180..image.height())
+                    .find(|&y| is_fill(image.get_pixel(100, y)))
+                    .unwrap();
+                assert!(is_fill(image.get_pixel(300, top + 8)));
+                assert!(!is_fill(image.get_pixel(700, top + 8)));
+                assert!(
+                    (top + 15..top + 100)
+                        .any(|y| (70..500).any(|x| image.get_pixel(x, y)[0] < 100)),
+                    "label must appear over the fill"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn cli_renders_theme_palettes() {
     for (theme, background) in [
         ("light", [255, 255, 255]),
