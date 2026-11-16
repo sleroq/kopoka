@@ -543,7 +543,9 @@ func (t *thumbnails) cacheWork(link *url.URL, count int, work *thumbnailWork) {
 	go func() {
 		<-work.done
 		if work.err != nil {
-			log.Printf("generating thumbnail for %s: %v", link, work.err)
+			if !errors.Is(work.err, errNoXMedia) {
+				log.Printf("generating thumbnail for %s: %v", link, work.err)
+			}
 			return
 		}
 		t.workers <- struct{}{}
@@ -892,9 +894,12 @@ func (t *thumbnails) render(source thumbnailSource, media []any, mode string) ([
 	size := min(1280, max(384, longest))
 	width := max(1, int(math.Round(float64(b.Dx())*float64(size)/float64(longest))))
 	height := max(1, int(math.Round(float64(b.Dy())*float64(size)/float64(longest))))
-	canvas := image.NewRGBA(image.Rect(0, 0, width, height))
+	canvasWidth := max(width, (height+19)/20)
+	canvasHeight := max(height, (width+19)/20)
+	canvas := image.NewRGBA(image.Rect(0, 0, canvasWidth, canvasHeight))
 	draw.Draw(canvas, canvas.Bounds(), image.NewUniform(color.White), image.Point{}, draw.Src)
-	draw.CatmullRom.Scale(canvas, canvas.Bounds(), img, b, draw.Over, nil)
+	x, y := (canvasWidth-width)/2, (canvasHeight-height)/2
+	draw.CatmullRom.Scale(canvas, image.Rect(x, y, x+width, y+height), img, b, draw.Over, nil)
 	if err := t.decorate(canvas, source.pixiv, source.count, source.selected, merged); err != nil {
 		return nil, nil, 0, err
 	}
@@ -903,9 +908,11 @@ func (t *thumbnails) render(source thumbnailSource, media []any, mode string) ([
 	if err := jpeg.Encode(&large, canvas, &jpeg.Options{Quality: 90}); err != nil {
 		return nil, nil, 0, err
 	}
-	small := image.NewRGBA(image.Rect(0, 0,
-		max(1, int(math.Round(float64(b.Dx())*384/float64(longest)))),
-		max(1, int(math.Round(float64(b.Dy())*384/float64(longest))))))
+	smallWidth := max(1, int(math.Round(float64(b.Dx())*384/float64(longest))))
+	smallHeight := max(1, int(math.Round(float64(b.Dy())*384/float64(longest))))
+	smallWidth = max(smallWidth, (smallHeight+19)/20)
+	smallHeight = max(smallHeight, (smallWidth+19)/20)
+	small := image.NewRGBA(image.Rect(0, 0, smallWidth, smallHeight))
 	draw.CatmullRom.Scale(small, small.Bounds(), canvas, canvas.Bounds(), draw.Src, nil)
 	var out bytes.Buffer
 	if err := jpeg.Encode(&out, small, &jpeg.Options{Quality: 90}); err != nil {

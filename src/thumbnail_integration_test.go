@@ -1226,3 +1226,133 @@ func TestThumbnailXQuotedMedia(t *testing.T) {
 		})
 	}
 }
+
+func TestExtremeThumbnailUploads(t *testing.T) {
+	fixtures := map[string][]byte{
+		"portrait":  thumbnailFixture(t, 40, 1200),
+		"landscape": thumbnailFixture(t, 1200, 40),
+	}
+	uploads := make(chan image.Image, 2)
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/getMe"):
+			_, _ = fmt.Fprint(w, `{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`)
+		case strings.HasSuffix(r.URL.Path, "/sendPhoto"):
+			file, _, err := r.FormFile("photo")
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			img, _, err := image.Decode(file)
+			_ = file.Close()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			uploads <- img
+			_, _ = fmt.Fprint(w, `{"ok":true,"result":{"message_id":1,"photo":[{"file_id":"cached"}]}}`)
+		case strings.HasSuffix(r.URL.Path, "/deleteMessage"):
+			_, _ = fmt.Fprint(w, `{"ok":true,"result":true}`)
+		case strings.HasPrefix(r.URL.Path, "/user/status/"):
+			id := strings.TrimPrefix(r.URL.Path, "/user/status/")
+			if id == "3" {
+				_, _ = fmt.Fprint(w, `{"code":200,"tweet":{}}`)
+				return
+			}
+			name := "portrait"
+			if id == "2" {
+				name = "landscape"
+			}
+			photo := map[string]any{"type": "photo", "url": server.URL + "/" + name}
+			media := map[string]any{"photos": []any{photo}}
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "tweet": map[string]any{"media": media}})
+		default:
+			_, _ = w.Write(fixtures[strings.TrimPrefix(r.URL.Path, "/")])
+		}
+	}))
+	defer server.Close()
+	bot, err := tgbotapi.NewBotAPIWithAPIEndpoint("token", server.URL+"/bot%s/%s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := openArtworkDB(filepath.Join(t.TempDir(), "artwork.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	previews := testPreviews(t, db, bot)
+	target, _ := url.Parse(server.URL)
+	previews.client = &http.Client{Transport: redirectTransport{target, http.DefaultTransport}}
+	previewServer := httptest.NewServer(previews)
+	defer previewServer.Close()
+	for _, tc := range []struct {
+		id           string
+		large, small image.Point
+		portrait     bool
+	}{
+		{"1", image.Pt(60, 1200), image.Pt(20, 384), true},
+		{"2", image.Pt(1200, 60), image.Pt(384, 20), false},
+	} {
+		t.Run(tc.id, func(t *testing.T) {
+			link, _ := url.Parse("https://x.com/user/status/" + tc.id)
+			photo, ok := previews.newPhoto(link, false)
+			if !ok || image.Pt(photo.width, photo.height) != tc.large {
+				t.Fatalf("photo: %+v, ok=%v", photo, ok)
+			}
+			for _, item := range []struct {
+				address string
+				size    image.Point
+			}{{photo.thumbnailURL, tc.small}, {photo.photoURL, tc.large}} {
+				res, err := http.Get(previewServer.URL + strings.TrimPrefix(item.address, "https://preview.example.com"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				img := readThumbnail(t, res)
+				checkExtremeThumbnail(t, img, item.size, tc.portrait)
+			}
+			select {
+			case img := <-uploads:
+				checkExtremeThumbnail(t, img, tc.large, tc.portrait)
+			case <-time.After(5 * time.Second):
+				t.Fatal("upload did not start")
+			}
+			awaitCachedThumbnail(t, db, "x:"+tc.id, 0)
+		})
+	}
+	link, _ := url.Parse("https://x.com/user/status/3")
+	if photo, ok := previews.newPhoto(link, false); ok {
+		t.Fatalf("text-only post returned photo: %+v", photo)
+	}
+}
+
+func checkExtremeThumbnail(t *testing.T, img image.Image, size image.Point, portrait bool) {
+	t.Helper()
+	if img.Bounds().Size() != size {
+		t.Fatalf("size = %v, want %v", img.Bounds().Size(), size)
+	}
+	// The original occupies two thirds of the short axis, with white padding on both sides.
+	point := func(short, long int) color.Color {
+		if portrait {
+			return img.At(short, long)
+		}
+		return img.At(long, short)
+	}
+	short, long := size.X, size.Y
+	if !portrait {
+		short, long = size.Y, size.X
+	}
+	for _, x := range []int{0, short - 1} {
+		r, g, b, _ := point(x, long/2).RGBA()
+		if r < 0xd000 || g < 0xd000 || b < 0xd000 {
+			t.Errorf("padding at %d: %v", x, point(x, long/2))
+		}
+	}
+	for _, x := range []int{short / 4, short / 2, short * 3 / 4} {
+		r, g, b, _ := point(x, long/2).RGBA()
+		if r > 0xd000 && g > 0xd000 && b > 0xd000 {
+			t.Errorf("image content at %d: %v", x, point(x, long/2))
+		}
+	}
+}
