@@ -188,6 +188,8 @@ func (s *instantSettingsScenario) inline(user int64, link string, merged bool) m
 	want := 8
 	if strings.Contains(link, "pixiv.net") {
 		want = 3
+	} else if merged {
+		want -= 2 // Unavailable X metadata shows only barred post images.
 	}
 	if !merged {
 		want -= 2
@@ -197,8 +199,13 @@ func (s *instantSettingsScenario) inline(user int64, link string, merged bool) m
 	if len(results) != want {
 		s.t.Fatalf("inline results: %#v", results)
 	}
-	if !strings.Contains(link, "pixiv.net") && results[len(results)-1]["id"] != "post:text" {
-		s.t.Fatalf("inline results: %#v", results)
+	if !strings.Contains(link, "pixiv.net") {
+		if results[len(results)-1]["id"] != "post:text" {
+			s.t.Fatalf("inline results: %#v", results)
+		}
+		if merged && (results[len(results)-3]["id"] != postImageID(inlineLink(link), "light-bars") || results[len(results)-2]["id"] != postImageID(inlineLink(link), "dark-bars")) {
+			s.t.Fatalf("inline results: %#v", results)
+		}
 	}
 	return results[0]
 }
@@ -211,6 +218,7 @@ func (s *instantSettingsScenario) expectThumbnail(user int64, link string, withP
 	s.network.previews.Store(withPreview)
 	result := s.inline(user, link, !withPreview)
 	if withPreview {
+		<-s.previews.start(inlineLink(link)).done
 		if s.api.sources.Load() <= before {
 			s.t.Fatalf("no source fetch for %s", link)
 		}
@@ -231,12 +239,14 @@ func (s *instantSettingsScenario) expectThumbnail(user int64, link string, withP
 		}
 		return
 	}
+	maxAttempts := attempts
 	if !strings.Contains(link, "pixiv.net") {
-		attempts++ // X metadata determines whether no-bars merging is available.
+		attempts++                 // X metadata determines whether no-bars merging is available.
+		maxAttempts = attempts + 1 // A failed metadata request may be retried.
 	}
-	if s.api.sources.Load() != before || s.network.attempts.Load() != attempts {
-		s.t.Fatalf("instant mode requests for %s: sources=%d attempts=%d, want %d and %d",
-			link, s.api.sources.Load(), s.network.attempts.Load(), before, attempts)
+	if got := s.network.attempts.Load(); s.api.sources.Load() != before || got < attempts || got > maxAttempts {
+		s.t.Fatalf("instant mode requests for %s: sources=%d attempts=%d, want %d and %d–%d",
+			link, s.api.sources.Load(), got, before, attempts, maxAttempts)
 	}
 	want := "https://preview.example.com/thumbnail-placeholder-x.jpg"
 	if strings.Contains(link, "pixiv.net") {

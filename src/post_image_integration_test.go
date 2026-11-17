@@ -97,7 +97,7 @@ cat "$KOPOKA_TEST_IMAGE"
 	previews := testPreviews(t, db, bot)
 	query := &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 1}, Query: "https://x.com/user/status/42/photo/2"}
 	handleInlineQuery(bot, db, query, previews)
-	if len(results) != 6 || results[5]["id"] != "post:text" || results[1]["id"] != "post-image:light:42" || results[2]["id"] != "post-image:dark:42" || results[3]["id"] != "post-image:light-bars:42" || results[4]["id"] != "post-image:dark-bars:42" || results[3]["photo_file_id"] != nil || strings.Join(calls, ",") != "answer" {
+	if len(results) != 4 || results[3]["id"] != "post:text" || results[1]["id"] != "post-image:light-bars:42" || results[2]["id"] != "post-image:dark-bars:42" || results[1]["photo_file_id"] != nil || strings.Join(calls, ",") != "answer" {
 		t.Fatalf("results %v calls %v", results, calls)
 	}
 	queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})
@@ -128,7 +128,7 @@ cat "$KOPOKA_TEST_IMAGE"
 	if len(calls) != before+1 {
 		t.Fatalf("cached results %v calls %v", results, calls)
 	}
-	for i, theme := range []string{"light", "dark", "light-bars", "dark-bars"} {
+	for i, theme := range []string{"light-bars", "dark-bars"} {
 		result := results[i+1]
 		if result["id"] != "post-image:"+theme+":42:cached" || result["input_message_content"].(map[string]any)["message_text"] != "Loading post image…" || result["photo_url"] == nil {
 			t.Fatalf("cached result: %v", result)
@@ -136,7 +136,7 @@ cat "$KOPOKA_TEST_IMAGE"
 	}
 	before = len(calls)
 	handleChosenInlineResult(bot, nil, db, &tgbotapi.ChosenInlineResult{
-		From: query.From, ResultID: results[4]["id"].(string), InlineMessageID: "inline", Query: query.Query,
+		From: query.From, ResultID: results[2]["id"].(string), InlineMessageID: "inline", Query: query.Query,
 	}, "@cache", queue, previews)
 	if len(calls) != before+1 || calls[before] != "edit" {
 		t.Fatalf("cached selection requests: %v", calls[before:])

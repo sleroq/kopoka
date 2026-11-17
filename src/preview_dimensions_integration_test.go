@@ -378,7 +378,7 @@ func TestMergedInlinePreview(t *testing.T) {
 
 			work := previews.start(inlineLink(query.Query))
 			<-work.done
-			if f.sourceCalls.Load() != 3 || f.imageCalls.Load() != 4 {
+			if f.sourceCalls.Load() != 3 || f.imageCalls.Load() != 3 {
 				t.Fatalf("requests: source=%d images=%d", f.sourceCalls.Load(), f.imageCalls.Load())
 			}
 			if work.actual != tc.actual || work.photoCount != 2 {

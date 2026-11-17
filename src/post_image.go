@@ -505,6 +505,15 @@ func inlinePostImageResults(db *sql.DB, user int64, link *url.URL, previews *thu
 	}
 
 	metadata := previews.start(xPostLink(link))
+	onlyBarsResult := make(chan bool, 1)
+	go func() {
+		select {
+		case <-metadata.sourceDone:
+			onlyBarsResult <- metadata.moving || !metadata.sourceOK && !errors.Is(metadata.sourceErr, errNoXMedia)
+		case <-time.After(8 * time.Second):
+			onlyBarsResult <- true
+		}
+	}()
 	var work *postImagePreviewWork
 	var barsAvailable chan bool
 	if !instant {
@@ -522,12 +531,7 @@ func inlinePostImageResults(db *sql.DB, user int64, link *url.URL, previews *thu
 
 	showBars := barsAvailable == nil || <-barsAvailable
 	duplicateBars := previews.duplicatePostImageBars(link, zone, translation, work)
-	onlyBars := true
-	select {
-	case <-metadata.sourceDone:
-		onlyBars = metadata.moving || !metadata.sourceOK && !errors.Is(metadata.sourceErr, errNoXMedia)
-	case <-time.After(8 * time.Second):
-	}
+	onlyBars := <-onlyBarsResult
 	var results []any
 	for i, result := range postImages {
 		image := <-result

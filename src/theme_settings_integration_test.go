@@ -160,7 +160,7 @@ func verifySelectedPostImageResults(t *testing.T, db *sql.DB, query func(int64, 
 			ids = append(ids, id)
 		}
 	}
-	if strings.Join(ids, ",") != "post-image:warm:1,post-image:dim:1,post-image:warm-bars:1,post-image:dim-bars:1" {
+	if strings.Join(ids, ",") != "post-image:warm-bars:1,post-image:dim-bars:1" {
 		t.Fatal(ids)
 	}
 }
