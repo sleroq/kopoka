@@ -411,7 +411,7 @@ func loadPostAssets(client *http.Client, p renderPost, images map[string][]byte,
 	return nil
 }
 
-func runPostRenderer(request renderRequest) ([]byte, error) {
+func runRenderer(request any) ([]byte, error) {
 	input, err := json.Marshal(request)
 	if err != nil {
 		return nil, err
@@ -428,13 +428,13 @@ func runPostRenderer(request renderRequest) ([]byte, error) {
 	cmd.Stdout = &out
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("rendering post image: %w: %s", err, stderr.String())
+		return nil, fmt.Errorf("rendering image: %w: %s", err, stderr.String())
 	}
 	return out.Bytes(), nil
 }
 
 func renderPostImage(request renderRequest) ([]byte, error) {
-	data, err := runPostRenderer(request)
+	data, err := runRenderer(request)
 	if err != nil {
 		return nil, err
 	}
@@ -520,12 +520,7 @@ func postImageResult(db *sql.DB, link *url.URL, theme, zone string, previews *th
 	if err != nil {
 		log.Printf("loading cached post image: %v", err)
 	}
-	var result map[string]any
-	if media.Type != "" {
-		result = inlineCachedMedia(media.Type, string(media.Media.(tgbotapi.FileID)))
-	} else {
-		result = inlinePhoto(previews.postImagePreview(link, theme, zone, work))
-	}
+	result := inlinePhoto(previews.postImagePreview(link, theme, zone, work))
 	result["id"] = postImageID(link, theme)
 	baseTheme := strings.TrimSuffix(theme, "-bars")
 	result["title"] = "Post image · " + strings.ToUpper(baseTheme[:1]) + baseTheme[1:]
@@ -534,9 +529,6 @@ func postImageResult(db *sql.DB, link *url.URL, theme, zone string, previews *th
 	}
 	if media.Type != "" {
 		result["id"] = postImageID(link, theme) + ":cached"
-		result["caption"] = media.Caption
-		result["parse_mode"] = "HTML"
-		return result
 	}
 	result["input_message_content"] = map[string]any{
 		"message_text": "Loading post image…", "disable_web_page_preview": true,

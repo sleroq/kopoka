@@ -41,6 +41,9 @@ func testPostImagePreviewFlow(t *testing.T, renderer string) {
 	t.Setenv("PREVIEW_TEST_RENDERER", renderer)
 	script := `#!/bin/sh
 input=$(cat)
+case "$input" in *'"preview":'*)
+  if [ -n "$PREVIEW_TEST_RENDERER" ]; then printf '%s' "$input" | "$PREVIEW_TEST_RENDERER"; else cat "$PREVIEW_TEST_IMAGE"; fi
+  exit;; esac
 case "$input" in *'"theme":"light"'*) theme=light;; *) theme=dark;; esac
 case "$input" in *'"carousel":true'*) theme="$theme-bars";; esac
 printf '%s' "$input" > "$PREVIEW_TEST_DIR/$theme.json"
@@ -135,7 +138,7 @@ cat "$PREVIEW_TEST_IMAGE"
 			t.Fatal(err)
 		}
 		result := postImageResult(db, link, theme, defaultTimezone, previews, work)
-		if result["photo_file_id"] != "card" || result["id"] != postImageID(link, theme)+":cached" || !strings.Contains(result["caption"].(string), "Artist") {
+		if result["id"] != postImageID(link, theme)+":cached" || result["input_message_content"].(map[string]any)["message_text"] != "Loading post image…" || result["photo_url"] == nil {
 			t.Fatalf("cached: %v", result)
 		}
 	}

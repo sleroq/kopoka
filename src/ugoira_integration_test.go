@@ -363,7 +363,7 @@ func TestPixivNumericSelection(t *testing.T) {
 
 	previews.app = app
 	source, err := previews.pixivSource(link)
-	if err != nil || source.selected != 2 || len(source.media) != 1 || source.media[0].ThumbnailURL != "https://i.pximg.net/p1" {
+	if err != nil || len(source.media) != 1 || source.media[0].ThumbnailURL != "https://i.pximg.net/p1" {
 		t.Fatalf("selected thumbnail: %+v %v", source, err)
 	}
 }

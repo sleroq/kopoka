@@ -8,4 +8,5 @@ cd "$(dirname "$SCRIPTPATH")"
 
 source ./scripts/env.bash
 
+export KOPOKA_RENDERER="${KOPOKA_RENDERER:-$PWD/dist/kopoka-render}"
 ./dist/kopoka

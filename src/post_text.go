@@ -22,8 +22,12 @@ import (
 
 const inlinePostTextID = "post:text"
 
-func inlinePostTextResult(link *url.URL, previews *thumbnails) map[string]any {
-	result := inlinePhoto(previews.postTextPhoto())
+func inlinePostTextResult(db *sql.DB, user int64, link *url.URL, previews *thumbnails, instant bool) map[string]any {
+	rich, err := xPostRichTextEnabled(db, user)
+	if err != nil {
+		log.Printf("loading X post format: %v", err)
+	}
+	result := inlinePhoto(previews.postTextPreview(link, rich, instant))
 	result["id"], result["title"] = inlinePostTextID, "Post with text"
 	result["description"] = "Post, quote and reply thread"
 	result["input_message_content"] = map[string]any{

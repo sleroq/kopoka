@@ -78,12 +78,8 @@ func TestMotionViewsIntegration(t *testing.T) {
 			if err != nil || cached.Type != want || cached.Media != tgbotapi.FileID("card") {
 				t.Fatalf("cached %+v: %v", cached, err)
 			}
-			result := postImageResult(db, link, "light", defaultTimezone, nil, nil)
-			resultType, field := "mpeg4_gif", "mpeg4_file_id"
-			if want == "video" {
-				resultType, field = "video", "video_file_id"
-			}
-			if result["type"] != resultType || result[field] != "card" {
+			result := postImageResult(db, link, "light", defaultTimezone, testPreviews(t, db, bot), nil)
+			if result["type"] != "photo" || result["id"] != postImageID(link, "light")+":cached" || result["input_message_content"].(map[string]any)["message_text"] != "Loading post image…" {
 				t.Fatalf("inline result %v", result)
 			}
 		})

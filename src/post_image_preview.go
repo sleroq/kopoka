@@ -1,11 +1,7 @@
 package main
 
 import (
-	"bytes"
-	"image"
-	"image/jpeg"
 	"log"
-	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -13,7 +9,6 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"golang.org/x/image/draw"
 )
 
 type postImagePreviewWork struct {
@@ -29,12 +24,12 @@ type postImagePreviewWork struct {
 	finished   time.Time
 }
 type postImagePreviewVariant struct {
-	request         renderRequest
-	done            chan struct{}
-	data, thumbnail []byte
-	width, height   int
-	caption         string
-	err             error
+	request                  renderRequest
+	done                     chan struct{}
+	data, preview, thumbnail []byte
+	width, height            int
+	caption                  string
+	err                      error
 }
 
 func postImagePreviewLink(link *url.URL) *url.URL {
@@ -92,7 +87,7 @@ func (t *thumbnails) startPostImageVariant(work *postImagePreviewWork, link *url
 			t.mu.Unlock()
 			<-normal.done
 			variant.request = normal.request
-			variant.data, variant.thumbnail = normal.data, normal.thumbnail
+			variant.data, variant.preview, variant.thumbnail = normal.data, normal.preview, normal.thumbnail
 			variant.width, variant.height = normal.width, normal.height
 			variant.caption, variant.err = normal.caption, normal.err
 			close(variant.done)
@@ -102,7 +97,7 @@ func (t *thumbnails) startPostImageVariant(work *postImagePreviewWork, link *url
 			if strings.HasSuffix(theme, "-bars") {
 				request = work.bars
 			}
-			variant.render(link, request, theme, work.prepareErr)
+			variant.render(t, link, request, theme, work.prepareErr)
 			<-t.workers
 		}
 		t.mu.Lock()
@@ -118,7 +113,7 @@ func (t *thumbnails) startPostImageVariant(work *postImagePreviewWork, link *url
 	}()
 }
 
-func (variant *postImagePreviewVariant) render(link *url.URL, request renderRequest, theme string, prepareErr error) {
+func (variant *postImagePreviewVariant) render(t *thumbnails, link *url.URL, request renderRequest, theme string, prepareErr error) {
 	defer close(variant.done)
 	variant.err = prepareErr
 	if prepareErr != nil {
@@ -131,21 +126,11 @@ func (variant *postImagePreviewVariant) render(link *url.URL, request renderRequ
 	if variant.err != nil {
 		return
 	}
-	img, err := jpeg.Decode(bytes.NewReader(variant.data))
-	if err != nil {
-		variant.err = err
-		return
+	blocks := []previewBlock{
+		{Kind: "media", Image: variant.data, Video: request.hasMotion(), Count: 1},
+		{Kind: "caption", Text: request.Post.AuthorName},
 	}
-	bounds := img.Bounds()
-	variant.width, variant.height = bounds.Dx(), bounds.Dy()
-	longest := max(variant.width, variant.height)
-	width := max(1, int(math.Round(float64(variant.width)*384/float64(longest))))
-	height := max(1, int(math.Round(float64(variant.height)*384/float64(longest))))
-	small := image.NewRGBA(image.Rect(0, 0, width, height))
-	draw.CatmullRom.Scale(small, small.Bounds(), img, bounds, draw.Src, nil)
-	var out bytes.Buffer
-	variant.err = jpeg.Encode(&out, small, &jpeg.Options{Quality: 90})
-	variant.thumbnail = out.Bytes()
+	variant.thumbnail, variant.preview, variant.width, variant.height, variant.err = t.renderMessagePreview(blocks)
 }
 
 func (work *postImagePreviewWork) duplicateBars() bool {
@@ -193,7 +178,7 @@ func (t *thumbnails) postImagePreview(link *url.URL, theme, zone string, work *p
 			address.Path += "/post-image-preview"
 			address.RawQuery = url.Values{
 				"url": {link.String()}, "theme": {theme},
-				"tz": {zone}, "v": {strconv.Itoa(postImageVersion)},
+				"tz": {zone}, "v": {strconv.Itoa(postImageVersion)}, "frame": {strconv.Itoa(thumbnailRenderVersion)},
 			}.Encode()
 			u := address.String()
 			return previewPhoto{photoURL: u + "&size=large", thumbnailURL: u, width: variant.width, height: variant.height}
@@ -262,7 +247,7 @@ func (t *thumbnails) servePostImagePreview(w http.ResponseWriter, r *http.Reques
 		}
 		data := variant.thumbnail
 		if r.URL.Query().Get("size") == "large" {
-			data = variant.data
+			data = variant.preview
 		}
 		w.Header().Set("Content-Type", "image/jpeg")
 		_, _ = w.Write(data)

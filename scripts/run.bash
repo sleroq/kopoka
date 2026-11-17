@@ -8,4 +8,9 @@ cd "$(dirname "$SCRIPTPATH")"
 
 source ./scripts/env.bash
 
+if [[ -z "${KOPOKA_RENDERER:-}" ]]; then
+  cargo build --bin kopoka-render
+  export KOPOKA_RENDERER="$PWD/target/debug/kopoka-render"
+fi
+
 go run ./src

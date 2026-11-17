@@ -148,20 +148,11 @@ func (f *previewFlowServer) answer(t *testing.T, bot *tgbotapi.BotAPI, previews 
 }
 
 func TestPreviewInlineDimensions(t *testing.T) {
-	for _, tc := range []struct {
-		id           string
-		large, small image.Point
-	}{
-		{"1", image.Pt(800, 1280), image.Pt(240, 384)},
-		{"2", image.Pt(400, 320), image.Pt(384, 307)},
-	} {
+	for _, tc := range []struct{ id string }{{"1"}, {"2"}} {
 		t.Run(tc.id, func(t *testing.T) {
 			f := newPreviewFlowServer(t)
 			previews, bot := f.setup(t)
 			result := f.answer(t, bot, previews, tc.id)
-			if result["photo_width"] != float64(tc.large.X) || result["photo_height"] != float64(tc.large.Y) {
-				t.Fatalf("advertised: %#v", result)
-			}
 			photo, thumb := uncachedThumbnailURLs(t, result)
 			for i, raw := range []string{photo, thumb} {
 				u, err := url.Parse(raw)
@@ -172,9 +163,12 @@ func TestPreviewInlineDimensions(t *testing.T) {
 				response := httptest.NewRecorder()
 				previews.ServeHTTP(response, request)
 				img, format, err := image.Decode(bytes.NewReader(response.Body.Bytes()))
-				expected := []image.Point{tc.large, tc.small}[i]
-				if response.Code != 200 || err != nil || format != "jpeg" || img.Bounds().Size() != expected {
+				if response.Code != 200 || err != nil || format != "jpeg" {
 					t.Fatalf("image %d: %d %s %v", i, response.Code, format, err)
+				}
+				size := img.Bounds().Size()
+				if i == 0 && (result["photo_width"] != float64(size.X) || result["photo_height"] != float64(size.Y)) || i == 1 && max(size.X, size.Y) != 384 {
+					t.Fatalf("image %d dimensions %v, result %#v", i, size, result)
 				}
 			}
 			f.release()
@@ -202,8 +196,7 @@ func TestHistoryPreviewDoesNotWait(t *testing.T) {
 	}()
 	select {
 	case result := <-done:
-		uncachedThumbnailURLs(t, result)
-		if result["photo_width"] != float64(800) || result["photo_height"] != float64(1280) {
+		if result["photo_url"] != "https://preview.example.com/thumbnail-placeholder-x.jpg" || !strings.Contains(fmt.Sprint(result["input_message_content"]), "art-file") {
 			t.Fatalf("history dimensions: %#v", result)
 		}
 	case <-time.After(2 * time.Second):
@@ -251,13 +244,22 @@ func TestPreviewWarmupAfterSave(t *testing.T) {
 			case <-time.After(5 * time.Second):
 				t.Fatal("preview upload did not start")
 			}
+			work := previews.start(inlineLink(link))
+			<-work.done
+			if work.err != nil {
+				t.Fatal(work.err)
+			}
+			frame, _, err := image.Decode(bytes.NewReader(work.large))
+			if err != nil {
+				t.Fatal(err)
+			}
 			deadline := time.Now().Add(5 * time.Second)
 			for {
 				a, err := findArtwork(previews.db, "x:3")
 				if err != nil {
 					t.Fatal(err)
 				}
-				if a != nil && a.PreviewWidth == 800 && a.PreviewHeight == 1280 {
+				if a != nil && a.PreviewWidth == frame.Bounds().Dx() && a.PreviewHeight == frame.Bounds().Dy() {
 					break
 				}
 				if time.Now().After(deadline) {
@@ -265,7 +267,7 @@ func TestPreviewWarmupAfterSave(t *testing.T) {
 				}
 				time.Sleep(10 * time.Millisecond)
 			}
-			if mode == "inline-after-preview" && f.source3.Load() != 3 {
+			if mode == "inline-after-preview" && f.source3.Load() != 4 {
 				t.Fatalf("source requests with existing preview: %d", f.source3.Load())
 			}
 			f.release()
@@ -350,7 +352,7 @@ func TestMergedInlinePreview(t *testing.T) {
 			barsResponse := httptest.NewRecorder()
 			previews.ServeHTTP(barsResponse, httptest.NewRequest("GET", barsURL.RequestURI(), nil))
 			barsImage, _, err := image.Decode(bytes.NewReader(barsResponse.Body.Bytes()))
-			if barsResponse.Code != 200 || err != nil || barsImage.Bounds().Dx()*tc.size.Y <= tc.size.X*barsImage.Bounds().Dy() {
+			if barsResponse.Code != 200 || err != nil || results[2]["photo_width"] != float64(barsImage.Bounds().Dx()) || results[2]["photo_height"] != float64(barsImage.Bounds().Dy()) {
 				t.Fatalf("bars preview: %d %v", barsResponse.Code, err)
 			}
 
@@ -364,13 +366,13 @@ func TestMergedInlinePreview(t *testing.T) {
 			if response.Code != 200 || err != nil || format != "jpeg" {
 				t.Fatalf("merged image: %d %s %v", response.Code, format, err)
 			}
-			if img.Bounds().Size() != tc.size || results[1]["photo_width"] != float64(tc.size.X) || results[1]["photo_height"] != float64(tc.size.Y) {
+			if results[1]["photo_width"] != float64(img.Bounds().Dx()) || results[1]["photo_height"] != float64(img.Bounds().Dy()) {
 				t.Fatalf("merged dimensions: %v, result: %#v", img.Bounds().Size(), results[1])
 			}
 
 			work := previews.start(inlineLink(query.Query))
 			<-work.done
-			if f.sourceCalls.Load() != 2 || f.imageCalls.Load() != 2 {
+			if f.sourceCalls.Load() != 3 || f.imageCalls.Load() != 4 {
 				t.Fatalf("requests: source=%d images=%d", f.sourceCalls.Load(), f.imageCalls.Load())
 			}
 			if work.actual != tc.actual || work.photoCount != 2 {

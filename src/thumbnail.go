@@ -83,9 +83,8 @@ type thumbnails struct {
 	themePreviews     map[string]themePreviewImages
 	work              map[string]*thumbnailWork
 	postImageWork     map[string]*postImagePreviewWork
+	postTextWork      map[string]*postTextPreviewWork
 	workers           chan struct{}
-	logos             map[bool]image.Image
-	font              *opentype.Font
 }
 
 func startThumbnails(app *pixiv.AppPixivAPI, bot *tgbotapi.BotAPI, db *sql.DB, cacheChat string) (*thumbnails, error) {
@@ -193,8 +192,7 @@ func newThumbnails(baseURL string, app *pixiv.AppPixivAPI, bot *tgbotapi.BotAPI,
 	}
 	return &thumbnails{
 		base: base, app: app, bot: bot, db: db, cacheChat: cacheChat, placeholders: placeholders, postImages: postImages, postTextIcon: postTextIcon, mergedPlaceholder: mergedPlaceholder.Bytes(), barsPlaceholder: barsPlaceholder.Bytes(), client: &http.Client{Timeout: 15 * time.Second},
-		work: make(map[string]*thumbnailWork), postImageWork: make(map[string]*postImagePreviewWork), themePreviews: make(map[string]themePreviewImages), workers: make(chan struct{}, 6),
-		logos: logos, font: bold,
+		work: make(map[string]*thumbnailWork), postImageWork: make(map[string]*postImagePreviewWork), postTextWork: make(map[string]*postTextPreviewWork), themePreviews: make(map[string]themePreviewImages), workers: make(chan struct{}, 6),
 	}, nil
 }
 
@@ -207,28 +205,28 @@ func (t *thumbnails) cached(link *url.URL, count int) string {
 }
 
 func (t *thumbnails) savedPhoto(a artwork) previewPhoto {
-	if strings.HasSuffix(a.ID, ":merged:bars") && mediaType(a, 0) == "photo" {
-		return previewPhoto{fileID: a.Photos[0]}
-	}
-	if strings.HasSuffix(a.ID, ":merged") {
-		if link := inlineLink(a.URL); link != nil {
-			if photo, ok := t.mergedPhoto(link, false); ok {
-				return photo
-			}
-		}
-	}
 	if link := inlineLink(a.URL); link != nil {
+		bars := strings.HasSuffix(a.ID, ":merged:bars")
+		if bars || strings.HasSuffix(a.ID, ":merged") {
+			work := t.warmup(link, 0)
+			done := work.forcedDone
+			if bars {
+				done = work.barsDone
+			}
+			select {
+			case <-done:
+				if photo, ok := t.mergedPhotoVariant(link, false, bars); ok {
+					return photo
+				}
+			default:
+			}
+			return t.mergedPlaceholderPhoto(bars)
+		}
 		count := len(a.Photos)
 		if id := t.cached(link, count); id != "" {
 			return previewPhoto{fileID: id}
 		}
 		t.warmArtwork(link, count)
-		if a.PreviewWidth > 0 && a.PreviewHeight > 0 {
-			return t.urlPhoto(link, count, a.PreviewWidth, a.PreviewHeight)
-		}
-	}
-	if mediaType(a, 0) == "photo" {
-		return previewPhoto{fileID: a.Photos[0]}
 	}
 	return t.placeholder(strings.HasPrefix(a.ID, "pixiv:"))
 }
@@ -606,6 +604,9 @@ func (t *thumbnails) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.HasSuffix(r.URL.Path, "/post-image-preview"):
 		t.servePostImagePreview(w, r)
 		return
+	case strings.HasSuffix(r.URL.Path, "/post-text-preview"):
+		t.servePostTextPreview(w, r)
+		return
 	case strings.HasSuffix(r.URL.Path, "/thumbnail"):
 		t.serveThumbnail(w, r)
 		return
@@ -678,11 +679,14 @@ type thumbnailMedia struct {
 	ThumbnailURL string `json:"thumbnail_url"`
 }
 
+func (media thumbnailMedia) moving() bool {
+	return media.Type == "video" || media.Type == "gif"
+}
+
 type thumbnailSource struct {
+	author     string
+	video      bool
 	media      []thumbnailMedia
-	count      int
-	selected   int
-	pixiv      bool
 	pixivPages bool
 }
 
@@ -716,7 +720,10 @@ func (t *thumbnails) pixivSource(link *url.URL) (thumbnailSource, error) {
 		return thumbnailSource{}, err
 	}
 
-	source := thumbnailSource{pixiv: true, count: max(1, illust.PageCount, len(illust.MetaPages)), selected: selected}
+	source := thumbnailSource{video: illust.Type == "ugoira"}
+	if illust.User != nil {
+		source.author = illust.User.Name
+	}
 	if illust.Type != "ugoira" && len(illust.MetaPages) > 1 {
 		source.pixivPages = true
 		for i, page := range illust.MetaPages {
@@ -759,7 +766,10 @@ func (t *thumbnails) xSource(link *url.URL) (thumbnailSource, error) {
 	var response struct {
 		Code  int `json:"code"`
 		Tweet *struct {
-			Media fxMedia `json:"media"`
+			Media  fxMedia `json:"media"`
+			Author struct {
+				Name string `json:"name"`
+			} `json:"author"`
 			Quote struct {
 				Media fxMedia `json:"media"`
 			} `json:"quote"`
@@ -811,13 +821,13 @@ func (t *thumbnails) xSource(link *url.URL) (thumbnailSource, error) {
 			return thumbnailSource{}, fmt.Errorf("unsupported FxTwitter media type %q", item.Type)
 		}
 	}
-	return thumbnailSource{media: items, count: count, selected: selected}, nil
+	return thumbnailSource{media: items, author: response.Tweet.Author.Name}, nil
 }
 
 func (t *thumbnails) downloadSource(source thumbnailSource) ([]any, error) {
 	media := make([]any, 0, len(source.media))
 	for i, item := range source.media {
-		if item.Type == "video" || item.Type == "gif" {
+		if item.moving() {
 			if i > 0 {
 				media = append(media, tgbotapi.NewInputMediaVideo(tgbotapi.FileURL(item.ThumbnailURL)))
 				continue
@@ -844,7 +854,7 @@ func (t *thumbnails) downloadSource(source thumbnailSource) ([]any, error) {
 	return media, nil
 }
 
-func (t *thumbnails) mergeSource(source thumbnailSource, media []any, mode string) (image.Image, int, bool, error) {
+func (t *thumbnails) mergeSource(media []any, mode string) (image.Image, int, error) {
 	if mode != "" {
 		media = append([]any(nil), media...)
 		for i, item := range media {
@@ -853,27 +863,17 @@ func (t *thumbnails) mergeSource(source thumbnailSource, media []any, mode strin
 			}
 		}
 	}
-	first, isPhoto := media[0].(tgbotapi.InputMediaPhoto)
 	if mode != "" {
 		var err error
 		media, err = forceMergePanels(media, mode == "bars")
 		if err != nil {
-			return nil, 0, false, err
+			return nil, 0, err
 		}
 	} else {
 		media = mergeArtPhotos(media)
 	}
-	merged := false
-	if isPhoto {
-		joined := media[0].(tgbotapi.InputMediaPhoto)
-		merged = !bytes.Equal(first.Media.(tgbotapi.FileBytes).Bytes, joined.Media.(tgbotapi.FileBytes).Bytes)
-	}
-	actual := source.count
-	if len(source.media) > 1 || source.selected > 0 {
-		actual = len(media)
-	}
 	img, err := downloadArtPhoto(t.client, mediaBase(media[0]).Media)
-	return img, actual, merged, err
+	return img, len(media), err
 }
 
 func (t *thumbnails) generate(link *url.URL) ([]byte, []byte, int, error) {
@@ -889,7 +889,7 @@ func (t *thumbnails) generate(link *url.URL) ([]byte, []byte, int, error) {
 }
 
 func (t *thumbnails) render(source thumbnailSource, media []any, mode string) ([]byte, []byte, int, error) {
-	img, actual, merged, err := t.mergeSource(source, media, mode)
+	img, actual, err := t.mergeSource(media, mode)
 	if err != nil {
 		return nil, nil, 0, err
 	}
@@ -908,74 +908,24 @@ func (t *thumbnails) render(source thumbnailSource, media []any, mode string) ([
 	draw.Draw(canvas, canvas.Bounds(), image.NewUniform(color.White), image.Point{}, draw.Src)
 	x, y := (canvasWidth-width)/2, (canvasHeight-height)/2
 	draw.CatmullRom.Scale(canvas, image.Rect(x, y, x+width, y+height), img, b, draw.Over, nil)
-	if err := t.decorate(canvas, source.pixiv, source.count, source.selected, merged); err != nil {
+	var encoded bytes.Buffer
+	if err := jpeg.Encode(&encoded, canvas, &jpeg.Options{Quality: 90}); err != nil {
 		return nil, nil, 0, err
 	}
-
-	var large bytes.Buffer
-	if err := jpeg.Encode(&large, canvas, &jpeg.Options{Quality: 90}); err != nil {
-		return nil, nil, 0, err
-	}
-	smallWidth := max(1, int(math.Round(float64(b.Dx())*384/float64(longest))))
-	smallHeight := max(1, int(math.Round(float64(b.Dy())*384/float64(longest))))
-	smallWidth = max(smallWidth, (smallHeight+19)/20)
-	smallHeight = max(smallHeight, (smallWidth+19)/20)
-	small := image.NewRGBA(image.Rect(0, 0, smallWidth, smallHeight))
-	draw.CatmullRom.Scale(small, small.Bounds(), canvas, canvas.Bounds(), draw.Src, nil)
-	var out bytes.Buffer
-	if err := jpeg.Encode(&out, small, &jpeg.Options{Quality: 90}); err != nil {
-		return nil, nil, 0, err
-	}
-	return out.Bytes(), large.Bytes(), actual, nil
-}
-
-func (t *thumbnails) decorate(canvas *image.RGBA, pix bool, count, selected int, merged bool) error {
-	width, height := canvas.Bounds().Dx(), canvas.Bounds().Dy()
-	// Offset shadows and a faint border keep overlays distinct against any artwork.
-	tile := image.NewRGBA(image.Rect(0, 0, 76*4, 76*4))
-	rounded(tile, image.Rect(2*4, 2*4, 76*4, 76*4), 15*4, color.NRGBA{0, 0, 0, 70})
-	rounded(tile, image.Rect(0, 0, 74*4, 74*4), 15*4, color.NRGBA{255, 255, 255, 100})
-	background := color.NRGBA{0, 0, 0, 255}
-	if pix {
-		background = color.NRGBA{0, 150, 250, 255}
-	}
-	rounded(tile, image.Rect(1*4, 1*4, 73*4, 73*4), 14*4, background)
-	logo := t.logos[pix]
-	at := image.Pt(37*4-logo.Bounds().Dx()/2, 37*4-logo.Bounds().Dy()/2)
-	draw.Draw(tile, image.Rectangle{Min: at, Max: at.Add(logo.Bounds().Size())}, logo, logo.Bounds().Min, draw.Over)
-	shorter := min(width, height)
-	tileSize := max(1, int(math.Round(float64(shorter)*76/384)))
-	margin := int(math.Round(float64(shorter) * 12 / 384))
-	tileBounds := image.Rect(width-margin-tileSize, height-margin-tileSize, width-margin, height-margin)
-	draw.CatmullRom.Scale(canvas, tileBounds, tile, tile.Bounds(), draw.Over, nil)
-
-	if count <= 1 && selected == 0 && !merged {
-		return nil
-	}
-	badge := image.NewRGBA(image.Rect(0, 0, 384*4, 56*4))
-	right := 370 * 4
-	if count > 1 || selected > 0 {
-		label := strconv.Itoa(count)
-		if selected > 0 {
-			label = strconv.Itoa(selected) + "/" + label
-		}
-		left, err := t.badge(badge, label)
-		if err != nil {
-			return err
-		}
-		right = left - 8*4
-	}
-	if merged {
-		left := right - 38*4
-		badgeBackground(badge, left, right)
-		for i := range 4 {
-			x := left + (9+i*6)*4
-			rounded(badge, image.Rect(x, 26*4, x+2*4, 42*4), 1*4, color.NRGBA{255, 255, 255, 255})
+	video := source.video || source.media[0].moving()
+	count := actual
+	if mode != "" {
+		count = 1
+		for _, item := range source.media {
+			video = video || item.moving()
 		}
 	}
-	badgeHeight := max(1, int(math.Round(float64(shorter)*56/384)))
-	draw.CatmullRom.Scale(canvas, image.Rect(width-shorter, 0, width, badgeHeight), badge, badge.Bounds(), draw.Over, nil)
-	return nil
+	blocks := []previewBlock{{Kind: "media", Image: encoded.Bytes(), Video: video, Count: count}}
+	if source.author != "" {
+		blocks = append(blocks, previewBlock{Kind: "caption", Text: source.author})
+	}
+	small, large, _, _, err := t.renderMessagePreview(blocks)
+	return small, large, actual, err
 }
 
 func rounded(dst *image.RGBA, r image.Rectangle, radius float32, c color.NRGBA) {
@@ -992,22 +942,6 @@ func rounded(dst *image.RGBA, r image.Rectangle, radius float32, c color.NRGBA) 
 	z.QuadTo(x0, y0, x0+radius, y0)
 	z.ClosePath()
 	z.Draw(dst, dst.Bounds(), image.NewUniform(c), image.Point{})
-}
-
-func (t *thumbnails) badge(dst *image.RGBA, label string) (int, error) {
-	face, err := opentype.NewFace(t.font, &opentype.FaceOptions{Size: 22 * 4, DPI: 72, Hinting: font.HintingFull})
-	if err != nil {
-		return 0, err
-	}
-	defer func() { _ = face.Close() }()
-	width := font.MeasureString(face, label).Ceil()
-	left := 370*4 - (width + 47*4)
-	badgeBackground(dst, left, 370*4)
-	rounded(dst, image.Rect(left+12*4, 26*4, left+25*4, 37*4), 2*4, color.NRGBA{255, 255, 255, 150})
-	rounded(dst, image.Rect(left+15*4, 29*4, left+28*4, 40*4), 2*4, color.NRGBA{255, 255, 255, 255})
-	d := font.Drawer{Dst: dst, Src: image.NewUniform(color.White), Face: face, Dot: fixed.P(left+35*4, 42*4)}
-	d.DrawString(label)
-	return left, nil
 }
 
 func badgeBackground(dst *image.RGBA, left, right int) {

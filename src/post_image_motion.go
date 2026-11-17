@@ -34,7 +34,7 @@ func renderPostMedia(link *url.URL, request renderRequest) (any, error) {
 	base := tgbotapi.BaseInputMedia{Type: "photo", Caption: postImageCaption(link, request), ParseMode: "HTML"}
 	if request.hasMotion() {
 		request.Scene = true
-		data, err := runPostRenderer(request)
+		data, err := runRenderer(request)
 		if err != nil {
 			return nil, err
 		}

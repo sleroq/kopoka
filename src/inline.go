@@ -114,30 +114,16 @@ func inlinePhoto(photo previewPhoto) map[string]any {
 	return result
 }
 
-func inlineCachedMedia(kind, file string) map[string]any {
-	switch kind {
-	case "animation":
-		return map[string]any{"type": "mpeg4_gif", "mpeg4_file_id": file}
-	case "video":
-		return map[string]any{"type": "video", "video_file_id": file}
-	default:
-		return inlinePhoto(previewPhoto{fileID: file})
-	}
-}
-
 func cachedInlineResult(a artwork, previews *thumbnails) map[string]any {
-	if len(a.Photos) == 1 && mediaType(a, 0) != "photo" &&
-		(strings.HasSuffix(a.ID, ":merged") || strings.HasSuffix(a.ID, ":merged:bars")) {
-		result := inlineCachedMedia(mediaType(a, 0), a.Photos[0])
-		result["id"], result["title"], result["description"] = a.ID, a.Author, a.Text
-		result["caption"], result["parse_mode"] = strings.TrimSuffix(a.Caption, "\n"), "HTML"
-		return result
-	}
 	result := inlinePhoto(previews.savedPhoto(a))
 	result["id"], result["title"], result["description"] = a.ID, a.Author, a.Text
-	if len(a.Photos) == 1 && mediaType(a, 0) == "photo" && result["photo_file_id"] != nil &&
-		(strings.HasSuffix(a.ID, ":merged") || strings.HasSuffix(a.ID, ":merged:bars")) {
-		result["caption"], result["parse_mode"] = strings.TrimSuffix(a.Caption, "\n"), "HTML"
+	if len(a.Photos) == 1 && (strings.HasSuffix(a.ID, ":merged") || strings.HasSuffix(a.ID, ":merged:bars")) {
+		result["id"] = a.ID + ":preview"
+		result["input_message_content"] = map[string]any{
+			"message_text": "Loading merged artwork…", "disable_web_page_preview": true,
+		}
+		wait := map[string]any{"text": "Please wait…", "disabled": map[string]any{}}
+		result["reply_markup"] = map[string]any{"inline_keyboard": []any{[]any{wait}}}
 	} else {
 		result["input_message_content"] = map[string]any{"rich_message": richArtwork(a)}
 	}
@@ -367,7 +353,10 @@ func inlineArtworkResults(db *sql.DB, user int64, link *url.URL, previews *thumb
 	go func() { bars <- inlineMergedResult(link, previews, instant, true) }()
 
 	var postImages []any
+	var postText chan map[string]any
 	if xLinkHosts[strings.ToLower(link.Host)] {
+		postText = make(chan map[string]any, 1)
+		go func() { postText <- inlinePostTextResult(db, user, link, previews, instant) }()
 		postImages = inlinePostImageResults(db, user, link, previews, instant)
 	}
 
@@ -382,8 +371,8 @@ func inlineArtworkResults(db *sql.DB, user int64, link *url.URL, previews *thumb
 		results = append(results, result)
 	}
 	results = append(results, postImages...)
-	if xLinkHosts[strings.ToLower(link.Host)] {
-		results = append(results, inlinePostTextResult(link, previews))
+	if postText != nil {
+		results = append(results, <-postText)
 	}
 	return results
 }
@@ -440,7 +429,8 @@ func handleChosenInlineResult(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *
 	if link != nil && link.Host != "pixiv.net" && link.Host != "www.pixiv.net" {
 		theme = postImageTheme(chosen.ResultID, link)
 	}
-	if theme == "" && chosen.ResultID != inlinePostTextID && chosen.ResultID != inlineResultID && chosen.ResultID != inlineMergedResultID && chosen.ResultID != inlineBarsResultID {
+	cachedID, cachedPreview := strings.CutSuffix(chosen.ResultID, ":preview")
+	if !cachedPreview && theme == "" && chosen.ResultID != inlinePostTextID && chosen.ResultID != inlineResultID && chosen.ResultID != inlineMergedResultID && chosen.ResultID != inlineBarsResultID {
 		id := chosen.ResultID
 		if parent, index, ok := strings.Cut(id, ":item:"); ok {
 			if n, err := strconv.Atoi(index); err == nil && n >= 0 {
@@ -453,17 +443,14 @@ func handleChosenInlineResult(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *
 		}
 		return
 	}
-	if theme != "" && strings.HasSuffix(chosen.ResultID, ":cached") {
-		if err := selectArtwork(db, chosen.From.ID, artworkID(xPostLink(link))); err != nil {
-			log.Printf("recording inline selection: %v", err)
-		}
-		return
-	}
 	if chosen.InlineMessageID == "" {
 		log.Print("missing inline message ID")
 		return
 	}
 	result, err := queue.submit(chosen.From.ID, func() error {
+		if cachedPreview {
+			return editCachedInlineArtwork(bot, db, chosen, cachedID)
+		}
 		if theme != "" {
 			return editInlinePostImage(bot, db, chosen, cacheChat, link, theme, previews)
 		}
@@ -506,6 +493,33 @@ func handleChosenInlineResult(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *
 			log.Printf("editing inline failure message: %v", editErr)
 		}
 	}
+}
+
+func editCachedInlineArtwork(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, id string) error {
+	a, err := findArtwork(db, id)
+	if err != nil {
+		return err
+	}
+	if a == nil {
+		return fmt.Errorf("cached artwork not found")
+	}
+	payload, err := json.Marshal(map[string]any{
+		"type": mediaType(*a, 0), "media": a.Photos[0], "caption": a.Caption, "parse_mode": "HTML",
+	})
+	if err != nil {
+		return err
+	}
+	params := tgbotapi.Params{
+		"inline_message_id": chosen.InlineMessageID, "media": string(payload),
+		"reply_markup": `{"inline_keyboard":[]}`,
+	}
+	_, err = retryTelegram(func() (*tgbotapi.APIResponse, error) {
+		return bot.MakeRequest("editMessageMedia", params)
+	})
+	if err != nil {
+		return err
+	}
+	return selectArtwork(db, chosen.From.ID, id)
 }
 
 func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, cacheChat string, previews *thumbnails) error {

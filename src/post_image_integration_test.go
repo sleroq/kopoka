@@ -70,11 +70,14 @@ func testPostImageInlineFlow(t *testing.T, realRenderer string) {
 	renderer := filepath.Join(dir, "renderer")
 	t.Setenv("KOPOKA_TEST_REQUEST", filepath.Join(dir, "request.json"))
 	t.Setenv("KOPOKA_TEST_IMAGE", imagePath)
-	script := "#!/bin/sh\ncat > \"$KOPOKA_TEST_REQUEST\"\ncat \"$KOPOKA_TEST_IMAGE\"\n"
-	if realRenderer != "" {
-		t.Setenv("KOPOKA_TEST_RENDERER", realRenderer)
-		script = "#!/bin/sh\ncat > \"$KOPOKA_TEST_REQUEST\"\nexec \"$KOPOKA_TEST_RENDERER\" < \"$KOPOKA_TEST_REQUEST\"\n"
-	}
+	script := `#!/bin/sh
+input=$(cat)
+case "$input" in *'"preview":'*) cat "$KOPOKA_TEST_IMAGE"; exit;; esac
+printf '%s' "$input" > "$KOPOKA_TEST_REQUEST"
+if [ -n "$KOPOKA_TEST_RENDERER" ]; then exec "$KOPOKA_TEST_RENDERER" < "$KOPOKA_TEST_REQUEST"; fi
+cat "$KOPOKA_TEST_IMAGE"
+`
+	t.Setenv("KOPOKA_TEST_RENDERER", realRenderer)
 	if err := os.WriteFile(renderer, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -122,15 +125,21 @@ func testPostImageInlineFlow(t *testing.T, realRenderer string) {
 	}
 	before := len(calls)
 	handleInlineQuery(bot, db, query, previews)
-	if len(calls) != before+1 || results[1]["photo_file_id"] != "card" || results[2]["photo_file_id"] != "card" || results[3]["photo_file_id"] != "card" || results[4]["photo_file_id"] != "card" || !strings.Contains(results[1]["caption"].(string), "/status/42") {
+	if len(calls) != before+1 {
 		t.Fatalf("cached results %v calls %v", results, calls)
+	}
+	for i, theme := range []string{"light", "dark", "light-bars", "dark-bars"} {
+		result := results[i+1]
+		if result["id"] != "post-image:"+theme+":42:cached" || result["input_message_content"].(map[string]any)["message_text"] != "Loading post image…" || result["photo_url"] == nil {
+			t.Fatalf("cached result: %v", result)
+		}
 	}
 	before = len(calls)
 	handleChosenInlineResult(bot, nil, db, &tgbotapi.ChosenInlineResult{
-		From: query.From, ResultID: results[4]["id"].(string), Query: query.Query,
+		From: query.From, ResultID: results[4]["id"].(string), InlineMessageID: "inline", Query: query.Query,
 	}, "@cache", queue, previews)
-	if len(calls) != before {
-		t.Fatalf("cached selection made requests: %v", calls[before:])
+	if len(calls) != before+1 || calls[before] != "edit" {
+		t.Fatalf("cached selection requests: %v", calls[before:])
 	}
 	if n, err := historyCount(db, 1); err != nil || n != 0 {
 		t.Fatalf("history: %d %v", n, err)
@@ -180,6 +189,11 @@ func postImageTelegramServer(t *testing.T, jpg []byte, calls *[]string, results 
 			_, _ = fmt.Fprint(w, `{"ok":true,"result":true}`)
 		case strings.HasSuffix(r.URL.Path, "/editMessageMedia"):
 			*calls = append(*calls, "edit")
+			_ = r.ParseForm()
+			var media map[string]any
+			if err := json.Unmarshal([]byte(r.FormValue("media")), &media); err != nil || media["media"] != "card" || media["parse_mode"] != "HTML" || !strings.Contains(fmt.Sprint(media["caption"]), "/status/42") {
+				t.Errorf("edit media: %v, %v", media, err)
+			}
 			_, _ = fmt.Fprint(w, `{"ok":true,"result":true}`)
 		default:
 			t.Errorf("unexpected request: %s", r.URL.Path)

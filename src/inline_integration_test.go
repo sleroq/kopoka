@@ -168,7 +168,7 @@ func checkCachedInlineFlow(t *testing.T, bot *tgbotapi.BotAPI, db *sql.DB, query
 		t.Fatalf("cached results: %#v", *answer)
 	}
 	cached := (*answer)[0]
-	if cached["type"] != "photo" || cached["id"] != "x:1" || cached["photo_file_id"] != "large1" || cached["title"] != "Artist" || cached["description"] != "A real post" {
+	if cached["type"] != "photo" || cached["id"] != "x:1" || cached["photo_url"] != "https://preview.example.com/thumbnail-placeholder-x.jpg" || cached["title"] != "Artist" || cached["description"] != "A real post" {
 		t.Fatalf("cached result: %#v", cached)
 	}
 	rich := cached["input_message_content"].(map[string]any)["rich_message"].(map[string]any)

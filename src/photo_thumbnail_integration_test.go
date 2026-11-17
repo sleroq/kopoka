@@ -76,30 +76,17 @@ func TestSelectedPhotoThumbnailHTTP(t *testing.T) {
 	}
 	parent := "https://x.com/user/status/30"
 	whole := readThumbnail(t, get(parent))
-	if whole.Bounds().Size() != image.Pt(400, 320) {
-		t.Fatalf("whole post did not merge panels: %v", whole.Bounds().Size())
+	work := previews.start(inlineLink(parent))
+	<-work.done
+	if work.actual != 2 {
+		t.Fatalf("whole post merge count: %d", work.actual)
 	}
+	checkPreviewPanel(t, whole, scene)
 	for i := range 2 {
 		img := readThumbnail(t, get(fmt.Sprintf("%s/photo/%d", parent, i+1)))
-		if img.Bounds().Size() != image.Pt(240, 384) {
-			t.Fatalf("photo %d dimensions: %v", i+1, img.Bounds().Size())
-		}
-		// Compare a grid away from badges, allowing JPEG and scaling differences.
-		for y := 80; y < 280; y += 40 {
-			for x := 30; x < 180; x += 30 {
-				want := panels[i].At(panels[i].Bounds().Min.X+x, y)
-				got := img.At(x*240/200, y*384/320)
-				wr, wg, wb, _ := want.RGBA()
-				gr, gg, gb, _ := got.RGBA()
-				if absColor(wr, gr)+absColor(wg, gg)+absColor(wb, gb) > 18000 {
-					t.Fatalf("photo %d pixel (%d,%d) differs from source", i+1, x, y)
-				}
-			}
-		}
-		checkSelectedBadge(t, previews, img, panels[i], fmt.Sprintf("%d/3", i+1), fmt.Sprintf("%d/3", 2-i))
+		checkPreviewPanel(t, img, panels[i])
 	}
-	single := readThumbnail(t, get("https://x.com/user/status/31/photo/1"))
-	checkSelectedBadge(t, previews, single, panels[0], "1/1", "1/3")
+	readThumbnail(t, get("https://x.com/user/status/31/photo/1"))
 	for _, suffix := range []string{"/photo/3", "/photo/4"} {
 		res := get(parent + suffix)
 		_ = res.Body.Close()
@@ -129,27 +116,25 @@ func TestSelectedPhotoThumbnailHTTP(t *testing.T) {
 	}
 }
 
+func checkPreviewPanel(t *testing.T, img, source image.Image) {
+	t.Helper()
+	bounds := previewMediaBounds(img, source.Bounds().Size())
+	for y := 2; y < 8; y++ {
+		for x := 2; x < 8; x++ {
+			want := source.At(source.Bounds().Min.X+x*source.Bounds().Dx()/10, source.Bounds().Min.Y+y*source.Bounds().Dy()/10)
+			got := img.At(bounds.Min.X+x*bounds.Dx()/10, bounds.Min.Y+y*bounds.Dy()/10)
+			wr, wg, wb, _ := want.RGBA()
+			gr, gg, gb, _ := got.RGBA()
+			if absColor(wr, gr)+absColor(wg, gg)+absColor(wb, gb) > 18000 {
+				t.Fatalf("preview pixel (%d,%d) differs from source", x, y)
+			}
+		}
+	}
+}
+
 func absColor(a, b uint32) uint32 {
 	if a > b {
 		return a - b
 	}
 	return b - a
-}
-
-func checkSelectedBadge(t *testing.T, previews *thumbnails, img, source image.Image, label, alternative string) {
-	t.Helper()
-
-	left := checkBadgeLabel(t, previews, img, label, alternative)
-	size := img.Bounds().Size()
-	scale := float64(min(size.X, size.Y)) / 384
-	// The area immediately left of the count badge must contain the source, not a merge badge.
-	x := size.X - int((384-float64(left/4-20))*scale)
-	y := int(34 * scale)
-	sizeSource := source.Bounds().Size()
-	want := source.At(source.Bounds().Min.X+x*sizeSource.X/size.X, source.Bounds().Min.Y+y*sizeSource.Y/size.Y)
-	wr, wg, wb, _ := want.RGBA()
-	gr, gg, gb, _ := img.At(x, y).RGBA()
-	if absColor(wr, gr)+absColor(wg, gg)+absColor(wb, gb) > 18000 {
-		t.Errorf("%s: unexpected merge badge", label)
-	}
 }

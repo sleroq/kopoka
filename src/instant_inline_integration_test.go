@@ -117,12 +117,13 @@ func (guard *instantNetworkGuard) RoundTrip(req *http.Request) (*http.Response, 
 }
 
 type instantSettingsScenario struct {
-	t       *testing.T
-	db      *sql.DB
-	bot     *tgbotapi.BotAPI
-	api     *instantTelegram
-	network *instantNetworkGuard
-	app     *pixiv.AppPixivAPI
+	t        *testing.T
+	db       *sql.DB
+	bot      *tgbotapi.BotAPI
+	api      *instantTelegram
+	network  *instantNetworkGuard
+	app      *pixiv.AppPixivAPI
+	previews *thumbnails
 }
 
 func (s *instantSettingsScenario) open() {
@@ -181,6 +182,7 @@ func (s *instantSettingsScenario) inline(user int64, link string, merged bool) m
 		s.t.Fatal(err)
 	}
 	previews.client = &http.Client{Transport: s.network}
+	s.previews = previews
 	handleInlineQuery(s.bot, s.db, query, previews)
 	results := s.api.snapshot().results
 	want := 8
@@ -209,10 +211,16 @@ func (s *instantSettingsScenario) expectThumbnail(user int64, link string, withP
 		if s.api.sources.Load() <= before {
 			s.t.Fatalf("no source fetch for %s", link)
 		}
-		_, thumbnail := uncachedThumbnailURLs(s.t, result)
+		photo, thumbnail := uncachedThumbnailURLs(s.t, result)
 		parsed, err := url.Parse(thumbnail)
-		if err != nil || parsed.Query().Get("url") != inlineLink(link).String() || result["photo_width"] != float64(480) || result["photo_height"] != float64(300) {
+		if err != nil || parsed.Query().Get("url") != inlineLink(link).String() {
 			s.t.Fatalf("preview for %s: %#v", link, result)
+		}
+		response := httptest.NewRecorder()
+		s.previews.ServeHTTP(response, httptest.NewRequest(http.MethodGet, photo, nil))
+		img := readThumbnail(s.t, response.Result())
+		if result["photo_width"] != float64(img.Bounds().Dx()) || result["photo_height"] != float64(img.Bounds().Dy()) {
+			s.t.Fatalf("preview dimensions: %#v, %v", result, img.Bounds())
 		}
 		awaitCachedThumbnail(s.t, s.db, artworkID(inlineLink(link)), 0)
 		if _, err := s.db.Exec(`DELETE FROM thumbnail_cache`); err != nil {
@@ -364,7 +372,7 @@ func verifyInstantInlineSelection(t *testing.T, s *instantSettingsScenario) {
 		t.Fatalf("selection: upstream requests %d, media edits %d", attempts, edits)
 	}
 	result := s.inline(1, link, true)
-	if result["type"] != "photo" || result["photo_file_id"] != "file" {
+	if result["type"] != "photo" || result["photo_url"] != "https://preview.example.com/thumbnail-placeholder-x.jpg" || !strings.Contains(fmt.Sprint(result["input_message_content"]), "file") {
 		t.Fatalf("cached result: %#v", result)
 	}
 }

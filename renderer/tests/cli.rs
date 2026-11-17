@@ -465,3 +465,57 @@ fn cli_scene_maps_reply_and_nested_quote_occurrences() {
     assert!(slots[1]["x"].as_u64().unwrap() > slots[0]["x"].as_u64().unwrap());
     assert!(slots[2]["x"].as_u64().unwrap() < slots[0]["x"].as_u64().unwrap());
 }
+
+#[test]
+fn cli_renders_preview_media_and_controls() {
+    let image = asset(80, 50, [200, 70, 40]);
+    let request = |video, count, author: &str| {
+        json!({"preview":{"bot":"pokopa_bot","blocks":[
+            {"kind":"author","text":author},
+            {"kind":"media","image":image,"video":video,"count":count},
+            {"kind":"caption","text":"Name on X"}
+        ]}})
+    };
+    let plain = render_request(request(false, 1, "Name on X"));
+    let video = render_request(request(true, 1, "Name on X"));
+    let carousel = render_request(request(false, 3, "Name on X"));
+    let other_author = render_request(request(false, 1, "Other on X"));
+    let h = height(&plain);
+    assert_eq!(&plain.stdout[..2], &[0xff, 0xd8]);
+    let img = image::load_from_memory(&plain.stdout).unwrap().to_rgb8();
+    assert_eq!(img.width(), 768);
+    assert!(h < 900);
+    let video_img = image::load_from_memory(&video.stdout).unwrap().to_rgb8();
+    let carousel_img = image::load_from_memory(&carousel.stdout).unwrap().to_rgb8();
+    let red = |p: &Rgb<u8>| p[0] > 170 && p[1] < 100 && p[2] < 80;
+    let y = (0..h).find(|&y| red(img.get_pixel(384, y))).unwrap();
+    let bottom = (y..h).rfind(|&y| red(img.get_pixel(384, y))).unwrap();
+    let middle = (y + bottom) / 2;
+    assert!(red(img.get_pixel(384, middle)));
+    assert!(
+        !red(video_img.get_pixel(384, middle)),
+        "play overlay is visible"
+    );
+    assert!(red(img.get_pixel(660, middle)));
+    assert!(
+        !red(carousel_img.get_pixel(660, middle)),
+        "carousel arrow is visible"
+    );
+    assert_ne!(plain.stdout, other_author.stdout);
+}
+
+#[test]
+fn cli_renders_preview_unicode_quote_and_limits_text() {
+    let render = |blocks| render_request(json!({"preview":{"bot":"","blocks":blocks}}));
+    let text = render(json!([{"kind":"text","text":"Hello 世界 👋"}]));
+    let quote = render(
+        json!([{"kind":"text","text":"Hello 世界 👋"},{"kind":"quote","text":"Привет мир\n日本語の引用"}]),
+    );
+    assert!(height(&quote) > height(&text));
+    assert_ne!(text.stdout, quote.stdout);
+    let long = render(json!([{"kind":"text","text":"long text ".repeat(10000)}]));
+    assert!(height(&long) < 2500);
+    let tall =
+        render(json!([{"kind":"media","image":asset(10,200,[20,200,40]),"video":false,"count":1}]));
+    assert!(height(&tall) < 1000);
+}
