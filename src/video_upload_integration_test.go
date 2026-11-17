@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -176,7 +177,18 @@ func TestInlineVideoURLRetry(t *testing.T) {
 			return
 		}
 		calls++
+		if err := r.ParseMultipartForm(1024 * 1024); err != nil {
+			if err := r.ParseForm(); err != nil {
+				t.Error(err)
+			}
+		}
+		if r.FormValue("supports_streaming") != "true" || r.FormValue("caption") != "inline caption" || r.FormValue("duration") != "12" {
+			t.Errorf("inline video parameters: %v", r.Form)
+		}
 		if calls == 1 {
+			if r.FormValue("video") != source.URL {
+				t.Errorf("video URL: %q", r.FormValue("video"))
+			}
 			w.WriteHeader(400)
 			_, _ = io.WriteString(w, `{"ok":false,"error_code":400,"description":"WEBPAGE_CURL_FAILED"}`)
 			return
@@ -198,7 +210,10 @@ func TestInlineVideoURLRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	kind, id, err := cacheInlineMedia(bot, "42", tgbotapi.NewInputMediaVideo(tgbotapi.FileURL(source.URL)))
+	video := tgbotapi.NewInputMediaVideo(tgbotapi.FileURL(source.URL))
+	video.Caption = "inline caption"
+	video.Duration = 12
+	kind, id, err := cacheInlineMedia(bot, "42", video)
 	if err != nil || kind != "video" || id != "cached" {
 		t.Fatalf("%s %s %v", kind, id, err)
 	}
@@ -271,5 +286,137 @@ func TestOriginalVideoLargeUpload(t *testing.T) {
 	files, _ := os.ReadDir(dir)
 	if len(files) != 0 {
 		t.Errorf("temporary files: %v", files)
+	}
+}
+
+func checkVideoUpload(t *testing.T, r *http.Request, name string) {
+	t.Helper()
+	file, _, err := r.FormFile(name)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	defer func() { _ = file.Close() }()
+	data, err := io.ReadAll(file)
+	if err != nil || string(data) != "video bytes" {
+		t.Errorf("upload: %q, %v", data, err)
+	}
+}
+
+func checkStreamingAlbum(t *testing.T, r *http.Request, source string, calls int) {
+	t.Helper()
+	var media []map[string]any
+	if err := json.Unmarshal([]byte(r.FormValue("media")), &media); err != nil || len(media) != 2 {
+		t.Errorf("media: %q, %v", r.FormValue("media"), err)
+		return
+	}
+	if media[0]["type"] != "video" || media[0]["supports_streaming"] != true || media[0]["caption"] != "caption" || media[0]["duration"] != float64(9) || media[0]["width"] != float64(640) {
+		t.Errorf("video: %v", media[0])
+	}
+	if media[1]["type"] != "photo" || media[1]["supports_streaming"] != nil {
+		t.Errorf("photo: %v", media[1])
+	}
+	if calls == 1 && media[0]["media"] != source {
+		t.Errorf("URL: %v", media[0])
+	}
+	if calls == 2 {
+		name, ok := media[0]["media"].(string)
+		if !ok || !strings.HasPrefix(name, "attach://") {
+			t.Errorf("attachment: %v", media[0])
+			return
+		}
+		checkVideoUpload(t, r, strings.TrimPrefix(name, "attach://"))
+	}
+}
+
+func streamingTelegramHandler(t *testing.T, album bool, source string, calls *int) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/getMe") {
+			_, _ = io.WriteString(w, `{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`)
+			return
+		}
+		*calls++
+		if err := r.ParseMultipartForm(1024 * 1024); err != nil {
+			if err := r.ParseForm(); err != nil {
+				t.Error(err)
+			}
+		}
+		if album {
+			checkStreamingAlbum(t, r, source, *calls)
+		} else {
+			if r.FormValue("supports_streaming") != "true" || r.FormValue("caption") != "caption" || r.FormValue("duration") != "9" {
+				t.Errorf("parameters: %v", r.Form)
+			}
+			if *calls == 1 && r.FormValue("video") != source {
+				t.Errorf("URL: %v", r.Form)
+			}
+			if *calls == 2 {
+				checkVideoUpload(t, r, "video")
+			}
+		}
+		if *calls == 1 {
+			w.WriteHeader(400)
+			_, _ = io.WriteString(w, `{"ok":false,"error_code":400,"description":"WEBPAGE_CURL_FAILED"}`)
+			return
+		}
+		if album {
+			_, _ = io.WriteString(w, `{"ok":true,"result":[{"message_id":1},{"message_id":2}]}`)
+		} else {
+			_, _ = io.WriteString(w, `{"ok":true,"result":{"message_id":1}}`)
+		}
+	}
+}
+
+func TestArtworkVideoStreamingRequests(t *testing.T) {
+	for _, album := range []bool{false, true} {
+		t.Run(fmt.Sprintf("album=%t", album), func(t *testing.T) {
+			source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.WriteString(w, "video bytes")
+			}))
+			defer source.Close()
+
+			calls := 0
+			telegram := httptest.NewServer(streamingTelegramHandler(t, album, source.URL, &calls))
+			defer telegram.Close()
+			bot, err := tgbotapi.NewBotAPIWithAPIEndpoint("token", telegram.URL+"/bot%s/%s")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			video := tgbotapi.NewInputMediaVideo(tgbotapi.FileURL(source.URL))
+			video.Caption, video.Duration, video.Width = "caption", 9, 640
+			media := []any{video}
+			if album {
+				media = append(media, tgbotapi.NewInputMediaPhoto(tgbotapi.FileURL("https://example.com/photo.jpg")))
+			}
+			if _, err := sendPhotosWithIDs(bot, 42, 0, media); err != nil {
+				t.Fatal(err)
+			}
+			if calls != 2 {
+				t.Errorf("calls: %d", calls)
+			}
+		})
+	}
+}
+
+func TestCachedVideoStreamingRequest(t *testing.T) {
+	telegram := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/getMe") {
+			_, _ = io.WriteString(w, `{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`)
+			return
+		}
+		if !strings.HasSuffix(r.URL.Path, "/sendVideo") || r.FormValue("video") != "cached-id" || r.FormValue("supports_streaming") != "true" {
+			t.Errorf("request: %s %v", r.URL.Path, r.Form)
+		}
+		_, _ = io.WriteString(w, `{"ok":true,"result":{"message_id":1}}`)
+	}))
+	defer telegram.Close()
+	bot, err := tgbotapi.NewBotAPIWithAPIEndpoint("token", telegram.URL+"/bot%s/%s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	video := tgbotapi.NewInputMediaVideo(tgbotapi.FileID("cached-id"))
+	if err := sendPhotos(bot, 42, 0, []any{video}); err != nil {
+		t.Fatal(err)
 	}
 }

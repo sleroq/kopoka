@@ -631,7 +631,9 @@ func cacheInlineMediaWithVideoRetry(bot *tgbotapi.BotAPI, chat string, item any,
 			return bot.Send(config)
 		}
 		if base.Type == "video" {
-			config := tgbotapi.NewVideo(chatID, base.Media)
+			video := item.(tgbotapi.InputMediaVideo)
+			video.BaseInputMedia = base
+			config := streamingVideo(chatID, video)
 			config.ChannelUsername = channel
 			return bot.Send(config)
 		}

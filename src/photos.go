@@ -367,6 +367,12 @@ func retryPhotoURLs(bot *tgbotapi.BotAPI, chatID int64, replyID int, batch []any
 
 func sendPhotoBatch(bot *tgbotapi.BotAPI, chatID int64, replyID int, batch []any) ([]tgbotapi.Message, error) {
 	var messages []tgbotapi.Message
+	for i, item := range batch {
+		if video, ok := item.(tgbotapi.InputMediaVideo); ok {
+			video.SupportsStreaming = true
+			batch[i] = video
+		}
+	}
 	if len(batch) == 1 {
 		base := mediaBase(batch[0])
 		var msg tgbotapi.Message
@@ -380,11 +386,8 @@ func sendPhotoBatch(bot *tgbotapi.BotAPI, chatID int64, replyID int, batch []any
 			animation.CaptionEntities = base.CaptionEntities
 			msg, err = retryTelegram(func() (tgbotapi.Message, error) { return bot.Send(animation) })
 		case "video":
-			video := tgbotapi.NewVideo(chatID, base.Media)
+			video := streamingVideo(chatID, batch[0].(tgbotapi.InputMediaVideo))
 			video.ReplyToMessageID = replyID
-			video.Caption = base.Caption
-			video.ParseMode = base.ParseMode
-			video.CaptionEntities = base.CaptionEntities
 			msg, err = retryTelegram(func() (tgbotapi.Message, error) { return bot.Send(video) })
 		default:
 			photo := tgbotapi.NewPhoto(chatID, base.Media)

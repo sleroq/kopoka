@@ -83,6 +83,17 @@ func newTelegramBot(token string) (*tgbotapi.BotAPI, error) {
 	return tgbotapi.NewBotAPIWithAPIEndpoint(token, strings.TrimRight(base, "/")+"/bot%s/%s")
 }
 
+func streamingVideo(chatID int64, media tgbotapi.InputMediaVideo) tgbotapi.VideoConfig {
+	video := tgbotapi.NewVideo(chatID, media.Media)
+	video.Thumb = media.Thumb
+	video.Duration = media.Duration
+	video.Caption = media.Caption
+	video.ParseMode = media.ParseMode
+	video.CaptionEntities = media.CaptionEntities
+	video.SupportsStreaming = true
+	return video
+}
+
 func telegramURLFailure(err error) bool {
 	// UploadFiles omits the error code even when Telegram returns one.
 	var telegramErr *tgbotapi.Error
