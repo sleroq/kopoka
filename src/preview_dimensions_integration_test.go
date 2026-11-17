@@ -46,6 +46,8 @@ func newPreviewFlowServer(t *testing.T) *previewFlowServer {
 	scene := artScene(image.Rect(0, 0, 400, 320), 0)
 	f := &previewFlowServer{t: t, answers: make(chan []map[string]any, 10), sourceStarted: make(chan struct{}), sourceRelease: make(chan struct{}), uploadStarted: make(chan struct{}), uploadRelease: make(chan struct{}), uploadFailed: make(chan struct{}), images: map[string][]byte{
 		"/portrait": thumbnailFixture(t, 1000, 1600),
+		"/wide":     encode(image.NewRGBA(image.Rect(0, 0, 1001, 100))),
+		"/boundary": encode(image.NewRGBA(image.Rect(0, 0, 1000, 100))),
 		"/panel0":   encode(scene.SubImage(image.Rect(0, 0, 200, 320))),
 		"/panel1":   encode(scene.SubImage(image.Rect(200, 0, 400, 320))),
 	}}
@@ -80,6 +82,10 @@ func (f *previewFlowServer) serve(w http.ResponseWriter, r *http.Request) {
 			paths = []string{"/panel0", "/panel1"}
 		case "4":
 			paths = []string{"/portrait", "/panel0"}
+		case "5":
+			paths = []string{"/wide", "/wide"}
+		case "6":
+			paths = []string{"/boundary", "/boundary"}
 		}
 		photos := make([]map[string]string, 0, len(paths))
 		for _, p := range paths {
@@ -377,6 +383,39 @@ func TestMergedInlinePreview(t *testing.T) {
 			}
 			if work.actual != tc.actual || work.photoCount != 2 {
 				t.Fatalf("source: actual=%d photos=%d", work.actual, work.photoCount)
+			}
+			f.release()
+			awaitCachedThumbnail(t, previews.db, "x:"+tc.id, 0)
+		})
+	}
+}
+
+func TestMergedInlinePhotoDimensionsFilter(t *testing.T) {
+	for _, tc := range []struct {
+		id           string
+		merged, bars bool
+	}{
+		{"5", false, false},
+		{"6", true, false},
+	} {
+		t.Run(tc.id, func(t *testing.T) {
+			f := newPreviewFlowServer(t)
+			previews, bot := f.setup(t)
+			query := &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 1}, Query: "https://x.com/user/status/" + tc.id}
+			handleInlineQuery(bot, previews.db, query, previews)
+			results := <-f.answers
+			found := map[string]bool{}
+			for _, result := range results {
+				found[result["id"].(string)] = true
+			}
+			if found[inlineMergedResultID] != tc.merged || found[inlineBarsResultID] != tc.bars || !found[inlineResultID] || !found["post:text"] {
+				t.Fatalf("inline results: %#v", results)
+			}
+			for _, bars := range []bool{false, true} {
+				photo, ok := previews.mergedPhotoVariant(inlineLink(query.Query), true, bars)
+				if !ok || !strings.Contains(photo.photoURL, "/thumbnail-placeholder-merged") {
+					t.Fatalf("instant merged preview (bars=%v): %#v %v", bars, photo, ok)
+				}
 			}
 			f.release()
 			awaitCachedThumbnail(t, previews.db, "x:"+tc.id, 0)

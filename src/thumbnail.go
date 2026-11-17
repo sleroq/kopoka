@@ -234,6 +234,7 @@ func (t *thumbnails) savedPhoto(a artwork) previewPhoto {
 }
 
 var errNoXMedia = errors.New("FxTwitter post has no media")
+var errMergedPhotoDimensions = errors.New("merged photo dimensions exceed Telegram limits")
 
 func (t *thumbnails) newPhoto(link *url.URL, instant bool) (previewPhoto, bool) {
 	if id := t.cached(link, 0); id != "" {
@@ -325,7 +326,7 @@ func (t *thumbnails) mergedPhotoVariant(link *url.URL, instant, bars bool) (prev
 	}
 	select {
 	case <-done:
-		if errors.Is(variant.err, errNoXMedia) || work.sourceOK && work.photoCount < 2 {
+		if errors.Is(variant.err, errNoXMedia) || errors.Is(variant.err, errMergedPhotoDimensions) || work.sourceOK && work.photoCount < 2 {
 			return previewPhoto{}, false
 		}
 		if variant.err == nil {
@@ -342,7 +343,7 @@ func (t *thumbnails) mergedPhotoVariant(link *url.URL, instant, bars bool) (prev
 		}
 	case <-time.After(8 * time.Second):
 	}
-	return t.mergedPlaceholderPhoto(bars), true
+	return previewPhoto{}, false
 }
 
 func (t *thumbnails) postTextPhoto() previewPhoto {
@@ -909,6 +910,9 @@ func (t *thumbnails) render(source thumbnailSource, media []any, mode string) ([
 	}
 
 	b := img.Bounds()
+	if mode != "" && (b.Dx()+b.Dy() > 10000 || b.Dx() > 20*b.Dy() || b.Dy() > 20*b.Dx()) {
+		return nil, nil, 0, errMergedPhotoDimensions
+	}
 	longest := max(b.Dx(), b.Dy())
 	if min(b.Dx(), b.Dy()) <= 0 {
 		return nil, nil, 0, fmt.Errorf("empty preview image")
