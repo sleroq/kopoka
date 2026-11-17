@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/everpcpc/pixiv"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -545,12 +547,12 @@ func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB,
 	}
 
 	for _, item := range photos {
-		id, err := cacheInlineMedia(bot, cacheChat, item)
+		kind, id, err := cacheInlineMedia(bot, cacheChat, item)
 		if err != nil {
 			return err
 		}
 		a.Photos = append(a.Photos, id)
-		a.Types = append(a.Types, mediaBase(item).Type)
+		a.Types = append(a.Types, kind)
 	}
 
 	first := mediaBase(photos[0])
@@ -584,7 +586,11 @@ func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB,
 	return nil
 }
 
-func cacheInlineMedia(bot *tgbotapi.BotAPI, chat string, item any) (string, error) {
+func cacheInlineMedia(bot *tgbotapi.BotAPI, chat string, item any) (string, string, error) {
+	return cacheInlineMediaWithVideoRetry(bot, chat, item, true)
+}
+
+func cacheInlineMediaWithVideoRetry(bot *tgbotapi.BotAPI, chat string, item any, retryVideo bool) (string, string, error) {
 	var chatID int64
 	var channel string
 	if strings.HasPrefix(chat, "@") {
@@ -592,13 +598,13 @@ func cacheInlineMedia(bot *tgbotapi.BotAPI, chat string, item any) (string, erro
 	} else {
 		id, err := strconv.ParseInt(chat, 10, 64)
 		if err != nil || id == 0 {
-			return "", fmt.Errorf("invalid INLINE_CACHE_CHAT_ID: %q", chat)
+			return "", "", fmt.Errorf("invalid INLINE_CACHE_CHAT_ID: %q", chat)
 		}
 		chatID = id
 	}
 
 	base := mediaBase(item)
-	message, err := retryTelegram(func() (tgbotapi.Message, error) {
+	send := func() (tgbotapi.Message, error) {
 		if base.Type == "animation" {
 			config := tgbotapi.NewAnimation(chatID, base.Media)
 			config.ChannelUsername = channel
@@ -612,9 +618,21 @@ func cacheInlineMedia(bot *tgbotapi.BotAPI, chat string, item any) (string, erro
 		config := tgbotapi.NewPhoto(chatID, base.Media)
 		config.ChannelUsername = channel
 		return bot.Send(config)
-	})
+	}
+	message, err := retryTelegram(send)
+	var telegramErr *tgbotapi.Error
+	if address, ok := base.Media.(tgbotapi.FileURL); retryVideo && ok && base.Type == "video" &&
+		errors.As(err, &telegramErr) && telegramErr.Code == 400 &&
+		strings.Contains(telegramErr.Message, "failed to get HTTP URL content") {
+		file, downloadErr := downloadOriginal(&http.Client{Timeout: 30 * time.Second}, string(address), false)
+		if downloadErr != nil {
+			return "", "", fmt.Errorf("uploading inline media: %w", downloadErr)
+		}
+		base.Media = file
+		message, err = retryTelegram(send)
+	}
 	if err != nil {
-		return "", fmt.Errorf("uploading inline media: %w", err)
+		return "", "", fmt.Errorf("uploading inline media: %w", err)
 	}
 
 	deletion := tgbotapi.DeleteMessageConfig{ChatID: chatID, ChannelUsername: channel, MessageID: message.MessageID}
@@ -624,18 +642,21 @@ func cacheInlineMedia(bot *tgbotapi.BotAPI, chat string, item any) (string, erro
 
 	if base.Type == "animation" {
 		if message.Animation == nil || message.Animation.FileID == "" {
-			return "", fmt.Errorf("inline upload returned no animation")
+			return "", "", fmt.Errorf("inline upload returned no animation")
 		}
-		return message.Animation.FileID, nil
+		return "animation", message.Animation.FileID, nil
 	}
 	if base.Type == "video" {
-		if message.Video == nil || message.Video.FileID == "" {
-			return "", fmt.Errorf("inline upload returned no video")
+		if retryVideo && message.Animation != nil && message.Animation.FileID != "" {
+			return "animation", message.Animation.FileID, nil
 		}
-		return message.Video.FileID, nil
+		if message.Video == nil || message.Video.FileID == "" {
+			return "", "", fmt.Errorf("inline upload returned no video")
+		}
+		return "video", message.Video.FileID, nil
 	}
 	if len(message.Photo) == 0 {
-		return "", fmt.Errorf("inline upload returned no photo")
+		return "", "", fmt.Errorf("inline upload returned no photo")
 	}
-	return message.Photo[len(message.Photo)-1].FileID, nil
+	return "photo", message.Photo[len(message.Photo)-1].FileID, nil
 }

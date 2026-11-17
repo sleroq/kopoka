@@ -124,7 +124,7 @@ func cacheNormalPostMedia(bot *tgbotapi.BotAPI, cacheChat string, media []xMedia
 		if err != nil {
 			return cachedPostMedia{}, err
 		}
-		id, err := cacheInlineMedia(bot, cacheChat, input)
+		_, id, err := cacheInlineMediaWithVideoRetry(bot, cacheChat, input, false)
 		return cachedPostMedia{kind: mediaBase(input).Type, id: id}, err
 	}
 	var photos []any
@@ -148,7 +148,7 @@ func cacheNormalPostMedia(bot *tgbotapi.BotAPI, cacheChat string, media []xMedia
 }
 
 func cachePostMediaItem(bot *tgbotapi.BotAPI, cacheChat string, item xMedia, input any) (string, error) {
-	id, err := cacheInlineMedia(bot, cacheChat, input)
+	_, id, err := cacheInlineMediaWithVideoRetry(bot, cacheChat, input, false)
 	for _, address := range item.FallbackURLs {
 		var telegramErr *tgbotapi.Error
 		if mediaBase(input).Type != "video" || !errors.As(err, &telegramErr) || telegramErr.Code != 400 ||
@@ -156,7 +156,7 @@ func cachePostMediaItem(bot *tgbotapi.BotAPI, cacheChat string, item xMedia, inp
 			break
 		}
 		item.URL = address
-		id, err = cacheInlineMedia(bot, cacheChat, inputPostMedia(item))
+		_, id, err = cacheInlineMediaWithVideoRetry(bot, cacheChat, inputPostMedia(item), false)
 	}
 	return id, err
 }

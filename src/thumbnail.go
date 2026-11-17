@@ -563,7 +563,7 @@ func (t *thumbnails) cacheWork(link *url.URL, count int, work *thumbnailWork) {
 
 func (t *thumbnails) cachePhoto(link *url.URL, count, actual int, data []byte) error {
 	photo := tgbotapi.NewInputMediaPhoto(tgbotapi.FileBytes{Name: "thumbnail.jpg", Bytes: data})
-	id, err := cacheInlineMedia(t.bot, t.cacheChat, photo)
+	_, id, err := cacheInlineMedia(t.bot, t.cacheChat, photo)
 	if err != nil {
 		return fmt.Errorf("uploading: %w", err)
 	}

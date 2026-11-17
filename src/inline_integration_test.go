@@ -571,7 +571,7 @@ func TestInlineMultipartRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	photo := tgbotapi.NewInputMediaPhoto(tgbotapi.FileBytes{Name: "photo.jpg", Bytes: []byte("image bytes")})
-	id, err := cacheInlineMedia(bot, "@cache", photo)
+	_, id, err := cacheInlineMedia(bot, "@cache", photo)
 	if err != nil || id != "photo" || sends != 3 {
 		t.Fatalf("id=%q sends=%d err=%v", id, sends, err)
 	}
@@ -1073,5 +1073,97 @@ func TestXVideoChatAndInline(t *testing.T) {
 				t.Fatalf("cache sends: %v", sent)
 			}
 		})
+	}
+}
+
+func TestInlineVideoURLRetryAnimation(t *testing.T) {
+	db := testArtworkDB(t)
+
+	var server *httptest.Server
+	var sends, downloads, deletions int
+	var edited map[string]any
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/u/status/1":
+			_, _ = fmt.Fprintf(w, `{"code":200,"tweet":{"text":"Post","author":{"name":"Artist"},`+
+				`"media":{"all":[{"type":"video","url":%q}]}}}`, server.URL+"/silent.mp4")
+		case r.URL.Path == "/silent.mp4":
+			downloads++
+			_, _ = fmt.Fprint(w, "silent video")
+		case strings.HasSuffix(r.URL.Path, "/getMe"):
+			_, _ = fmt.Fprint(w, `{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`)
+		case strings.HasSuffix(r.URL.Path, "/sendVideo"):
+			sends++
+			if r.FormValue("chat_id") != "@cache" {
+				t.Errorf("cache chat: %q", r.FormValue("chat_id"))
+			}
+			if sends == 1 {
+				if r.FormValue("video") != server.URL+"/silent.mp4" {
+					t.Errorf("video URL: %q", r.FormValue("video"))
+				}
+				_, _ = fmt.Fprint(w, `{"ok":false,"error_code":400,"description":"Bad Request: failed to get HTTP URL content"}`)
+			} else {
+				file, _, err := r.FormFile("video")
+				if err != nil {
+					t.Error(err)
+				} else {
+					data, err := io.ReadAll(file)
+					_ = file.Close()
+					if err != nil || string(data) != "silent video" {
+						t.Errorf("upload: %q, %v", data, err)
+					}
+				}
+				_, _ = fmt.Fprint(w, `{"ok":true,"result":{"message_id":42,`+
+					`"animation":{"file_id":"animation-id","file_unique_id":"a","width":1,"height":1,"duration":1}}}`)
+			}
+		case strings.HasSuffix(r.URL.Path, "/deleteMessage"):
+			deletions++
+			if r.FormValue("chat_id") != "@cache" || r.FormValue("message_id") != "42" {
+				t.Errorf("deletion: %v", r.Form)
+			}
+			_, _ = fmt.Fprint(w, `{"ok":true,"result":true}`)
+		case strings.HasSuffix(r.URL.Path, "/editMessageMedia"):
+			if err := json.Unmarshal([]byte(r.FormValue("media")), &edited); err != nil {
+				t.Error(err)
+			}
+			_, _ = fmt.Fprint(w, `{"ok":true,"result":true}`)
+		default:
+			t.Errorf("unexpected request %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	target, _ := url.Parse(server.URL)
+	original := http.DefaultTransport
+	http.DefaultTransport = redirectTransport{target, original}
+	defer func() { http.DefaultTransport = original }()
+	bot, err := tgbotapi.NewBotAPIWithAPIEndpoint("token", server.URL+"/bot%s/%s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chosen := &tgbotapi.ChosenInlineResult{
+		ResultID: inlineResultID, From: &tgbotapi.User{ID: 1},
+		InlineMessageID: "inline", Query: "https://x.com/u/status/1",
+	}
+	if err := editInlineArtwork(bot, nil, db, chosen, "@cache", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if sends != 2 || downloads != 1 || deletions != 1 {
+		t.Fatalf("sends=%d downloads=%d deletions=%d", sends, downloads, deletions)
+	}
+	if edited["type"] != "animation" || edited["media"] != "animation-id" {
+		t.Fatalf("edited: %#v", edited)
+	}
+
+	a, err := findArtwork(db, "x:1")
+	if err != nil || a == nil || !reflect.DeepEqual(a.Types, []string{"animation"}) || !reflect.DeepEqual(a.Photos, []string{"animation-id"}) {
+		t.Fatalf("saved: %#v %v", a, err)
+	}
+	rich := richArtwork(*a)
+	blocks := rich["blocks"].([]any)
+	animation := blocks[0].(map[string]any)["animation"].(map[string]any)
+	if animation["type"] != "animation" || animation["media"] != "animation-id" {
+		t.Fatalf("cached rich artwork: %#v", rich)
 	}
 }

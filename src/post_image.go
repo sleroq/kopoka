@@ -620,7 +620,7 @@ func editInlinePostImage(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.Chos
 	base := mediaBase(media)
 	file, cached := base.Media.(tgbotapi.FileID)
 	if !cached {
-		id, err := cacheInlineMedia(bot, cacheChat, media)
+		_, id, err := cacheInlineMedia(bot, cacheChat, media)
 		if err != nil {
 			return err
 		}
