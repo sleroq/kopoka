@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"os"
+	"strings"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -71,4 +73,19 @@ func retryTelegram[T any](operation func() (T, error)) (T, error) {
 		}
 		time.Sleep(time.Duration(telegramErr.RetryAfter) * time.Second)
 	}
+}
+
+func newTelegramBot(token string) (*tgbotapi.BotAPI, error) {
+	base := os.Getenv("TELEGRAM_BOT_API_URL")
+	if base == "" {
+		return tgbotapi.NewBotAPI(token)
+	}
+	return tgbotapi.NewBotAPIWithAPIEndpoint(token, strings.TrimRight(base, "/")+"/bot%s/%s")
+}
+
+func telegramURLFailure(err error) bool {
+	// UploadFiles omits the error code even when Telegram returns one.
+	var telegramErr *tgbotapi.Error
+	return errors.As(err, &telegramErr) && (telegramErr.Code == 400 || telegramErr.Code == 0) &&
+		(strings.Contains(telegramErr.Message, "failed to get HTTP URL content") || strings.Contains(telegramErr.Message, "WEBPAGE_CURL_FAILED"))
 }

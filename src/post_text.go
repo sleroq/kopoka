@@ -4,13 +4,13 @@ import (
 	"cmp"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"html"
 	"log"
 	"math"
 	"net/http"
 	"net/url"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -152,15 +152,21 @@ func cacheNormalPostMedia(bot *tgbotapi.BotAPI, cacheChat string, media []xMedia
 }
 
 func cachePostMediaItem(bot *tgbotapi.BotAPI, cacheChat string, item xMedia, input any) (string, error) {
+	if os.Getenv("TELEGRAM_BOT_API_URL") != "" && mediaBase(input).Type == "video" {
+		_, id, err := cacheInlineMediaWithVideoRetry(bot, cacheChat, input, true)
+		return id, err
+	}
 	_, id, err := cacheInlineMediaWithVideoRetry(bot, cacheChat, input, false)
 	for _, address := range item.FallbackURLs {
-		var telegramErr *tgbotapi.Error
-		if mediaBase(input).Type != "video" || !errors.As(err, &telegramErr) || telegramErr.Code != 400 ||
-			!strings.Contains(telegramErr.Message, "failed to get HTTP URL content") {
+		if mediaBase(input).Type != "video" || !telegramURLFailure(err) {
 			break
 		}
 		item.URL = address
-		_, id, err = cacheInlineMediaWithVideoRetry(bot, cacheChat, inputPostMedia(item), false)
+		input = inputPostMedia(item)
+		_, id, err = cacheInlineMediaWithVideoRetry(bot, cacheChat, input, false)
+	}
+	if mediaBase(input).Type == "video" && telegramURLFailure(err) {
+		_, id, err = cacheInlineMediaWithVideoRetry(bot, cacheChat, input, true)
 	}
 	return id, err
 }

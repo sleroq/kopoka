@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -11,7 +10,7 @@ import (
 	_ "image/png"
 	"log"
 	"net/http"
-	"strings"
+	"os"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -281,41 +280,38 @@ func sendPhotosWithIDs(bot *tgbotapi.BotAPI, chatID int64, replyID int, photos [
 
 func sendPhotoBatchWithVideoRetry(bot *tgbotapi.BotAPI, chatID int64, replyID int, batch []any) ([]tgbotapi.Message, error) {
 	messages, err := sendPhotoBatch(bot, chatID, replyID, batch)
-	var telegramErr *tgbotapi.Error
-	if !errors.As(err, &telegramErr) || telegramErr.Code != 400 {
+	if !telegramURLFailure(err) {
 		return messages, err
 	}
-	if strings.Contains(telegramErr.Message, "WEBPAGE_CURL_FAILED") {
-		return retryPhotoURLs(bot, chatID, replyID, batch, err)
-	}
-	if !strings.Contains(telegramErr.Message, "failed to get HTTP URL content") {
-		return messages, err
-	}
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	downloaded := false
+	batch = append([]any(nil), batch...)
+	var files []tgbotapi.FilePath
+	defer func() {
+		for _, file := range files {
+			_ = os.Remove(string(file))
+		}
+	}()
 	for i, item := range batch {
 		video, ok := item.(tgbotapi.InputMediaVideo)
 		if !ok {
 			continue
 		}
-		url, ok := video.Media.(tgbotapi.FileURL)
+		address, ok := video.Media.(tgbotapi.FileURL)
 		if !ok {
 			continue
 		}
-		if !downloaded {
-			log.Printf("Warning: Telegram rejected video URLs; retrying batch with uploads: %v", err)
-		}
-		file, downloadErr := downloadOriginal(client, string(url), false)
+		file, downloadErr := downloadVideo(string(address))
 		if downloadErr != nil {
 			return nil, downloadErr
 		}
+		files = append(files, file)
 		video.Media = file
 		batch[i] = video
-		downloaded = true
 	}
-	if downloaded {
-		return sendPhotoBatch(bot, chatID, replyID, batch)
+	if len(files) > 0 {
+		messages, err = sendPhotoBatch(bot, chatID, replyID, batch)
+		if !telegramURLFailure(err) {
+			return messages, err
+		}
 	}
 	return retryPhotoURLs(bot, chatID, replyID, batch, err)
 }

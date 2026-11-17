@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -84,13 +85,13 @@ func TestSendPhotosRetryNarrowImages(t *testing.T) {
 }
 
 type videoRetryCase struct {
-	name                                              string
-	mixed, prior, downloadFail, retryFail, otherError bool
+	name                                                         string
+	mixed, prior, downloadFail, retryFail, otherError, curlError bool
 }
 
 func TestSendPhotosURLVideoRetry(t *testing.T) {
 	for _, tc := range []videoRetryCase{
-		{name: "single"}, {name: "mixed", mixed: true}, {name: "prior batch", mixed: true, prior: true},
+		{name: "single"}, {name: "mixed curl", mixed: true, curlError: true}, {name: "mixed", mixed: true}, {name: "prior batch", mixed: true, prior: true},
 		{name: "download failure", downloadFail: true}, {name: "retry failure", retryFail: true}, {name: "other error", otherError: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -251,6 +252,9 @@ func serveVideoRetryTelegram(t *testing.T, tc videoRetryCase, videoURL string, c
 
 	if !prior && (!retry || tc.retryFail) {
 		message := "Bad Request: failed to get HTTP URL content"
+		if tc.curlError {
+			message = "WEBPAGE_CURL_FAILED"
+		}
 		if tc.otherError {
 			message = "Bad Request: another error"
 		}
@@ -268,5 +272,109 @@ func serveVideoRetryTelegram(t *testing.T, tc videoRetryCase, videoURL string, c
 			`{"message_id":2,"video":{"file_id":"video-id"}}]}`)
 	} else {
 		_, _ = io.WriteString(w, `{"ok":true,"result":{"message_id":2,"video":{"file_id":"video-id"}}}`)
+	}
+}
+
+func TestMixedUploadedPhotoVideoURLRetry(t *testing.T) {
+	for _, unrelated := range []bool{false, true} {
+		t.Run(fmt.Sprintf("unrelated=%t", unrelated), func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("TMPDIR", dir)
+
+			var photo bytes.Buffer
+			if err := jpeg.Encode(&photo, image.NewRGBA(image.Rect(0, 0, 10, 10)), nil); err != nil {
+				t.Fatal(err)
+			}
+			downloads := []string{}
+			source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				downloads = append(downloads, r.URL.Path)
+				if r.URL.Path == "/video" {
+					_, _ = io.WriteString(w, "video")
+					return
+				}
+				_, _ = w.Write(photo.Bytes())
+			}))
+			defer source.Close()
+			calls := 0
+			telegram := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/getMe") {
+					_, _ = io.WriteString(w, `{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`)
+					return
+				}
+				calls++
+				if err := r.ParseMultipartForm(1 << 20); err != nil {
+					t.Error(err)
+					return
+				}
+				defer func() { _ = r.MultipartForm.RemoveAll() }()
+				var media []struct {
+					Media   string `json:"media"`
+					Caption string `json:"caption"`
+				}
+				if err := json.Unmarshal([]byte(r.FormValue("media")), &media); err != nil {
+					t.Error(err)
+					return
+				}
+				want := []string{"attach://file-0", source.URL + "/video", source.URL + "/photo"}
+				if calls >= 2 {
+					want[1] = "attach://file-1"
+				}
+				if calls >= 3 {
+					want[2] = "attach://file-2"
+				}
+				if len(media) != 3 {
+					t.Errorf("media: %+v", media)
+					return
+				}
+				for i := range media {
+					if media[i].Media != want[i] {
+						t.Errorf("media %d: %s want %s", i, media[i].Media, want[i])
+					}
+				}
+				if media[0].Caption != "caption" {
+					t.Errorf("caption: %+v", media)
+				}
+				if calls <= 2 {
+					message := "WEBPAGE_CURL_FAILED"
+					if unrelated {
+						message = "Bad Request: unrelated"
+					}
+					w.WriteHeader(400)
+					_, _ = fmt.Fprintf(w, `{"ok":false,"error_code":400,"description":%q}`, message)
+					return
+				}
+				_, _ = io.WriteString(w, `{"ok":true,"result":[`+
+					`{"photo":[{"file_id":"p1"}]},{"video":{"file_id":"v"}},{"photo":[{"file_id":"p2"}]}]}`)
+			}))
+			defer telegram.Close()
+			bot, err := tgbotapi.NewBotAPIWithAPIEndpoint("token", telegram.URL+"/bot%s/%s")
+			if err != nil {
+				t.Fatal(err)
+			}
+			uploaded := tgbotapi.NewInputMediaPhoto(tgbotapi.FileBytes{Name: "photo.jpg", Bytes: photo.Bytes()})
+			uploaded.Caption = "caption"
+			batch := []any{
+				uploaded,
+				tgbotapi.NewInputMediaVideo(tgbotapi.FileURL(source.URL + "/video")),
+				tgbotapi.NewInputMediaPhoto(tgbotapi.FileURL(source.URL + "/photo")),
+			}
+			before := append([]any(nil), batch...)
+			ids, err := sendPhotosWithIDs(bot, 42, 0, batch)
+			if !reflect.DeepEqual(batch, before) {
+				t.Error("input changed")
+			}
+			if unrelated {
+				var apiErr *tgbotapi.Error
+				if !errors.As(err, &apiErr) || apiErr.Code != 0 || calls != 1 || len(downloads) != 0 {
+					t.Fatalf("error=%v calls=%d downloads=%v", err, calls, downloads)
+				}
+			} else if err != nil || calls != 3 || !reflect.DeepEqual(ids, []string{"p1", "v", "p2"}) || !reflect.DeepEqual(downloads, []string{"/video", "/photo"}) {
+				t.Fatalf("ids=%v error=%v calls=%d downloads=%v", ids, err, calls, downloads)
+			}
+			files, err := os.ReadDir(dir)
+			if err != nil || len(files) != 0 {
+				t.Errorf("temporary files: %v %v", files, err)
+			}
+		})
 	}
 }

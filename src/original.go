@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -26,6 +27,7 @@ type originalSource struct {
 	url, preview, kind string
 	index              int
 	file               tgbotapi.FileBytes
+	upload             tgbotapi.FilePath
 	joined             []originalSource
 }
 
@@ -264,6 +266,9 @@ func (source originalSource) telegramFile() tgbotapi.RequestFileData {
 	if source.file.Bytes != nil {
 		return source.file
 	}
+	if source.upload != "" {
+		return source.upload
+	}
 	return tgbotapi.FileURL(source.url)
 }
 
@@ -291,11 +296,24 @@ func sendOriginalBatch(bot *tgbotapi.BotAPI, client *http.Client, chatID int64, 
 	}
 
 	var downloaded []originalSource
+	var temporary []tgbotapi.FilePath
+	defer func() {
+		for _, file := range temporary {
+			_ = os.Remove(string(file))
+		}
+	}()
 	hadURLs := false
 	for _, source := range sources {
-		if source.file.Bytes == nil {
+		if source.file.Bytes == nil && source.upload == "" {
 			hadURLs = true
-			source.file, err = downloadOriginal(client, source.url, pixivFiles)
+			if source.kind == "video" || source.kind == "gif" {
+				source.upload, err = downloadVideo(source.url)
+				if err == nil {
+					temporary = append(temporary, source.upload)
+				}
+			} else {
+				source.file, err = downloadOriginal(client, source.url, pixivFiles)
+			}
 			if err != nil {
 				fail(source, err)
 				continue

@@ -6,11 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/everpcpc/pixiv"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -641,14 +640,12 @@ func cacheInlineMediaWithVideoRetry(bot *tgbotapi.BotAPI, chat string, item any,
 		return bot.Send(config)
 	}
 	message, err := retryTelegram(send)
-	var telegramErr *tgbotapi.Error
-	if address, ok := base.Media.(tgbotapi.FileURL); retryVideo && ok && base.Type == "video" &&
-		errors.As(err, &telegramErr) && telegramErr.Code == 400 &&
-		strings.Contains(telegramErr.Message, "failed to get HTTP URL content") {
-		file, downloadErr := downloadOriginal(&http.Client{Timeout: 30 * time.Second}, string(address), false)
+	if address, ok := base.Media.(tgbotapi.FileURL); retryVideo && ok && base.Type == "video" && telegramURLFailure(err) {
+		file, downloadErr := downloadVideo(string(address))
 		if downloadErr != nil {
 			return "", "", fmt.Errorf("uploading inline media: %w", downloadErr)
 		}
+		defer func() { _ = os.Remove(string(file)) }()
 		base.Media = file
 		message, err = retryTelegram(send)
 	}

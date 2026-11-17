@@ -22,7 +22,7 @@ import (
 )
 
 func setupTelegramBot() (*tgbotapi.BotAPI, *tgbotapi.UpdateConfig, error) {
-	bot, err := tgbotapi.NewBotAPI(os.Getenv("BOT_TOKEN"))
+	bot, err := newTelegramBot(os.Getenv("BOT_TOKEN"))
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating telegram bot api instance: %w", err)
 	}

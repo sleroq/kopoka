@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"regexp"
 	"slices"
 	"strings"
@@ -453,5 +454,71 @@ func testXPostOrdinaryLimits(t *testing.T, choose func(int64, string) url.Values
 	visible = html.UnescapeString(regexp.MustCompile(`<[^>]*>`).ReplaceAllString(longText.Get("text"), ""))
 	if len(utf16.Encode([]rune(visible))) > 4096 || !strings.Contains(visible, "…") || longText.Get("media") != "" {
 		t.Fatalf("long text: %d units, %s", len(utf16.Encode([]rune(visible))), longText.Get("text"))
+	}
+}
+
+func TestLocalPostTextUploadsOriginalVideo(t *testing.T) {
+	for _, uploadFail := range []bool{false, true} {
+		t.Run(fmt.Sprintf("upload failure=%t", uploadFail), func(t *testing.T) {
+			t.Setenv("TELEGRAM_BOT_API_URL", "http://local")
+			dir := t.TempDir()
+			t.Setenv("TMPDIR", dir)
+
+			source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/original.mp4" {
+					t.Errorf("downloaded fallback: %s", r.URL.Path)
+				}
+				_, _ = io.WriteString(w, "original video")
+			}))
+			defer source.Close()
+			var sends []string
+			telegram := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/getMe") {
+					_, _ = io.WriteString(w, `{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`)
+					return
+				}
+				if strings.HasSuffix(r.URL.Path, "/deleteMessage") {
+					_, _ = io.WriteString(w, `{"ok":true,"result":true}`)
+					return
+				}
+				if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/") {
+					file, _, err := r.FormFile("video")
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					data, err := io.ReadAll(file)
+					_ = file.Close()
+					if err != nil || string(data) != "original video" {
+						t.Errorf("upload: %q %v", data, err)
+					}
+					sends = append(sends, "upload")
+					if uploadFail {
+						w.WriteHeader(400)
+						_, _ = io.WriteString(w, `{"ok":false,"error_code":400,"description":"upload rejected"}`)
+						return
+					}
+					_, _ = io.WriteString(w, `{"ok":true,"result":{"message_id":1,"video":{"file_id":"original-id"}}}`)
+					return
+				}
+				sends = append(sends, r.FormValue("video"))
+				w.WriteHeader(400)
+				_, _ = io.WriteString(w, `{"ok":false,"error_code":400,"description":"failed to get HTTP URL content"}`)
+			}))
+			defer telegram.Close()
+			bot, err := tgbotapi.NewBotAPIWithAPIEndpoint("token", telegram.URL+"/bot%s/%s")
+			if err != nil {
+				t.Fatal(err)
+			}
+			item := xMedia{Type: "video", URL: source.URL + "/original.mp4", FallbackURLs: []string{source.URL + "/low.mp4"}}
+			id, err := cachePostMediaItem(bot, "42", item, inputPostMedia(item))
+			if (err != nil) != uploadFail || (!uploadFail && id != "original-id") || !slices.Equal(sends, []string{item.URL, "upload"}) {
+				t.Fatalf("id=%s error=%v sends=%v", id, err, sends)
+			}
+			files, err := os.ReadDir(dir)
+			if err != nil || len(files) != 0 {
+				t.Errorf("temporary files: %v %v", files, err)
+			}
+		})
 	}
 }
