@@ -77,10 +77,10 @@ fn media(encoded: &str, video: bool, count: usize) -> Result<Node> {
         .decode(encoded)
         .context("invalid preview image base64")?;
     let image = image::load_from_memory(&bytes).context("invalid preview image")?;
-    let height = (320.0 * image.height() as f32 / image.width() as f32).clamp(70.0, 400.0);
+    let height = (344.0 * image.height() as f32 / image.width() as f32).clamp(70.0, 400.0);
     let mut nodes = vec![styled(
         Node::image(bytes),
-        &format!("width:320px;height:{height}px;object-fit:contain;flex-shrink:0"),
+        &format!("width:344px;height:{height}px;object-fit:cover;flex-shrink:0"),
     )];
     if video {
         let play = r##"<svg xmlns="http://www.w3.org/2000/svg" width="52" height="52" viewBox="0 0 52 52"><circle cx="26" cy="26" r="25" fill="#14212b" fill-opacity="0.78"/><path d="M21 15v22l17-11z" fill="white"/></svg>"##;
@@ -109,7 +109,7 @@ fn media(encoded: &str, video: bool, count: usize) -> Result<Node> {
     Ok(column(
         nodes,
         &format!(
-            "position:relative;width:320px;height:{height}px;background:#18252e;border-radius:8px;overflow:hidden;flex-shrink:0"
+            "position:relative;width:344px;height:{height}px;background:#18252e;overflow:hidden;flex-shrink:0"
         ),
     ))
 }
@@ -117,13 +117,17 @@ fn media(encoded: &str, video: bool, count: usize) -> Result<Node> {
 pub fn render(preview: Preview) -> Result<Vec<u8>> {
     let mut nodes = Vec::new();
     if !preview.bot.is_empty() {
-        nodes.push(text(
-            format!("via @{}", preview.bot),
-            "color:#73b9e8;font-size:13px;font-weight:bold",
+        nodes.push(column(
+            vec![text(
+                format!("via @{}", preview.bot),
+                "color:#73b9e8;font-size:13px;font-weight:bold",
+            )],
+            "padding:0 12px",
         ));
     }
     let mut budget = 1400;
     for block in preview.blocks {
+        let is_media = matches!(&block, Block::Media { .. });
         let node = match block {
             Block::Text { text: value } => text(limited(&value, &mut budget), "color:#f1f4f6"),
             Block::Author { text: value } => text(
@@ -144,11 +148,15 @@ pub fn render(preview: Preview) -> Result<Vec<u8>> {
                 "color:#75bde9;text-decoration:underline",
             ),
         };
-        nodes.push(node);
+        nodes.push(if is_media {
+            node
+        } else {
+            column(vec![node], "padding:0 12px")
+        });
     }
     let bubble = column(
         nodes,
-        "width:344px;padding:12px;gap:8px;background:#253743;border:1px solid #405563;border-radius:14px",
+        "width:344px;padding:12px 0;gap:8px;background:#253743;border-radius:14px;overflow:hidden",
     );
     let root = column(vec![bubble], "width:384px;padding:20px;background:#17252f");
     let mut fonts = Fonts::default();

@@ -522,6 +522,8 @@ fn cli_renders_preview_media_and_controls() {
     let bottom = (y..h).rfind(|&y| red(img.get_pixel(384, y))).unwrap();
     let middle = (y + bottom) / 2;
     assert!(red(img.get_pixel(384, middle)));
+    assert!(red(img.get_pixel(42, middle)), "media reaches left edge");
+    assert!(red(img.get_pixel(725, middle)), "media reaches right edge");
     assert!(
         !red(video_img.get_pixel(384, middle)),
         "play overlay is visible"
