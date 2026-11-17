@@ -172,11 +172,7 @@ func richPostBody(text string) string {
 }
 
 func richPostAuthor(post *fxRichPost) string {
-	author := "<b>" + xPostAuthorHTML(post) + "</b>"
-	if post.Author.ScreenName != "" && !strings.EqualFold(strings.TrimPrefix(post.Author.Name, "@"), post.Author.ScreenName) {
-		author += " · @" + html.EscapeString(post.Author.ScreenName)
-	}
-	return author
+	return "<b>" + xPostAuthorHTML(post) + "</b>"
 }
 
 func limitRichPostText(post *fxRichPost, parents []*fxRichPost) map[*fxRichPost]string {
@@ -189,7 +185,7 @@ func limitRichPostText(post *fxRichPost, parents []*fxRichPost) map[*fxRichPost]
 	}
 	remaining := 32768 - 64
 	for _, p := range posts {
-		remaining -= utf8.RuneCountInString(p.Author.Name) + utf8.RuneCountInString(p.Author.ScreenName) + 4
+		remaining -= utf8.RuneCountInString(p.Author.Name) + 4
 	}
 	polls := make(map[*fxRichPost]string, len(posts))
 	limit := func(value string) string {
@@ -215,8 +211,9 @@ func limitRichPostText(post *fxRichPost, parents []*fxRichPost) map[*fxRichPost]
 func richXPost(post *fxRichPost, parents []*fxRichPost, more bool, own, quote []cachedPostMedia) map[string]any {
 	polls := limitRichPostText(post, parents)
 	var markup strings.Builder
-	if len(parents) > 0 || more {
-		markup.WriteString(`<p>Reply thread from `)
+	thread := len(parents) > 0 || more
+	if thread {
+		markup.WriteString(`<p>Reply thread on `)
 		if link := inlineLink(post.URL); link != nil {
 			fmt.Fprintf(&markup, `<a href="%s">X</a>`, html.EscapeString(link.String()))
 		} else {
@@ -241,8 +238,15 @@ func richXPost(post *fxRichPost, parents []*fxRichPost, more bool, own, quote []
 		}
 	}
 	markup.WriteString("<p>")
+	if thread {
+		markup.WriteString("<br>")
+	}
 	markup.WriteString(richPostAuthor(post))
-	markup.WriteString(" on X</p>")
+	if thread {
+		markup.WriteString(":</p>")
+	} else {
+		markup.WriteString(" on X</p>")
+	}
 	if post.Text != "" {
 		markup.WriteString("<p>")
 		markup.WriteString(richPostBody(post.Text))
@@ -255,7 +259,7 @@ func richXPost(post *fxRichPost, parents []*fxRichPost, more bool, own, quote []
 	}
 	richPostMedia(&markup, own, 0)
 	if post.Quote != nil {
-		markup.WriteString("<blockquote><p>")
+		markup.WriteString("<blockquote expandable><p>")
 		markup.WriteString(richPostAuthor(post.Quote))
 		markup.WriteString("</p>")
 		if post.Quote.Text != "" {

@@ -354,12 +354,15 @@ func testXPostRichFormat(t *testing.T, api *postTextServer, choose func(int64, s
 	if err := json.Unmarshal([]byte(rich.Get("rich_message")), &richPayload); err != nil {
 		t.Fatal(err)
 	}
-	for _, text := range []string{`Reply thread from <a href="https://x.com/user/status/5">X</a>`, "Author 2", "Parent 3", "Parent 4", "Main &amp; Co", " · @user", `Main &lt;text&gt; &amp; 50% \%`, `href="https://x.com/quoted/status/9"`, "Quoted text", "<tg-slideshow>"} {
+	for _, text := range []string{`Reply thread on <a href="https://x.com/user/status/5">X</a>:`, "Author 2", "Parent 3", "Parent 4", "Main &amp; Co", `Main &lt;text&gt; &amp; 50% \%`, `href="https://x.com/quoted/status/9"`, "Quoted text", "<tg-slideshow>"} {
 		if !strings.Contains(richPayload.HTML, text) {
 			t.Errorf("rich message missing %q: %s", text, richPayload.HTML)
 		}
 	}
-	if strings.Count(richPayload.HTML, "<blockquote expandable>") != 3 ||
+	if strings.Count(richPayload.HTML, "<blockquote expandable>") != 4 ||
+		!strings.Contains(richPayload.HTML, `</blockquote><p><br><b><a href="https://x.com/user/status/5">Main &amp; Co</a></b>:</p><p>Main &lt;text&gt; &amp; 50% \%</p><tg-slideshow>`) ||
+		strings.Contains(richPayload.HTML, " · @") ||
+		!strings.Contains(richPayload.HTML, `</tg-slideshow><blockquote expandable><p>`) ||
 		strings.Index(richPayload.HTML, "Parent 2") > strings.Index(richPayload.HTML, "Parent 3") ||
 		strings.Index(richPayload.HTML, "Parent 3") > strings.Index(richPayload.HTML, "Parent 4") ||
 		strings.Index(richPayload.HTML, "tg://video?id=1") > strings.Index(richPayload.HTML, "Quoted text") ||

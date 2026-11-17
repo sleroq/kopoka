@@ -176,16 +176,8 @@ func (t *thumbnails) postTextPreviewBlocks(link *url.URL) ([]previewBlock, error
 	return t.richPostPreviewBlocks(post, parents, more, own, quote)
 }
 
-func previewPostAuthor(post *fxRichPost) string {
-	author := post.Author.Name
-	if post.Author.ScreenName != "" {
-		author += " · @" + post.Author.ScreenName
-	}
-	return author
-}
-
 func previewPostQuote(post *fxRichPost, poll string) previewBlock {
-	text := previewPostAuthor(post)
+	text := post.Author.Name
 	if post.Text != "" {
 		text += "\n" + post.Text
 	}
@@ -199,7 +191,7 @@ func previewReplyThread(parents []*fxRichPost, more bool, polls map[*fxRichPost]
 	if len(parents) == 0 && !more {
 		return nil
 	}
-	blocks := []previewBlock{{Kind: "text", Text: "Reply thread from X:"}}
+	blocks := []previewBlock{{Kind: "text", Text: "Reply thread on X:"}}
 	if more {
 		blocks = append(blocks, previewBlock{Kind: "text", Text: "…"})
 	}
@@ -212,7 +204,11 @@ func previewReplyThread(parents []*fxRichPost, more bool, polls map[*fxRichPost]
 func (t *thumbnails) richPostPreviewBlocks(post *fxRichPost, parents []*fxRichPost, more bool, own, quote []thumbnailMedia) ([]previewBlock, error) {
 	polls := limitRichPostText(post, parents)
 	blocks := previewReplyThread(parents, more, polls)
-	blocks = append(blocks, previewBlock{Kind: "author", Text: previewPostAuthor(post) + " on X"})
+	author := post.Author.Name + " on X"
+	if len(parents) > 0 || more {
+		author = post.Author.Name + ":"
+	}
+	blocks = append(blocks, previewBlock{Kind: "author", Text: author})
 	if post.Text != "" {
 		blocks = append(blocks, previewBlock{Kind: "text", Text: post.Text})
 	}
