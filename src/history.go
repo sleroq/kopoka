@@ -99,12 +99,16 @@ func settingsView(user int64) (string, tgbotapi.InlineKeyboardMarkup) {
 		return tgbotapi.NewInlineKeyboardButtonData(text, fmt.Sprintf("settings:%s:%d", action, user))
 	}
 	query := "tz "
+	targetQuery := "language target "
+	ignoreQuery := "language ignore "
 	return "Settings", tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(button("Configure history", "history-menu")),
 		tgbotapi.NewInlineKeyboardRow(button("Instant inline query", "instant")),
 		tgbotapi.NewInlineKeyboardRow(button("Specific photo links", "photo-menu")),
 		tgbotapi.NewInlineKeyboardRow(button("X post format", "x-format-menu")),
 		tgbotapi.NewInlineKeyboardRow(button("Post image themes", "theme-menu")),
+		tgbotapi.NewInlineKeyboardRow(tgbotapi.InlineKeyboardButton{Text: "Target language", SwitchInlineQueryCurrentChat: &targetQuery}),
+		tgbotapi.NewInlineKeyboardRow(tgbotapi.InlineKeyboardButton{Text: "Ignore translations", SwitchInlineQueryCurrentChat: &ignoreQuery}),
 		tgbotapi.NewInlineKeyboardRow(tgbotapi.InlineKeyboardButton{Text: "Timezone", SwitchInlineQueryCurrentChat: &query}),
 	)
 }

@@ -21,7 +21,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-const postImageVersion = 12
+const postImageVersion = 13
 const defaultPostImageTheme = "dark"
 
 type postImage struct {
@@ -64,20 +64,21 @@ type postPoll struct {
 }
 
 type renderPost struct {
-	AuthorName       string       `json:"author_name"`
-	AuthorUsername   string       `json:"author_username"`
-	AuthorAvatarURL  string       `json:"author_avatar_url"`
-	Text             string       `json:"text"`
-	CreatedTimestamp int64        `json:"-"`
-	CreatedAt        string       `json:"created_at,omitempty"`
-	Likes            uint64       `json:"likes,omitempty"`
-	Retweets         uint64       `json:"retweets,omitempty"`
-	Replies          uint64       `json:"replies,omitempty"`
-	Media            *postMedia   `json:"media,omitempty"`
-	Quote            *renderPost  `json:"quote,omitempty"`
-	Article          *postArticle `json:"article,omitempty"`
-	Card             *postCard    `json:"card,omitempty"`
-	Poll             *postPoll    `json:"poll,omitempty"`
+	AuthorName        string       `json:"author_name"`
+	AuthorUsername    string       `json:"author_username"`
+	AuthorAvatarURL   string       `json:"author_avatar_url"`
+	Text              string       `json:"text"`
+	TranslationSource string       `json:"translation_source,omitempty"`
+	CreatedTimestamp  int64        `json:"-"`
+	CreatedAt         string       `json:"created_at,omitempty"`
+	Likes             uint64       `json:"likes,omitempty"`
+	Retweets          uint64       `json:"retweets,omitempty"`
+	Replies           uint64       `json:"replies,omitempty"`
+	Media             *postMedia   `json:"media,omitempty"`
+	Quote             *renderPost  `json:"quote,omitempty"`
+	Article           *postArticle `json:"article,omitempty"`
+	Card              *postCard    `json:"card,omitempty"`
+	Poll              *postPoll    `json:"poll,omitempty"`
 }
 type renderRequest struct {
 	Scene      bool              `json:"scene,omitempty"`
@@ -113,6 +114,11 @@ type fxRichPost struct {
 		ScreenName string `json:"screen_name"`
 		AvatarURL  string `json:"avatar_url"`
 	} `json:"author"`
+	Translation *struct {
+		SourceLang string `json:"source_lang"`
+		TargetLang string `json:"target_lang"`
+		Text       string `json:"text"`
+	} `json:"translation"`
 	ReplyingToStatus string       `json:"replying_to_status"`
 	Media            *fxRichMedia `json:"media"`
 	Quote            *fxRichPost  `json:"quote"`
@@ -149,7 +155,7 @@ type fxLinkCard struct {
 
 func (i fxImage) image() postImage { return postImage{URL: i.URL} }
 
-func (p fxRichPost) normalize() (renderPost, error) {
+func (p fxRichPost) normalize(translation translationSettings) (renderPost, error) {
 	if p.Author.Name == "" || p.Author.ScreenName == "" {
 		return renderPost{}, fmt.Errorf("FxTwitter response missing author")
 	}
@@ -159,8 +165,12 @@ func (p fxRichPost) normalize() (renderPost, error) {
 		CreatedTimestamp: p.Created, Likes: p.Likes, Retweets: p.Retweets, Replies: p.Replies,
 		Media: p.Media.normalize(), Poll: p.Poll.forDisplay(),
 	}
+	if t := p.Translation; t != nil && t.Text != "" && !translation.ignores(t.SourceLang) && !strings.EqualFold(strings.SplitN(t.SourceLang, "-", 2)[0], translation.Target) {
+		out.Text = t.Text
+		out.TranslationSource = languageName(t.SourceLang)
+	}
 	if p.Quote != nil {
-		q, err := p.Quote.normalize()
+		q, err := p.Quote.normalize(translation)
 		if err != nil {
 			return out, err
 		}
@@ -254,13 +264,13 @@ func (c *fxLinkCard) normalize() *postCard {
 	return out
 }
 
-func fetchRichPost(client *http.Client, link *url.URL) (*fxRichPost, error) {
+func fetchRichPost(client *http.Client, link *url.URL, target string) (*fxRichPost, error) {
 	var response struct {
 		Code    int         `json:"code"`
 		Message string      `json:"message"`
 		Tweet   *fxRichPost `json:"tweet"`
 	}
-	if err := fetchXResponse(client, link, "api.fxtwitter.com", &response); err != nil {
+	if err := fetchXResponse(client, link, "api.fxtwitter.com", target, &response); err != nil {
 		return nil, err
 	}
 	if response.Code == http.StatusNotFound {
@@ -271,12 +281,12 @@ func fetchRichPost(client *http.Client, link *url.URL) (*fxRichPost, error) {
 	}
 	return response.Tweet, nil
 }
-func preparePostImage(link *url.URL, theme, zone string) (renderRequest, error) {
-	return preparePostImageWithClient(&http.Client{Timeout: 10 * time.Second}, link, theme, zone)
+func preparePostImage(link *url.URL, theme, zone string, translation translationSettings) (renderRequest, error) {
+	return preparePostImageWithClient(&http.Client{Timeout: 10 * time.Second}, link, theme, zone, translation)
 }
 
-func preparePostImageWithClient(client *http.Client, link *url.URL, theme, zone string) (renderRequest, error) {
-	request, bars, err := preparePostImageVariants(client, link, zone, !strings.HasSuffix(theme, "-bars"))
+func preparePostImageWithClient(client *http.Client, link *url.URL, theme, zone string, translation translationSettings) (renderRequest, error) {
+	request, bars, err := preparePostImageVariants(client, link, zone, translation, !strings.HasSuffix(theme, "-bars"))
 	if strings.HasSuffix(theme, "-bars") {
 		request = bars
 	}
@@ -284,21 +294,21 @@ func preparePostImageWithClient(client *http.Client, link *url.URL, theme, zone 
 	return request, err
 }
 
-func preparePostImageVariants(client *http.Client, link *url.URL, zone string, mergeMain bool) (renderRequest, renderRequest, error) {
+func preparePostImageVariants(client *http.Client, link *url.URL, zone string, translation translationSettings, mergeMain bool) (renderRequest, renderRequest, error) {
 	location, err := time.LoadLocation(zone)
 	if err != nil {
 		return renderRequest{}, renderRequest{}, err
 	}
 
-	source, err := fetchRichPost(client, xPostLink(link))
+	source, err := fetchRichPost(client, xPostLink(link), translation.Target)
 	if err != nil {
 		return renderRequest{}, renderRequest{}, err
 	}
-	post, err := source.normalize()
+	post, err := source.normalize(translation)
 	if err != nil {
 		return renderRequest{}, renderRequest{}, err
 	}
-	chain, more, err := source.replyChain(client)
+	chain, more, err := source.replyChain(client, translation)
 	if err != nil {
 		return renderRequest{}, renderRequest{}, err
 	}
@@ -338,7 +348,7 @@ func (p renderPost) inTimezone(location *time.Location) renderPost {
 	return p
 }
 
-func (p *fxRichPost) replyChain(client *http.Client) ([]renderPost, bool, error) {
+func (p *fxRichPost) replyChain(client *http.Client, translation translationSettings) ([]renderPost, bool, error) {
 	var chain []renderPost
 	for len(chain) < 3 && p.ReplyingToStatus != "" {
 		id, err := strconv.ParseUint(p.ReplyingToStatus, 10, 64)
@@ -346,11 +356,11 @@ func (p *fxRichPost) replyChain(client *http.Client) ([]renderPost, bool, error)
 			return nil, false, fmt.Errorf("invalid FxTwitter reply parent")
 		}
 		link := &url.URL{Scheme: "https", Host: "x.com", Path: "/i/status/" + strconv.FormatUint(id, 10)}
-		p, err = fetchRichPost(client, link)
+		p, err = fetchRichPost(client, link, translation.Target)
 		if err != nil {
 			return nil, false, err
 		}
-		post, err := p.normalize()
+		post, err := p.normalize(translation)
 		if err != nil {
 			return nil, false, err
 		}
@@ -464,11 +474,11 @@ func postImageTheme(id string, link *url.URL) string {
 	}
 	return ""
 }
-func findPostImage(db *sql.DB, id, theme, zone string) (tgbotapi.BaseInputMedia, error) {
+func findPostImage(db *sql.DB, id, theme, zone string, translation translationSettings) (tgbotapi.BaseInputMedia, error) {
 	var file string
 	var media tgbotapi.BaseInputMedia
-	row := db.QueryRow(`SELECT file_id,caption,media_type FROM post_image_cache WHERE artwork_id=? AND theme=? AND timezone=? AND render_version=?`,
-		id, theme, zone, postImageVersion)
+	row := db.QueryRow(`SELECT file_id,caption,media_type FROM post_image_cache WHERE artwork_id=? AND theme=? AND timezone=? AND translation_key=? AND render_version=?`,
+		id, theme, zone, translation.key(), postImageVersion)
 	err := row.Scan(&file, &media.Caption, &media.Type)
 	if err == sql.ErrNoRows {
 		return media, nil
@@ -482,6 +492,11 @@ func inlinePostImageResults(db *sql.DB, user int64, link *url.URL, previews *thu
 		log.Printf("loading post image timezone: %v", err)
 		return nil
 	}
+	translation, err := loadTranslationSettings(db, user)
+	if err != nil {
+		log.Printf("loading post image translation: %v", err)
+		return nil
+	}
 	themes, err := loadPostImageThemes(db, user)
 	if err != nil {
 		log.Printf("loading post image themes: %v", err)
@@ -491,7 +506,7 @@ func inlinePostImageResults(db *sql.DB, user int64, link *url.URL, previews *thu
 	var work *postImagePreviewWork
 	var barsAvailable chan bool
 	if !instant {
-		work = previews.startPostImagePreview(link, zone, themes.Light, themes.Dark)
+		work = previews.startPostImagePreview(link, zone, translation, themes.Light, themes.Dark)
 		barsAvailable = make(chan bool, 1)
 		go func() { barsAvailable <- work.postImageHasBars() }()
 	}
@@ -500,11 +515,11 @@ func inlinePostImageResults(db *sql.DB, user int64, link *url.URL, previews *thu
 	for _, theme := range imageThemes {
 		result := make(chan map[string]any, 1)
 		postImages = append(postImages, result)
-		go func() { result <- postImageResult(db, link, theme, zone, previews, work) }()
+		go func() { result <- postImageResult(db, link, theme, zone, translation, previews, work) }()
 	}
 
 	showBars := barsAvailable == nil || <-barsAvailable
-	duplicateBars := previews.duplicatePostImageBars(link, zone, work)
+	duplicateBars := previews.duplicatePostImageBars(link, zone, translation, work)
 	var results []any
 	for i, result := range postImages {
 		image := <-result
@@ -515,12 +530,12 @@ func inlinePostImageResults(db *sql.DB, user int64, link *url.URL, previews *thu
 	return results
 }
 
-func postImageResult(db *sql.DB, link *url.URL, theme, zone string, previews *thumbnails, work *postImagePreviewWork) map[string]any {
-	media, err := findPostImage(db, artworkID(xPostLink(link)), theme, zone)
+func postImageResult(db *sql.DB, link *url.URL, theme, zone string, translation translationSettings, previews *thumbnails, work *postImagePreviewWork) map[string]any {
+	media, err := findPostImage(db, artworkID(xPostLink(link)), theme, zone, translation)
 	if err != nil {
 		log.Printf("loading cached post image: %v", err)
 	}
-	result := inlinePhoto(previews.postImagePreview(link, theme, zone, work))
+	result := inlinePhoto(previews.postImagePreview(link, theme, zone, translation, work))
 	result["id"] = postImageID(link, theme)
 	baseTheme := strings.TrimSuffix(theme, "-bars")
 	result["title"] = "Post image · " + strings.ToUpper(baseTheme[:1]) + baseTheme[1:]
@@ -538,8 +553,8 @@ func postImageResult(db *sql.DB, link *url.URL, theme, zone string, previews *th
 	result["reply_markup"] = map[string]any{"inline_keyboard": []any{[]any{wait}}}
 	return result
 }
-func postImageMedia(db *sql.DB, link *url.URL, theme, zone string, previews *thumbnails) (any, error) {
-	cached, err := findPostImage(db, artworkID(xPostLink(link)), theme, zone)
+func postImageMedia(db *sql.DB, link *url.URL, theme, zone string, translation translationSettings, previews *thumbnails) (any, error) {
+	cached, err := findPostImage(db, artworkID(xPostLink(link)), theme, zone, translation)
 	if err != nil {
 		return nil, err
 	}
@@ -547,7 +562,7 @@ func postImageMedia(db *sql.DB, link *url.URL, theme, zone string, previews *thu
 		return postImageInput(cached), nil
 	}
 	if previews != nil {
-		if variant := previews.existingPostImagePreview(link, theme, zone); variant != nil {
+		if variant := previews.existingPostImagePreview(link, theme, zone, translation); variant != nil {
 			<-variant.done
 			if variant.request.hasMotion() {
 				return renderPostMedia(link, variant.request)
@@ -559,7 +574,7 @@ func postImageMedia(db *sql.DB, link *url.URL, theme, zone string, previews *thu
 			log.Printf("reusing post image preview for %s (%s): %v", link, theme, err)
 		}
 	}
-	request, err := preparePostImage(link, theme, zone)
+	request, err := preparePostImage(link, theme, zone, translation)
 	if err != nil {
 		return nil, err
 	}
@@ -571,10 +586,10 @@ func postImageCaption(link *url.URL, request renderRequest) string {
 		html.EscapeString(xPostLink(link).String()), html.EscapeString(request.Post.AuthorName))
 }
 
-func savePostImage(db *sql.DB, link *url.URL, theme, zone, kind, fileID, caption string) error {
-	_, err := db.Exec(`INSERT INTO post_image_cache(artwork_id,theme,timezone,render_version,media_type,file_id,caption) VALUES(?,?,?,?,?,?,?)
- ON CONFLICT(artwork_id,theme,timezone,render_version) DO UPDATE SET media_type=excluded.media_type,file_id=excluded.file_id,caption=excluded.caption`,
-		artworkID(xPostLink(link)), theme, zone, postImageVersion, kind, fileID, caption)
+func savePostImage(db *sql.DB, link *url.URL, theme, zone string, translation translationSettings, kind, fileID, caption string) error {
+	_, err := db.Exec(`INSERT INTO post_image_cache(artwork_id,theme,timezone,translation_key,render_version,media_type,file_id,caption) VALUES(?,?,?,?,?,?,?,?)
+ ON CONFLICT(artwork_id,theme,timezone,translation_key,render_version) DO UPDATE SET media_type=excluded.media_type,file_id=excluded.file_id,caption=excluded.caption`,
+		artworkID(xPostLink(link)), theme, zone, translation.key(), postImageVersion, kind, fileID, caption)
 	return err
 }
 
@@ -583,7 +598,11 @@ func sendPostImage(bot *tgbotapi.BotAPI, db *sql.DB, message *tgbotapi.Message, 
 	if err != nil {
 		return err
 	}
-	media, err := postImageMedia(db, link, theme, zone, nil)
+	translation, err := loadTranslationSettings(db, message.From.ID)
+	if err != nil {
+		return err
+	}
+	media, err := postImageMedia(db, link, theme, zone, translation, nil)
 	if err != nil {
 		return err
 	}
@@ -593,7 +612,7 @@ func sendPostImage(bot *tgbotapi.BotAPI, db *sql.DB, message *tgbotapi.Message, 
 	}
 	if len(ids) == 1 {
 		base := mediaBase(media)
-		if err := savePostImage(db, link, theme, zone, base.Type, ids[0], base.Caption); err != nil {
+		if err := savePostImage(db, link, theme, zone, translation, base.Type, ids[0], base.Caption); err != nil {
 			log.Printf("saving chat post image: %v", err)
 		}
 	}
@@ -605,7 +624,12 @@ func editInlinePostImage(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.Chos
 	if err != nil {
 		return err
 	}
-	media, err := postImageMedia(db, link, theme, zone, previews)
+	translation, err := loadTranslationSettings(db, chosen.From.ID)
+	if err != nil {
+		return err
+	}
+
+	media, err := postImageMedia(db, link, theme, zone, translation, previews)
 	if err != nil {
 		return err
 	}
@@ -616,7 +640,7 @@ func editInlinePostImage(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.Chos
 		if err != nil {
 			return err
 		}
-		if err := savePostImage(db, link, theme, zone, base.Type, id, base.Caption); err != nil {
+		if err := savePostImage(db, link, theme, zone, translation, base.Type, id, base.Caption); err != nil {
 			return err
 		}
 		file = tgbotapi.FileID(id)

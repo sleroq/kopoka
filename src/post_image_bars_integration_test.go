@@ -32,9 +32,9 @@ func TestPostImageBarsInlineResults(t *testing.T) {
 		}
 		count := 0
 		switch r.URL.Path {
-		case "/user/status/1":
+		case "/user/status/1", "/user/status/1/en":
 			count = 1
-		case "/user/status/2":
+		case "/user/status/2", "/user/status/2/en":
 			count = 2
 		}
 		photos := make([]postImage, count)

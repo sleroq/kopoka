@@ -62,7 +62,7 @@ func (api *instantTelegram) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			api.t.Error(err)
 		}
 		_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
-	case r.URL.Path == "/u/status/1":
+	case (r.URL.Path == "/u/status/1" || r.URL.Path == "/u/status/1/en"):
 		api.sources.Add(1)
 		_, _ = fmt.Fprintf(w, `{"code":200,"tweet":{"media":{"photos":[{"url":"https://i.pximg.net/preview.png"}]}}}`)
 	case r.URL.Path == "/auth/token":

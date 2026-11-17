@@ -151,7 +151,7 @@ func handleIncomingMessage(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql
 		handleMessage(bot, app, db, &message.Message, queue, previews)
 		return
 	}
-	if message.From == nil || message.Chat == nil || isTimezoneSelection(&message.Message) || isThemeSelection(&message.Message) {
+	if message.From == nil || message.Chat == nil || isTimezoneSelection(&message.Message) || isThemeSelection(&message.Message) || isTranslationSelection(&message.Message) {
 		return
 	}
 

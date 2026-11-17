@@ -152,7 +152,7 @@ func postImageTelegramServer(t *testing.T, jpg []byte, calls *[]string, results 
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.URL.Path == "/user/status/42":
+		case (r.URL.Path == "/user/status/42" || r.URL.Path == "/user/status/42/en"):
 			*calls = append(*calls, "fetch")
 			_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "tweet": map[string]any{
 				"text": "hello", "author": map[string]string{"name": "Artist", "screen_name": "user", "avatar_url": server.URL + "/asset"},
@@ -309,7 +309,8 @@ func TestPostImageReplyChainAndCard(t *testing.T) {
 			_, _ = w.Write(data.Bytes())
 			return
 		}
-		id := strings.TrimPrefix(r.URL.Path[strings.LastIndex(r.URL.Path, "/"):], "/")
+		path := strings.TrimSuffix(r.URL.Path, "/en")
+		id := strings.TrimPrefix(path[strings.LastIndex(path, "/"):], "/")
 		parents := map[string]string{"5": "4", "4": "3", "3": "2", "2": "1"}
 		tweet := map[string]any{
 			"text": "text " + id, "author": map[string]string{"name": "User", "screen_name": "user"},
@@ -330,7 +331,7 @@ func TestPostImageReplyChainAndCard(t *testing.T) {
 	http.DefaultTransport = redirectTransport{target, original}
 	defer func() { http.DefaultTransport = original }()
 	link, _ := url.Parse("https://x.com/user/status/5/photo/2")
-	request, err := preparePostImage(link, "light", defaultTimezone)
+	request, err := preparePostImage(link, "light", defaultTimezone, defaultTranslationSettings())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +341,7 @@ func TestPostImageReplyChainAndCard(t *testing.T) {
 	if request.Post.Text != "link" || request.Post.Card == nil || request.Post.Card.Domain != "example.com" || len(request.Images[request.Post.Card.Image.URL]) == 0 {
 		t.Fatalf("post: %+v", request.Post)
 	}
-	if strings.Join(paths, ",") != "/user/status/5,/i/status/4,/i/status/3,/i/status/2,/cover" {
+	if strings.Join(paths, ",") != "/user/status/5/en,/i/status/4/en,/i/status/3/en,/i/status/2/en,/cover" {
 		t.Fatalf("paths: %v", paths)
 	}
 }
@@ -361,7 +362,8 @@ func TestPostImageOptionalCardHTTP(t *testing.T) {
 			http.DefaultTransport = redirectTransport{target, original}
 			defer func() { http.DefaultTransport = original }()
 
-			request, err := preparePostImage(inlineLink("https://x.com/author/status/7"), "light", defaultTimezone)
+			link := inlineLink("https://x.com/author/status/7")
+			request, err := preparePostImage(link, "light", defaultTimezone, defaultTranslationSettings())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -410,7 +412,7 @@ func postPanelServer(t *testing.T, assets [][]byte) *httptest.Server {
 		media := map[string]any{"photos": photos, "mosaic": mosaic}
 		author := map[string]string{"name": "Artist", "screen_name": "artist"}
 		post := map[string]any{"author": author, "media": media}
-		if r.URL.Path == "/artist/status/42" {
+		if r.URL.Path == "/artist/status/42/en" {
 			post["quote"] = map[string]any{"author": author, "media": media}
 			post["replying_to_status"] = "41"
 		}
@@ -480,13 +482,14 @@ func TestPostImageOriginalPanels(t *testing.T) {
 			defer server.Close()
 			target, _ := url.Parse(server.URL)
 			client := &http.Client{Transport: redirectTransport{target, http.DefaultTransport}}
-			req, err := preparePostImageWithClient(client, inlineLink("https://x.com/artist/status/42"), "light", defaultTimezone)
+			sourceLink := inlineLink("https://x.com/artist/status/42")
+			req, err := preparePostImageWithClient(client, sourceLink, "light", defaultTimezone, defaultTranslationSettings())
 			if err != nil {
 				t.Fatal(err)
 			}
 			checkPostPanels(t, req, tc, server)
 			link := inlineLink("https://x.com/artist/status/42")
-			normal, bars, err := preparePostImageVariants(client, link, defaultTimezone, true)
+			normal, bars, err := preparePostImageVariants(client, link, defaultTimezone, defaultTranslationSettings(), true)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -495,7 +498,8 @@ func TestPostImageOriginalPanels(t *testing.T) {
 			defer singleServer.Close()
 			singleTarget, _ := url.Parse(singleServer.URL)
 			singleClient := &http.Client{Transport: redirectTransport{singleTarget, http.DefaultTransport}}
-			single, err := preparePostImageWithClient(singleClient, link, "dark-bars", defaultTimezone)
+			translation := defaultTranslationSettings()
+			single, err := preparePostImageWithClient(singleClient, link, "dark-bars", defaultTimezone, translation)
 			if err != nil || single.Post.Media.Carousel || single.Post.Media.Bars || len(single.Post.Media.Photos) != 1 {
 				t.Fatalf("single photo bars: %+v, %v", single.Post.Media, err)
 			}
@@ -549,7 +553,8 @@ func TestPostImageTimezonePreparation(t *testing.T) {
 		{"Asia/Kathmandu", "5:15 AM · Jan 1, 2024", "5:45 PM · Jul 1, 2024"},
 	} {
 		t.Run(tc.zone, func(t *testing.T) {
-			request, err := preparePostImageWithClient(client, inlineLink("https://x.com/post/status/42"), "light", tc.zone)
+			link := inlineLink("https://x.com/post/status/42")
+			request, err := preparePostImageWithClient(client, link, "light", tc.zone, defaultTranslationSettings())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -624,7 +629,7 @@ func TestPostImageCacheSharedByTimezone(t *testing.T) {
 	if _, err := db.Exec(`UPDATE post_image_cache SET render_version=? WHERE timezone=?`, postImageVersion-1, "UTC"); err != nil {
 		t.Fatal(err)
 	}
-	media, err := findPostImage(db, id, "light", "UTC")
+	media, err := findPostImage(db, id, "light", "UTC", defaultTranslationSettings())
 	if err != nil || media.Type != "" {
 		t.Fatalf("stale cache media %+v: %v", media, err)
 	}

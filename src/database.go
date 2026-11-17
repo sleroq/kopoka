@@ -52,8 +52,9 @@ func openArtworkDB(path string) (*sql.DB, error) {
  CREATE TABLE IF NOT EXISTS history_first_saved (user_id INTEGER PRIMARY KEY);
  CREATE TABLE IF NOT EXISTS history_picture_view (user_id INTEGER PRIMARY KEY);
  CREATE TABLE IF NOT EXISTS thumbnail_cache (artwork_id TEXT NOT NULL, media_count INTEGER NOT NULL, file_id TEXT NOT NULL, render_version INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (artwork_id, media_count));
- CREATE TABLE IF NOT EXISTS post_image_cache (artwork_id TEXT NOT NULL, theme TEXT NOT NULL, timezone TEXT NOT NULL DEFAULT 'Etc/GMT-3', render_version INTEGER NOT NULL, file_id TEXT NOT NULL, caption TEXT NOT NULL, PRIMARY KEY (artwork_id, theme, timezone, render_version));
+ CREATE TABLE IF NOT EXISTS post_image_cache (artwork_id TEXT NOT NULL, theme TEXT NOT NULL, timezone TEXT NOT NULL DEFAULT 'Etc/GMT-3', translation_key TEXT NOT NULL DEFAULT 'en:ru', render_version INTEGER NOT NULL, media_type TEXT NOT NULL DEFAULT 'photo', file_id TEXT NOT NULL, caption TEXT NOT NULL, PRIMARY KEY (artwork_id, theme, timezone, translation_key, render_version));
  CREATE TABLE IF NOT EXISTS post_image_themes (user_id INTEGER PRIMARY KEY, light TEXT NOT NULL DEFAULT 'light', dark TEXT NOT NULL DEFAULT 'dark');
+ CREATE TABLE IF NOT EXISTS user_translation (user_id INTEGER PRIMARY KEY, target TEXT NOT NULL DEFAULT 'en', ignored TEXT NOT NULL DEFAULT '["ru"]');
  CREATE TABLE IF NOT EXISTS user_timezone (user_id INTEGER PRIMARY KEY, timezone TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS instant_inline_settings (user_id INTEGER PRIMARY KEY, x INTEGER NOT NULL DEFAULT 0, pixiv INTEGER NOT NULL DEFAULT 0);`)
 	if err != nil {
@@ -65,6 +66,10 @@ func openArtworkDB(path string) (*sql.DB, error) {
 		return nil, err
 	}
 	if err := migratePostImageMedia(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := migratePostImageTranslation(db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -131,6 +136,31 @@ func openArtworkDB(path string) (*sql.DB, error) {
 		}
 	}
 	return db, nil
+}
+
+func migratePostImageTranslation(db *sql.DB) error {
+	var exists int
+	row := db.QueryRow(`SELECT count(*) FROM pragma_table_info('post_image_cache') WHERE name='translation_key'`)
+	if err := row.Scan(&exists); err != nil {
+		return err
+	}
+	if exists != 0 {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	_, err = tx.Exec(`ALTER TABLE post_image_cache RENAME TO post_image_cache_old;
+ CREATE TABLE post_image_cache (artwork_id TEXT NOT NULL, theme TEXT NOT NULL, timezone TEXT NOT NULL DEFAULT 'Etc/GMT-3', translation_key TEXT NOT NULL DEFAULT 'en:ru', render_version INTEGER NOT NULL, media_type TEXT NOT NULL DEFAULT 'photo', file_id TEXT NOT NULL, caption TEXT NOT NULL, PRIMARY KEY (artwork_id, theme, timezone, translation_key, render_version));
+ INSERT INTO post_image_cache(artwork_id, theme, timezone, render_version, media_type, file_id, caption)
+ SELECT artwork_id, theme, timezone, render_version, media_type, file_id, caption FROM post_image_cache_old;
+ DROP TABLE post_image_cache_old;`)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func migratePostImageMedia(db *sql.DB) error {

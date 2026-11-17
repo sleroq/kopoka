@@ -381,6 +381,9 @@ func inlineQueryResults(db *sql.DB, query *tgbotapi.InlineQuery, previews *thumb
 	if family, filter, ok := themeQuery(query.Query); ok {
 		return themeResults(db, query.From.ID, family, filter, previews), ""
 	}
+	if mode, filter, ok := translationQuery(query.Query); ok {
+		return translationResults(db, query, mode, filter)
+	}
 	if _, ok := timezoneQuery(query.Query); ok {
 		return timezoneResults(query)
 	}
@@ -418,6 +421,10 @@ func handleInlineQuery(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.InlineQ
 func handleChosenInlineResult(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, cacheChat string, queue *mediaQueue, previews *thumbnails) {
 	if strings.HasPrefix(chosen.ResultID, "theme:") {
 		handleThemeSelection(bot, db, chosen)
+		return
+	}
+	if strings.HasPrefix(chosen.ResultID, "language:") {
+		handleTranslationSelection(bot, db, chosen)
 		return
 	}
 	if strings.HasPrefix(chosen.ResultID, "timezone:") {

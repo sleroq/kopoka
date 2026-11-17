@@ -21,13 +21,13 @@ func TestXPollThreadPropagation(t *testing.T) {
 		quotePoll := fmt.Sprintf(poll, "Final results")
 		parentPoll := fmt.Sprintf(poll, "2 & days left")
 		switch r.URL.Path {
-		case "/user/status/5":
+		case "/user/status/5", "/user/status/5/en":
 			_, _ = fmt.Fprintf(w, `{"code":200,"tweet":{
 				"text":"Main", "author":{"name":"Main","screen_name":"user"},
 				"poll":%s, "replying_to_status":"4",
 				"quote":{"text":"Quote","author":{"name":"Quote","screen_name":"q"},"poll":%s}
 			}}`, mainPoll, quotePoll)
-		case "/i/status/4":
+		case "/i/status/4", "/i/status/4/en":
 			_, _ = fmt.Fprintf(w, `{"code":200,"tweet":{
 				"text":"Parent", "author":{"name":"Parent","screen_name":"p"}, "poll":%s
 			}}`, parentPoll)
@@ -40,7 +40,7 @@ func TestXPollThreadPropagation(t *testing.T) {
 	target, _ := url.Parse(server.URL)
 	client := &http.Client{Transport: redirectTransport{target, http.DefaultTransport}}
 	link, _ := url.Parse("https://x.com/user/status/5")
-	request, err := preparePostImageWithClient(client, link, "dark", "UTC")
+	request, err := preparePostImageWithClient(client, link, "dark", "UTC", defaultTranslationSettings())
 	if err != nil {
 		t.Fatal(err)
 	}

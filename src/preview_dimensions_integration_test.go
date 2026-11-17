@@ -64,7 +64,7 @@ func (f *previewFlowServer) serve(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprint(w, `{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`)
 	case strings.HasPrefix(r.URL.Path, "/user/status/"):
 		f.sourceCalls.Add(1)
-		id := strings.TrimPrefix(r.URL.Path, "/user/status/")
+		id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/user/status/"), "/en")
 		if id == "7" {
 			f.startedOnce.Do(func() { close(f.sourceStarted) })
 			<-f.sourceRelease

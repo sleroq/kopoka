@@ -169,7 +169,7 @@ func TestPostImageLoadingActions(t *testing.T) {
 		t.Fatal(err)
 	}
 	link := inlineLink("https://x.com/artist/status/123/photo/2")
-	result := postImageResult(db, link, "light", "UTC", testPreviews(t, db, bot), nil)
+	result := postImageResult(db, link, "light", "UTC", defaultTranslationSettings(), testPreviews(t, db, bot), nil)
 	content := result["input_message_content"].(map[string]any)
 	encoded, err := json.Marshal(content["entities"])
 	if err != nil {

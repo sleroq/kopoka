@@ -34,6 +34,7 @@ struct Post {
     author_username: String,
     author_avatar_url: String,
     text: String,
+    translation_source: Option<String>,
     created_at: Option<String>,
     likes: Option<u64>,
     retweets: Option<u64>,
@@ -396,6 +397,16 @@ impl Card<'_> {
 
     fn extras(&self, post: &Post, width: f32, compact: bool) -> Result<Vec<Node>> {
         let mut nodes = Vec::new();
+        if let Some(source) = post
+            .translation_source
+            .as_deref()
+            .filter(|source| !source.is_empty())
+        {
+            nodes.push(text(
+                format!("Translated from {source}"),
+                &format!("font-size:12px;color:{}", self.secondary),
+            ));
+        }
         if let Some(poll) = &post.poll {
             nodes.push(self.poll(poll, width, compact));
         }

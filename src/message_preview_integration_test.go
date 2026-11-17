@@ -280,7 +280,8 @@ func TestMessagePreviewCachedPostImage(t *testing.T) {
 		t.Fatal(err)
 	}
 	link := inlineLink("https://x.com/user/status/20")
-	if err := savePostImage(p.db, link, "light", defaultTimezone, "photo", "original-cached", "<b>Original caption</b>"); err != nil {
+	translation := defaultTranslationSettings()
+	if err := savePostImage(p.db, link, "light", defaultTimezone, translation, "photo", "original-cached", "<b>Original caption</b>"); err != nil {
 		t.Fatal(err)
 	}
 	results := f.query(t, p, bot, link.String())

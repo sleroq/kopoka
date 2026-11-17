@@ -98,6 +98,36 @@ fn cli_renders_polls_in_posts_quotes_and_replies() {
 }
 
 #[test]
+fn cli_labels_translations_in_posts_quotes_and_replies() {
+    let post =
+        json!({"author_name":"A", "author_username":"a", "author_avatar_url":"", "text":"Hello"});
+    let mut translated = post.clone();
+    translated["translation_source"] = json!("Japanese");
+    for theme in ["light", "warm", "dark", "dim"] {
+        let cases = [
+            (
+                json!({"theme":theme,"post":post}),
+                json!({"theme":theme,"post":translated}),
+            ),
+            (
+                json!({"theme":theme,"post":{ "author_name":"A", "author_username":"a", "author_avatar_url":"", "text":"Hello", "quote":post }}),
+                json!({"theme":theme,"post":{ "author_name":"A", "author_username":"a", "author_avatar_url":"", "text":"Hello", "quote":translated }}),
+            ),
+            (
+                json!({"theme":theme,"post":post,"reply_chain":[post]}),
+                json!({"theme":theme,"post":post,"reply_chain":[translated]}),
+            ),
+        ];
+        for (plain, labeled) in cases {
+            let plain = render_request(plain);
+            let labeled = render_request(labeled);
+            assert!(height(&labeled) > height(&plain), "{theme}");
+            assert_ne!(plain.stdout, labeled.stdout);
+        }
+    }
+}
+
+#[test]
 fn cli_renders_theme_palettes() {
     for (theme, background) in [
         ("light", [255, 255, 255]),

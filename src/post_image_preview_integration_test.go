@@ -61,7 +61,7 @@ cat "$PREVIEW_TEST_IMAGE"
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.URL.Path == "/user/status/42":
+		case (r.URL.Path == "/user/status/42" || r.URL.Path == "/user/status/42/en"):
 			sources.Add(1)
 			asset := server.URL + "/asset"
 			_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "tweet": map[string]any{
@@ -100,7 +100,7 @@ cat "$PREVIEW_TEST_IMAGE"
 	link := inlineLink("https://x.com/user/status/42/photo/2?foo=bar")
 
 	for _, theme := range []string{"light", "dark", "light-bars", "dark-bars"} {
-		result := postImageResult(db, link, theme, defaultTimezone, previews, nil)
+		result := postImageResult(db, link, theme, defaultTimezone, defaultTranslationSettings(), previews, nil)
 		if !strings.Contains(result["photo_url"].(string), "placeholder-"+strings.TrimSuffix(theme, "-bars")) {
 			t.Fatalf("instant: %v", result)
 		}
@@ -109,10 +109,12 @@ cat "$PREVIEW_TEST_IMAGE"
 		t.Fatal("instant preview started work")
 	}
 
-	work := previews.startPostImagePreview(link, defaultTimezone, "light", "dark")
+	work := previews.startPostImagePreview(link, defaultTimezone, defaultTranslationSettings(), "light", "dark")
 	results := make(chan map[string]any, 4)
 	for _, theme := range []string{"light", "dark", "light-bars", "dark-bars"} {
-		go func(theme string) { results <- postImageResult(db, link, theme, defaultTimezone, previews, work) }(theme)
+		go func(theme string) {
+			results <- postImageResult(db, link, theme, defaultTimezone, defaultTranslationSettings(), previews, work)
+		}(theme)
 	}
 	checkPostImagePreviewResponses(t, previews, results)
 
@@ -137,7 +139,7 @@ cat "$PREVIEW_TEST_IMAGE"
 		if err := editInlinePostImage(bot, db, chosen, "@cache", link, theme, previews); err != nil {
 			t.Fatal(err)
 		}
-		result := postImageResult(db, link, theme, defaultTimezone, previews, work)
+		result := postImageResult(db, link, theme, defaultTimezone, defaultTranslationSettings(), previews, work)
 		if result["id"] != postImageID(link, theme)+":cached" || result["input_message_content"].(map[string]any)["message_text"] != "Loading post image…" || result["photo_url"] == nil {
 			t.Fatalf("cached: %v", result)
 		}
@@ -209,7 +211,7 @@ func TestPostImagePreviewRetryAfterFailure(t *testing.T) {
 	previews := testPreviews(t, testArtworkDB(t), nil)
 	previews.client = &http.Client{Transport: redirectTransport{target, http.DefaultTransport}}
 	link := inlineLink("https://x.com/user/status/42")
-	work := previews.startPostImagePreview(link, defaultTimezone, "light", "dark")
+	work := previews.startPostImagePreview(link, defaultTimezone, defaultTranslationSettings(), "light", "dark")
 	<-work.variants["light"].done
 	<-work.variants["dark"].done
 	if work.variants["light"].err == nil || work.variants["dark"].err == nil {
@@ -233,7 +235,7 @@ func TestPostImagePreviewRetryAfterFailure(t *testing.T) {
 	}
 
 	for _, theme := range []string{"light", "dark", "light-bars", "dark-bars"} {
-		result := postImageResult(previews.db, link, theme, defaultTimezone, previews, work)
+		result := postImageResult(previews.db, link, theme, defaultTimezone, defaultTranslationSettings(), previews, work)
 		if !strings.Contains(result["photo_url"].(string), "placeholder-") {
 			t.Fatalf("failed preview: %v", result)
 		}
@@ -245,8 +247,8 @@ func TestPostImagePreviewRetryAfterFailure(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "ready"), nil, 0600); err != nil {
 		t.Fatal(err)
 	}
-	retry := previews.startPostImagePreview(link, defaultTimezone, "light")
-	if photo := previews.postImagePreview(link, "light", defaultTimezone, retry); !strings.Contains(photo.photoURL, "/post-image-preview?") {
+	retry := previews.startPostImagePreview(link, defaultTimezone, defaultTranslationSettings(), "light")
+	if photo := previews.postImagePreview(link, "light", defaultTimezone, defaultTranslationSettings(), retry); !strings.Contains(photo.photoURL, "/post-image-preview?") {
 		t.Fatalf("retry: %+v", photo)
 	}
 	if calls.Load() != 2 {
@@ -266,9 +268,9 @@ func TestPostImagePreviewSelectedThemes(t *testing.T) {
 	previews := testPreviews(t, testArtworkDB(t), nil)
 	previews.client = &http.Client{Transport: redirectTransport{target, http.DefaultTransport}}
 	link := inlineLink("https://x.com/user/status/42")
-	work := previews.startPostImagePreview(link, defaultTimezone, "warm", "dim")
+	work := previews.startPostImagePreview(link, defaultTimezone, defaultTranslationSettings(), "warm", "dim")
 	for _, theme := range []string{"warm", "dim", "warm-bars", "dim-bars"} {
-		photo := previews.postImagePreview(link, theme, defaultTimezone, work)
+		photo := previews.postImagePreview(link, theme, defaultTimezone, defaultTranslationSettings(), work)
 		address, err := url.Parse(photo.photoURL)
 		if err != nil || address.Query().Get("theme") != theme {
 			t.Fatalf("%s preview: %+v %v", theme, photo, err)
@@ -306,17 +308,17 @@ func TestPostImagePreviewTimezones(t *testing.T) {
 	previews.client = &http.Client{Transport: redirectTransport{target, http.DefaultTransport}}
 	link := inlineLink("https://x.com/user/status/42")
 	alias := inlineLink("https://twitter.com/other/status/42/photo/2")
-	first := previews.startPostImagePreview(link, defaultTimezone, "light", "dark")
-	if first != previews.startPostImagePreview(alias, defaultTimezone, "light", "dark") {
+	first := previews.startPostImagePreview(link, defaultTimezone, defaultTranslationSettings(), "light", "dark")
+	if first != previews.startPostImagePreview(alias, defaultTimezone, defaultTranslationSettings(), "light", "dark") {
 		t.Fatal("same post and zone did not share work")
 	}
-	if first == previews.startPostImagePreview(link, "UTC", "light", "dark") {
+	if first == previews.startPostImagePreview(link, "UTC", defaultTranslationSettings(), "light", "dark") {
 		t.Fatal("different zones shared work")
 	}
 	var images [][]byte
 	for _, zone := range []string{defaultTimezone, "UTC"} {
-		work := previews.startPostImagePreview(link, zone, "light")
-		photo := previews.postImagePreview(link, "light", zone, work)
+		work := previews.startPostImagePreview(link, zone, defaultTranslationSettings(), "light")
+		photo := previews.postImagePreview(link, "light", zone, defaultTranslationSettings(), work)
 		address, err := url.Parse(photo.photoURL)
 		if err != nil || address.Query().Get("tz") != zone {
 			t.Fatalf("URL %q: %v", photo.photoURL, err)

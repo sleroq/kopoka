@@ -74,11 +74,12 @@ func TestMotionViewsIntegration(t *testing.T) {
 			if len(uploads) != 1 || uploads[0] != want || strings.Join(edits, ",") != want+":card,"+want+":card" {
 				t.Fatalf("uploads %v edits %v", uploads, edits)
 			}
-			cached, err := findPostImage(db, artworkID(link), "light", defaultTimezone)
+			cached, err := findPostImage(db, artworkID(link), "light", defaultTimezone, defaultTranslationSettings())
 			if err != nil || cached.Type != want || cached.Media != tgbotapi.FileID("card") {
 				t.Fatalf("cached %+v: %v", cached, err)
 			}
-			result := postImageResult(db, link, "light", defaultTimezone, testPreviews(t, db, bot), nil)
+			previews := testPreviews(t, db, bot)
+			result := postImageResult(db, link, "light", defaultTimezone, defaultTranslationSettings(), previews, nil)
 			if result["type"] != "photo" || result["id"] != postImageID(link, "light")+":cached" || result["input_message_content"].(map[string]any)["message_text"] != "Loading post image…" {
 				t.Fatalf("inline result %v", result)
 			}
@@ -93,7 +94,7 @@ func TestPostImageMediaMigrationIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	link, _ := url.Parse("https://x.com/user/status/42")
-	if err := savePostImage(db, link, "light", defaultTimezone, "photo", "old", "caption"); err != nil {
+	if err := savePostImage(db, link, "light", defaultTimezone, defaultTranslationSettings(), "photo", "old", "caption"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`ALTER TABLE post_image_cache DROP COLUMN media_type`); err != nil {
@@ -107,15 +108,15 @@ func TestPostImageMediaMigrationIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
-	cached, err := findPostImage(db, artworkID(link), "light", defaultTimezone)
+	cached, err := findPostImage(db, artworkID(link), "light", defaultTimezone, defaultTranslationSettings())
 	if err != nil || cached.Type != "photo" || cached.Media != tgbotapi.FileID("old") {
 		t.Fatalf("migrated %+v: %v", cached, err)
 	}
 	for _, kind := range []string{"animation", "video"} {
-		if err := savePostImage(db, link, "light", defaultTimezone, kind, "new", "caption"); err != nil {
+		if err := savePostImage(db, link, "light", defaultTimezone, defaultTranslationSettings(), kind, "new", "caption"); err != nil {
 			t.Fatal(err)
 		}
-		cached, err = findPostImage(db, artworkID(link), "light", defaultTimezone)
+		cached, err = findPostImage(db, artworkID(link), "light", defaultTimezone, defaultTranslationSettings())
 		if err != nil || cached.Type != kind || cached.Media != tgbotapi.FileID("new") {
 			t.Fatalf("roundtrip %+v: %v", cached, err)
 		}
@@ -125,7 +126,7 @@ func TestPostImageMediaMigrationIntegration(t *testing.T) {
 func motionViewHandler(t *testing.T, kind string, server **httptest.Server, files map[string][]byte, uploads, edits *[]string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.URL.Path == "/user/status/42":
+		case (r.URL.Path == "/user/status/42" || r.URL.Path == "/user/status/42/en"):
 			media := []map[string]string{
 				{"type": "photo", "url": (*server).URL + "/blue"},
 				{"type": kind, "url": (*server).URL + "/" + kind, "thumbnail_url": (*server).URL + "/red"},

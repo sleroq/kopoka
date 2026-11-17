@@ -10,7 +10,7 @@ import (
 
 func loadXPostThread(client *http.Client, link *url.URL) (post *fxRichPost, parents []*fxRichPost, more bool, err error) {
 	postLink := xPostLink(link)
-	post, err = fetchRichPost(client, postLink)
+	post, err = fetchRichPost(client, postLink, "")
 	if err != nil {
 		return nil, nil, false, err
 	}
@@ -30,7 +30,7 @@ func loadXPostThread(client *http.Client, link *url.URL) (post *fxRichPost, pare
 			break
 		}
 		parentLink := &url.URL{Scheme: "https", Host: "x.com", Path: "/i/status/" + strconv.FormatUint(id, 10)}
-		parent, fetchErr := fetchRichPost(client, parentLink)
+		parent, fetchErr := fetchRichPost(client, parentLink, "")
 		if fetchErr != nil {
 			log.Printf("fetching FxTwitter reply parent %s: %v", parentLink, fetchErr)
 			more = true

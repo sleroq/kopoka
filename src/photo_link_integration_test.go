@@ -28,7 +28,7 @@ func (api *photoLinkServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.HasSuffix(r.URL.Path, "/getMe"):
 		_, _ = fmt.Fprint(w, `{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`)
-	case r.URL.Path == "/artist/status/123":
+	case (r.URL.Path == "/artist/status/123" || r.URL.Path == "/artist/status/123/en"):
 		api.paths = append(api.paths, r.URL.RequestURI())
 		if api.fullPost {
 			_, _ = fmt.Fprint(w, `{"code":200,"tweet":{"author":{"name":"Artist"},"media":{"all":[`+

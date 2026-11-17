@@ -121,9 +121,12 @@ func fetchXPost(link *url.URL, allowMissingURLs bool) (xPost, error) {
 	return xPost{}, fmt.Errorf("FxTwitter: %w; VxTwitter: %w", fxErr, vxErr)
 }
 
-func fetchXResponse(client *http.Client, link *url.URL, host string, response any) error {
+func fetchXResponse(client *http.Client, link *url.URL, host, target string, response any) error {
 	apiLink := *xPostLink(link)
 	apiLink.Host = host
+	if target != "" {
+		apiLink.Path += "/" + target
+	}
 	res, err := client.Get(apiLink.String())
 	if err != nil {
 		return fmt.Errorf("fetching X link: %w", err)
@@ -161,7 +164,7 @@ func fetchFxPost(client *http.Client, link *url.URL) (xPost, error) {
 			} `json:"quote"`
 		} `json:"tweet"`
 	}
-	if err := fetchXResponse(client, link, "api.fxtwitter.com", &response); err != nil {
+	if err := fetchXResponse(client, link, "api.fxtwitter.com", "", &response); err != nil {
 		return xPost{}, err
 	}
 	if response.Code == http.StatusNotFound {
@@ -196,7 +199,7 @@ func fetchVxPost(client *http.Client, link *url.URL) (xPost, error) {
 			Media []xMedia `json:"media_extended"`
 		} `json:"qrt"`
 	}
-	if err := fetchXResponse(client, link, "api.vxtwitter.com", &response); err != nil {
+	if err := fetchXResponse(client, link, "api.vxtwitter.com", "", &response); err != nil {
 		return xPost{}, err
 	}
 	if len(response.Media) == 0 {

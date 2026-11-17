@@ -38,9 +38,9 @@ func postImagePreviewLink(link *url.URL) *url.URL {
 	return post
 }
 
-func (t *thumbnails) startPostImagePreview(link *url.URL, zone string, themes ...string) *postImagePreviewWork {
+func (t *thumbnails) startPostImagePreview(link *url.URL, zone string, translation translationSettings, themes ...string) *postImagePreviewWork {
 	link = postImagePreviewLink(link)
-	key := artworkID(xPostLink(link)) + ":" + zone
+	key := artworkID(xPostLink(link)) + ":" + zone + ":" + translation.key()
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -55,7 +55,7 @@ func (t *thumbnails) startPostImagePreview(link *url.URL, zone string, themes ..
 		t.postImageWork[key] = work
 		go func() {
 			t.workers <- struct{}{}
-			work.request, work.bars, work.prepareErr = preparePostImageVariants(t.client, link, zone, true)
+			work.request, work.bars, work.prepareErr = preparePostImageVariants(t.client, link, zone, translation, true)
 			work.barsKnown = work.prepareErr == nil
 			work.hasBars = work.bars.Post.Media.hasBars()
 			close(work.prepared)
@@ -138,10 +138,10 @@ func (work *postImagePreviewWork) duplicateBars() bool {
 	return work.prepareErr == nil && media != nil && len(media.Items) == 0 && media.Carousel
 }
 
-func (t *thumbnails) duplicatePostImageBars(link *url.URL, zone string, work *postImagePreviewWork) bool {
+func (t *thumbnails) duplicatePostImageBars(link *url.URL, zone string, translation translationSettings, work *postImagePreviewWork) bool {
 	if work == nil {
 		t.mu.Lock()
-		work = t.postImageWork[artworkID(xPostLink(link))+":"+zone]
+		work = t.postImageWork[artworkID(xPostLink(link))+":"+zone+":"+translation.key()]
 		t.mu.Unlock()
 	}
 	if work != nil {
@@ -163,7 +163,7 @@ func (work *postImagePreviewWork) postImageHasBars() bool {
 	}
 }
 
-func (t *thumbnails) postImagePreview(link *url.URL, theme, zone string, work *postImagePreviewWork) previewPhoto {
+func (t *thumbnails) postImagePreview(link *url.URL, theme, zone string, translation translationSettings, work *postImagePreviewWork) previewPhoto {
 	if work == nil {
 		return t.postImagePlaceholder(strings.TrimSuffix(theme, "-bars"))
 	}
@@ -178,7 +178,7 @@ func (t *thumbnails) postImagePreview(link *url.URL, theme, zone string, work *p
 			address.Path += "/post-image-preview"
 			address.RawQuery = url.Values{
 				"url": {link.String()}, "theme": {theme},
-				"tz": {zone}, "v": {strconv.Itoa(postImageVersion)}, "frame": {strconv.Itoa(thumbnailRenderVersion)},
+				"tz": {zone}, "target": {translation.Target}, "ignored": {strings.SplitN(translation.key(), ":", 2)[1]}, "v": {strconv.Itoa(postImageVersion)}, "frame": {strconv.Itoa(thumbnailRenderVersion)},
 			}.Encode()
 			u := address.String()
 			return previewPhoto{photoURL: u + "&size=large", thumbnailURL: u, width: variant.width, height: variant.height}
@@ -189,10 +189,10 @@ func (t *thumbnails) postImagePreview(link *url.URL, theme, zone string, work *p
 	return t.postImagePlaceholder(strings.TrimSuffix(theme, "-bars"))
 }
 
-func (t *thumbnails) existingPostImagePreview(link *url.URL, theme, zone string) *postImagePreviewVariant {
+func (t *thumbnails) existingPostImagePreview(link *url.URL, theme, zone string, translation translationSettings) *postImagePreviewVariant {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if work := t.postImageWork[artworkID(xPostLink(link))+":"+zone]; work != nil {
+	if work := t.postImageWork[artworkID(xPostLink(link))+":"+zone+":"+translation.key()]; work != nil {
 		return work.variants[theme]
 	}
 	return nil
@@ -232,7 +232,12 @@ func (t *thumbnails) servePostImagePreview(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	work := t.startPostImagePreview(link, zone, strings.TrimSuffix(theme, "-bars"))
+	translation, ok := postImagePreviewTranslation(r.URL.Query())
+	if !ok {
+		http.Error(w, "invalid translation settings", http.StatusBadRequest)
+		return
+	}
+	work := t.startPostImagePreview(link, zone, translation, strings.TrimSuffix(theme, "-bars"))
 	t.mu.Lock()
 	variant := work.variants[theme]
 	t.mu.Unlock()
@@ -252,4 +257,26 @@ func (t *thumbnails) servePostImagePreview(w http.ResponseWriter, r *http.Reques
 		w.Header().Set("Content-Type", "image/jpeg")
 		_, _ = w.Write(data)
 	}
+}
+
+func postImagePreviewTranslation(query url.Values) (translationSettings, bool) {
+	translation := defaultTranslationSettings()
+	if query.Has("target") {
+		translation.Target = query.Get("target")
+	}
+	if query.Has("ignored") {
+		translation.Ignored = nil
+		if query.Get("ignored") != "" {
+			translation.Ignored = strings.Split(query.Get("ignored"), ",")
+		}
+	}
+	if !validTranslationLanguage(translation.Target) {
+		return translation, false
+	}
+	for _, code := range translation.Ignored {
+		if !validTranslationLanguage(code) {
+			return translation, false
+		}
+	}
+	return translation, true
 }
