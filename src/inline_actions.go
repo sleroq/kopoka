@@ -160,6 +160,9 @@ func handleIncomingMessage(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql
 	reply.ReplyToMessageID = message.MessageID
 	link := inlineMessageArtwork(message)
 	if link == nil {
+		log.Printf("inline artwork link missing: chat=%d message=%d animation=%t text_entities=%v caption_entities=%v rich_blocks=%d",
+			message.Chat.ID, message.MessageID, message.Animation != nil,
+			message.Entities, message.CaptionEntities, len(message.RichMessage.Blocks))
 		reply.Text += "\n\nCould not find the artwork link."
 	} else {
 		inlineQuery := link.String()
