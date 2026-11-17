@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -50,6 +52,30 @@ func TestInlineTelegramFlow(t *testing.T) {
 	for _, count := range []int{1, 2} {
 		t.Run(fmt.Sprint(count), func(t *testing.T) {
 			db := testArtworkDB(t)
+			fixture := thumbnailFixture(t, 480, 300)
+			var source *httptest.Server
+			source = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/getMe") {
+					_, _ = fmt.Fprint(w, `{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`)
+					return
+				}
+				if strings.HasSuffix(r.URL.Path, "/sendPhoto") {
+					_, _ = fmt.Fprint(w, `{"ok":true,"result":{"message_id":1,"photo":[{"file_id":"preview"}]}}`)
+					return
+				}
+				if strings.HasSuffix(r.URL.Path, "/deleteMessage") {
+					_, _ = fmt.Fprint(w, `{"ok":true,"result":true}`)
+					return
+				}
+				if r.URL.Path == "/image" {
+					_, _ = w.Write(fixture)
+					return
+				}
+				photos := []map[string]string{{"url": source.URL + "/image"}}
+				tweet := map[string]any{"media": map[string]any{"photos": photos}}
+				_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "tweet": tweet})
+			}))
+			defer source.Close()
 			cacheChat := "@cache"
 			if count == 2 {
 				cacheChat = "-100123"
@@ -127,8 +153,17 @@ func TestInlineTelegramFlow(t *testing.T) {
 			query := &tgbotapi.InlineQuery{
 				From: &tgbotapi.User{ID: 1}, ID: "query", Query: "Artist https://x.com/user/status/1?tracking=1 shared post",
 			}
-			handleInlineQuery(bot, db, query, testPreviews(t, db, bot))
-			if strings.Join(calls, ",") != "answer" || len(answer) != 4 || answer[1]["id"] != "post-image:light-bars:1" || answer[2]["id"] != "post-image:dark-bars:1" || answer[3]["id"] != "post:text" {
+			previewBot, err := tgbotapi.NewBotAPIWithAPIEndpoint("token", source.URL+"/bot%s/%s")
+			if err != nil {
+				t.Fatal(err)
+			}
+			previewDB := testArtworkDB(t)
+			previews := testPreviews(t, previewDB, previewBot)
+			sourceURL, _ := url.Parse(source.URL)
+			previews.client = &http.Client{Transport: redirectTransport{sourceURL, original}}
+			handleInlineQuery(bot, db, query, previews)
+			awaitCachedThumbnail(t, previewDB, "x:1", 0)
+			if strings.Join(calls, ",") != "answer" || len(answer) != 6 || answer[1]["id"] != "post-image:light:1" || answer[2]["id"] != "post-image:dark:1" || answer[3]["id"] != "post-image:light-bars:1" || answer[4]["id"] != "post-image:dark-bars:1" || answer[5]["id"] != "post:text" {
 				t.Fatalf("calls: %v, answer: %#v", calls, answer)
 			}
 			checkInlineAnswer(t, answer[0])
@@ -245,7 +280,8 @@ func checkInlineAnswer(t *testing.T, result map[string]any) {
 	content := result["input_message_content"].(map[string]any)
 	keyboard := result["reply_markup"].(map[string]any)["inline_keyboard"].([]any)
 	button := keyboard[0].([]any)[0].(map[string]any)
-	if result["type"] != "photo" || result["id"] != inlineResultID || !strings.HasSuffix(result["photo_url"].(string), "thumbnail-placeholder-x.jpg") || content["message_text"] != "Loading artwork…" || content["disable_web_page_preview"] != true || button["text"] != "Please wait…" || button["disabled"] == nil {
+	uncachedThumbnailURLs(t, result)
+	if result["type"] != "photo" || result["id"] != inlineResultID || content["message_text"] != "Loading artwork…" || content["disable_web_page_preview"] != true || button["text"] != "Please wait…" || button["disabled"] == nil {
 		t.Fatalf("answer: %#v", result)
 	}
 }
@@ -327,6 +363,50 @@ func TestInlineHistoryPagination(t *testing.T) {
 
 func TestInlinePixivThumbnail(t *testing.T) {
 	db := testArtworkDB(t)
+	fixture := thumbnailFixture(t, 480, 300)
+
+	source := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/token":
+			_, _ = fmt.Fprint(w, `{"response":{"access_token":"access","refresh_token":"refresh","expires_in":3600,"user":{}}}`)
+		case "/v1/illust/detail":
+			illust := map[string]any{
+				"id": 82775556, "type": "illust", "page_count": 1,
+				"image_urls": map[string]string{"large": "https://i.pximg.net/image"},
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"illust": illust})
+		case "/bottoken/getMe":
+			_, _ = fmt.Fprint(w, `{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`)
+		case "/bottoken/sendPhoto":
+			_, _ = fmt.Fprint(w, `{"ok":true,"result":{"message_id":1,"photo":[{"file_id":"preview"}]}}`)
+		case "/bottoken/deleteMessage":
+			_, _ = fmt.Fprint(w, `{"ok":true,"result":true}`)
+		case "/image":
+			_, _ = w.Write(fixture)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer source.Close()
+	originalClient, originalTransport := http.DefaultClient, http.DefaultTransport
+	base := source.Client().Transport.(*http.Transport).Clone()
+	base.TLSClientConfig.ServerName = "127.0.0.1"
+	base.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, source.Listener.Addr().String())
+	}
+	http.DefaultClient, http.DefaultTransport = &http.Client{Transport: base}, base
+	defer func() {
+		http.DefaultClient, http.DefaultTransport = originalClient, originalTransport
+		base.CloseIdleConnections()
+	}()
+	t.Setenv("PIXIV_ACCESS_TOKEN", "access")
+	t.Setenv("PIXIV_REFRESH_TOKEN", "refresh")
+	t.Setenv("PIXIV_TOKEN_DEADLINE", "3600")
+	app, err := setupPixivClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer http.DefaultClient.Transport.(*pixivTransport).pixiv.CloseIdleConnections()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/getMe") {
 			_, _ = w.Write([]byte(`{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`))
@@ -342,19 +422,29 @@ func TestInlinePixivThumbnail(t *testing.T) {
 		}
 		if len(results) != 1 {
 			t.Errorf("results: %#v", results)
-		} else if results[0]["photo_url"] != "https://preview.example.com/thumbnail-placeholder-pixiv.jpg" {
-			t.Errorf("result: %#v", results[0])
+		} else {
+			uncachedThumbnailURLs(t, results[0])
 		}
 		_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
 	}))
 	defer server.Close()
-	bot, err := tgbotapi.NewBotAPIWithAPIEndpoint("token", server.URL+"/bot%s/%s")
+	bot, err := tgbotapi.NewBotAPIWithClient("token", server.URL+"/bot%s/%s", server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
+	previewBot, err := tgbotapi.NewBotAPIWithClient("token", source.URL+"/bot%s/%s", source.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	previews, err := newThumbnails("https://preview.example.com", app, previewBot, db, "@cache")
+	if err != nil {
+		t.Fatal(err)
+	}
+	previews.client = &http.Client{Transport: base}
 	handleInlineQuery(bot, db, &tgbotapi.InlineQuery{
 		ID: "query", From: &tgbotapi.User{ID: 1}, Query: "Artwork by Artist\nhttps://www.pixiv.net/artworks/82775556?ref=1 shared",
-	}, testPreviews(t, db, bot))
+	}, previews)
+	awaitCachedThumbnail(t, db, "pixiv:82775556", 0)
 }
 
 func TestInlineEmptyAnswers(t *testing.T) {
@@ -370,8 +460,22 @@ func TestInlineEmptyAnswers(t *testing.T) {
 					t.Errorf("unexpected request %s", r.URL.Path)
 				}
 				_ = r.ParseForm()
-				if r.FormValue("results") != "[]" || r.FormValue("cache_time") != "0" {
+				var results []map[string]any
+				if err := json.Unmarshal([]byte(r.FormValue("results")), &results); err != nil {
+					t.Fatal(err)
+				}
+				if r.FormValue("cache_time") != "0" {
 					t.Errorf("answer: %v", r.Form)
+				}
+				if query == "" {
+					if len(results) != 0 {
+						t.Fatalf("history: %#v", results)
+					}
+				} else {
+					if len(results) != 1 {
+						t.Fatalf("guide: %#v", results)
+					}
+					checkInlineFeedback(t, results[0], "guide", "Query not understood", "Select for a usage guide.", "Search guide")
 				}
 				_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
 			}))
@@ -1231,4 +1335,12 @@ func TestInlineSearchFeedbackFlow(t *testing.T) {
 		}
 	}
 	t.Fatalf("text-only answer: %#v", answer)
+}
+
+func checkInlineFeedback(t *testing.T, result map[string]any, kind, title, description, message string) {
+	t.Helper()
+	content, ok := result["input_message_content"].(map[string]any)
+	if !ok || result["type"] != "article" || result["id"] != "feedback:"+kind || result["title"] != title || result["description"] != description || content["disable_web_page_preview"] != true || !strings.Contains(fmt.Sprint(content["message_text"]), message) {
+		t.Fatalf("feedback: %#v", result)
+	}
 }

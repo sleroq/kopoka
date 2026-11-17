@@ -326,9 +326,7 @@ func TestPreviewInlineTimeoutCompletesInBackground(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("inline answer did not time out")
 	}
-	if result["photo_url"] != "https://preview.example.com/thumbnail-placeholder-x.jpg" || result["thumbnail_url"] != result["photo_url"] || result["photo_width"] != float64(384) || result["photo_height"] != float64(384) {
-		t.Fatalf("timeout placeholder: %#v", result)
-	}
+	checkInlineFeedback(t, result, "source", "Post is taking too long", "Please try again.", "https://x.com/user/status/7")
 	f.sourceOnce.Do(func() { close(f.sourceRelease) })
 	f.release()
 	awaitCachedThumbnail(t, previews.db, "x:7", 0)

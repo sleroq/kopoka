@@ -555,14 +555,10 @@ func readThumbnail(t *testing.T, res *http.Response) image.Image {
 }
 
 func previewMediaBounds(img image.Image, source image.Point) image.Rectangle {
-	mediaHeight := math.Max(140, math.Min(800, 640*float64(source.Y)/float64(source.X)))
-	width := math.Min(640, mediaHeight*float64(source.X)/float64(source.Y))
-	height := math.Min(mediaHeight, 640*float64(source.Y)/float64(source.X))
-	scale := float64(img.Bounds().Dx()) / 768
-	left := (66 + (640-width)/2) * scale
-	top := (66 + (mediaHeight-height)/2) * scale
-	return image.Rect(int(math.Round(left)), int(math.Round(top)),
-		int(math.Round(left+width*scale)), int(math.Round(top+height*scale)))
+	height := math.Max(70, math.Min(400, 344*float64(source.Y)/float64(source.X)))
+	scale := float64(img.Bounds().Dx()) / 384
+	return image.Rect(int(math.Round(20*scale)), int(math.Round(32*scale)),
+		int(math.Round(364*scale)), int(math.Round((32+height)*scale)))
 }
 
 func checkThumbnailEdges(t *testing.T, img image.Image, source image.Point) {
@@ -570,11 +566,16 @@ func checkThumbnailEdges(t *testing.T, img image.Image, source image.Point) {
 	r := previewMediaBounds(img, source)
 	leftR, leftG, leftB, _ := img.At(r.Min.X+r.Dx()/24, r.Min.Y+r.Dy()/4).RGBA()
 	rightR, rightG, rightB, _ := img.At(r.Max.X-r.Dx()/24, r.Min.Y+r.Dy()/4).RGBA()
-	topR, topG, topB, _ := img.At(r.Min.X+r.Dx()/4, r.Min.Y+r.Dy()/24).RGBA()
-	bottomR, bottomG, bottomB, _ := img.At(r.Min.X+r.Dx()/4, r.Max.Y-r.Dy()/24).RGBA()
-	if leftR <= leftG || leftR <= leftB || rightB <= rightR || rightB <= rightG ||
-		topR <= topB || topG <= topB || bottomB <= bottomR || bottomB <= bottomG {
-		t.Fatal("preview cropped an artwork edge")
+	if leftR <= leftG || leftR <= leftB || rightB <= rightR || rightB <= rightG {
+		t.Fatal("preview lost the artwork's side edges")
+	}
+	if float64(source.Y)/float64(source.X) <= 400.0/344 {
+		topR, topG, topB, _ := img.At(r.Min.X+r.Dx()/4, r.Min.Y+r.Dy()/24).RGBA()
+		bottomR, bottomG, bottomB, _ := img.At(r.Min.X+r.Dx()/4, r.Max.Y-r.Dy()/24).RGBA()
+		if topR <= topB || topG <= topB || bottomB <= bottomR || bottomB <= bottomG {
+			t.Fatal("preview lost the artwork's top or bottom edge")
+		}
+
 	}
 }
 
@@ -898,7 +899,11 @@ func TestThumbnailAspectRatios(t *testing.T) {
 				t.Fatal("upload timed out")
 			}
 
-			checkAspectPreviews(t, tc.size, [][]byte{work.data, work.large, upload})
+			source, _, err := image.Decode(bytes.NewReader(aspectPanels(t, tc.size, false)[0]))
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkAspectPreviews(t, source, [][]byte{work.data, work.large, upload})
 			if !bytes.Equal(upload, work.large) {
 				t.Error("cached upload differs from large preview")
 			}
@@ -987,7 +992,7 @@ func aspectServer(t *testing.T, parts [][]byte, uploaded chan<- []byte) *httptes
 	return server
 }
 
-func checkAspectPreviews(t *testing.T, sourceSize image.Point, data [][]byte) {
+func checkAspectPreviews(t *testing.T, source image.Image, data [][]byte) {
 	t.Helper()
 	for _, data := range data {
 		img, format, err := image.Decode(bytes.NewReader(data))
@@ -998,7 +1003,8 @@ func checkAspectPreviews(t *testing.T, sourceSize image.Point, data [][]byte) {
 		if longest := max(size.X, size.Y); longest != 384 && size.X != 768 {
 			t.Errorf("unexpected dimensions %v", size)
 		}
-		checkThumbnailEdges(t, img, sourceSize)
+		checkThumbnailEdges(t, img, source.Bounds().Size())
+		checkPreviewPanel(t, img, source)
 	}
 }
 

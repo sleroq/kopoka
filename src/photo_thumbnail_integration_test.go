@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"image"
 	"image/png"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -119,9 +120,16 @@ func TestSelectedPhotoThumbnailHTTP(t *testing.T) {
 func checkPreviewPanel(t *testing.T, img, source image.Image) {
 	t.Helper()
 	bounds := previewMediaBounds(img, source.Bounds().Size())
+	sourceBounds := source.Bounds()
+	xScale := float64(bounds.Dx()) / float64(sourceBounds.Dx())
+	yScale := float64(bounds.Dy()) / float64(sourceBounds.Dy())
+	scale := math.Max(xScale, yScale)
+	visibleWidth, visibleHeight := float64(bounds.Dx())/scale, float64(bounds.Dy())/scale
 	for y := 2; y < 8; y++ {
 		for x := 2; x < 8; x++ {
-			want := source.At(source.Bounds().Min.X+x*source.Bounds().Dx()/10, source.Bounds().Min.Y+y*source.Bounds().Dy()/10)
+			sourceX := sourceBounds.Min.X + int((float64(sourceBounds.Dx())-visibleWidth)/2+float64(x)*visibleWidth/10)
+			sourceY := sourceBounds.Min.Y + int((float64(sourceBounds.Dy())-visibleHeight)/2+float64(y)*visibleHeight/10)
+			want := source.At(sourceX, sourceY)
 			got := img.At(bounds.Min.X+x*bounds.Dx()/10, bounds.Min.Y+y*bounds.Dy()/10)
 			wr, wg, wb, _ := want.RGBA()
 			gr, gg, gb, _ := got.RGBA()

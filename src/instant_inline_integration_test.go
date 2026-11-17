@@ -322,7 +322,13 @@ func TestInstantInlineSettingsFlow(t *testing.T) {
 	if _, err := db.Exec(`DROP TABLE instant_inline_settings`); err != nil {
 		t.Fatal(err)
 	}
-	s.expectThumbnail(1, "https://x.com/u/status/999", false)
+	query := &tgbotapi.InlineQuery{ID: "query", From: &tgbotapi.User{ID: 1}, Query: "https://x.com/u/status/999"}
+	handleInlineQuery(bot, db, query, testPreviews(t, db, bot))
+	results := api.snapshot().results
+	if len(results) != 1 {
+		t.Fatalf("preference failure: %#v", results)
+	}
+	checkInlineFeedback(t, results[0], "preferences", "Could not load preferences", "Please try again.", "")
 }
 
 func verifyInstantSettingsMenu(t *testing.T, s *instantSettingsScenario) {
