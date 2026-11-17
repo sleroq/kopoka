@@ -332,7 +332,7 @@ func TestXPostInlineFormats(t *testing.T) {
 	testXPostRichFormat(t, api, choose, link)
 	for _, user := range []int64{2, 3} {
 		edit := choose(user, "https://x.com/user/status/6")
-		if !strings.Contains(edit.Get("rich_message"), "Text only") {
+		if !strings.Contains(edit.Get("rich_message"), "Text only") || strings.Contains(edit.Get("rich_message"), "@user") {
 			t.Fatalf("user %d received unexpected rich text: %v", user, edit)
 		}
 	}

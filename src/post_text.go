@@ -173,7 +173,7 @@ func richPostBody(text string) string {
 
 func richPostAuthor(post *fxRichPost) string {
 	author := "<b>" + xPostAuthorHTML(post) + "</b>"
-	if post.Author.ScreenName != "" {
+	if post.Author.ScreenName != "" && !strings.EqualFold(strings.TrimPrefix(post.Author.Name, "@"), post.Author.ScreenName) {
 		author += " · @" + html.EscapeString(post.Author.ScreenName)
 	}
 	return author
