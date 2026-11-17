@@ -37,7 +37,7 @@
           pname = "kopoka";
           version = "0.1.0";
           src = ./.;
-          vendorHash = "sha256-s4Eb9f4Ljo5D9W/QjtngoPDpTjGKpfJgg/IHMjO+7PE=";
+          vendorHash = "sha256-EbDlHnxhYOOoI+tT/FIjArnj7A6tKcUGxtbzblDuMQo=";
           subPackages = [ "src" ];
           ldflags = [
             "-s"
