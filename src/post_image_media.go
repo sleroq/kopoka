@@ -6,6 +6,38 @@ import (
 	"image"
 )
 
+func (m *postMedia) imageURLs() []string {
+	if m == nil {
+		return nil
+	}
+	var urls []string
+	if len(m.Items) > 0 {
+		for _, item := range m.Items {
+			u := item.URL
+			if item.Type != "photo" {
+				u = item.ThumbnailURL
+			}
+			urls = append(urls, u)
+		}
+		return urls
+	}
+	if m.Mosaic != nil {
+		urls = append(urls, m.Mosaic.URL)
+	} else {
+		for _, photo := range m.Photos {
+			urls = append(urls, photo.URL)
+		}
+	}
+	for _, video := range m.Videos {
+		urls = append(urls, video.ThumbnailURL)
+	}
+	return urls
+}
+
+func (m *postMedia) hasBars() bool {
+	return m != nil && (len(m.Photos) > 1 || len(m.Items) > 1)
+}
+
 func (m *postMedia) preparePhotos(assets map[string][]byte) error {
 	if len(m.Photos) < 2 {
 		return nil

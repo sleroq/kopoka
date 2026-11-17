@@ -112,7 +112,25 @@ func inlinePhoto(photo previewPhoto) map[string]any {
 	return result
 }
 
+func inlineCachedMedia(kind, file string) map[string]any {
+	switch kind {
+	case "animation":
+		return map[string]any{"type": "mpeg4_gif", "mpeg4_file_id": file}
+	case "video":
+		return map[string]any{"type": "video", "video_file_id": file}
+	default:
+		return inlinePhoto(previewPhoto{fileID: file})
+	}
+}
+
 func cachedInlineResult(a artwork, previews *thumbnails) map[string]any {
+	if len(a.Photos) == 1 && mediaType(a, 0) != "photo" &&
+		(strings.HasSuffix(a.ID, ":merged") || strings.HasSuffix(a.ID, ":merged:bars")) {
+		result := inlineCachedMedia(mediaType(a, 0), a.Photos[0])
+		result["id"], result["title"], result["description"] = a.ID, a.Author, a.Text
+		result["caption"], result["parse_mode"] = strings.TrimSuffix(a.Caption, "\n"), "HTML"
+		return result
+	}
 	result := inlinePhoto(previews.savedPhoto(a))
 	result["id"], result["title"], result["description"] = a.ID, a.Author, a.Text
 	if len(a.Photos) == 1 && mediaType(a, 0) == "photo" && result["photo_file_id"] != nil &&

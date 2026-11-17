@@ -610,8 +610,8 @@ func TestPostImageCacheSharedByTimezone(t *testing.T) {
 	if _, err := db.Exec(`UPDATE post_image_cache SET render_version=? WHERE timezone=?`, postImageVersion-1, "UTC"); err != nil {
 		t.Fatal(err)
 	}
-	file, _, err := findPostImage(db, id, "light", "UTC")
-	if err != nil || file != "" {
-		t.Fatalf("stale cache file %q: %v", file, err)
+	media, err := findPostImage(db, id, "light", "UTC")
+	if err != nil || media.Type != "" {
+		t.Fatalf("stale cache media %+v: %v", media, err)
 	}
 }

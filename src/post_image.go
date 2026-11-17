@@ -21,7 +21,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-const postImageVersion = 11
+const postImageVersion = 12
 const defaultPostImageTheme = "dark"
 
 type postImage struct {
@@ -30,12 +30,19 @@ type postImage struct {
 type postVideo struct {
 	ThumbnailURL string `json:"thumbnail_url"`
 }
+type postMediaItem struct {
+	URL          string   `json:"url"`
+	Type         string   `json:"type"`
+	ThumbnailURL string   `json:"thumbnail_url,omitempty"`
+	FallbackURLs []string `json:"fallback_urls,omitempty"`
+}
 type postMedia struct {
-	Photos   []postImage `json:"photos,omitempty"`
-	Videos   []postVideo `json:"videos,omitempty"`
-	Mosaic   *postImage  `json:"mosaic,omitempty"`
-	Carousel bool        `json:"carousel,omitempty"`
-	Bars     bool        `json:"bars,omitempty"`
+	Items    []postMediaItem `json:"items,omitempty"`
+	Photos   []postImage     `json:"photos,omitempty"`
+	Videos   []postVideo     `json:"videos,omitempty"`
+	Mosaic   *postImage      `json:"mosaic,omitempty"`
+	Carousel bool            `json:"carousel,omitempty"`
+	Bars     bool            `json:"bars,omitempty"`
 }
 type postArticle struct {
 	Title       string     `json:"title"`
@@ -73,6 +80,7 @@ type renderPost struct {
 	Poll             *postPoll    `json:"poll,omitempty"`
 }
 type renderRequest struct {
+	Scene      bool              `json:"scene,omitempty"`
 	Theme      string            `json:"theme"`
 	Post       renderPost        `json:"post"`
 	ReplyChain []renderPost      `json:"reply_chain,omitempty"`
@@ -190,24 +198,37 @@ func (m *fxRichMedia) normalize() *postMedia {
 	if m == nil {
 		return nil
 	}
-	out := &postMedia{}
-	for _, image := range m.Photos {
-		out.Photos = append(out.Photos, image.image())
-	}
-	for _, video := range m.Videos {
-		out.Videos = append(out.Videos, postVideo{ThumbnailURL: video.ThumbnailURL})
-	}
-	if len(m.Photos) == 0 && len(m.Videos) == 0 {
-		for _, image := range m.All {
-			switch image.Type {
-			case "photo", "":
-				out.Photos = append(out.Photos, image.image())
-			case "video", "gif":
-				out.Videos = append(out.Videos, postVideo{ThumbnailURL: image.ThumbnailURL})
+	items := m.All
+	if len(items) == 0 {
+		items = append([]fxImage(nil), m.Photos...)
+		for _, video := range m.Videos {
+			if video.Type == "" {
+				video.Type = "video"
 			}
+			items = append(items, video)
 		}
 	}
-	if len(out.Photos) == 0 && m.Mosaic != nil && m.Mosaic.Formats.JPEG != "" {
+
+	out := &postMedia{}
+	var ordered []postMediaItem
+	for _, item := range items {
+		kind := item.Type
+		switch kind {
+		case "photo", "":
+			kind = "photo"
+			out.Photos = append(out.Photos, item.image())
+		case "video", "gif":
+			out.Videos = append(out.Videos, postVideo{ThumbnailURL: item.ThumbnailURL})
+		}
+		attachment := postMediaItem{
+			URL: item.URL, Type: kind,
+			ThumbnailURL: item.ThumbnailURL, FallbackURLs: item.videoFallbackURLs(),
+		}
+		ordered = append(ordered, attachment)
+	}
+	if len(out.Videos) > 0 {
+		out.Items = ordered
+	} else if len(out.Photos) == 0 && m.Mosaic != nil && m.Mosaic.Formats.JPEG != "" {
 		out.Mosaic = &postImage{URL: m.Mosaic.Formats.JPEG}
 	}
 	if out.Mosaic == nil && len(out.Photos) == 0 && len(out.Videos) == 0 {
@@ -289,7 +310,7 @@ func preparePostImageVariants(client *http.Client, link *url.URL, zone string, m
 	bars := request
 	if request.Post.Media != nil {
 		media := *request.Post.Media
-		if len(media.Photos) > 1 {
+		if media.hasBars() {
 			media.Carousel = true
 			media.Bars = true
 		}
@@ -347,18 +368,7 @@ func (p renderPost) imageURLs() []string {
 	if p.AuthorAvatarURL != "" {
 		urls = append(urls, p.AuthorAvatarURL)
 	}
-	if p.Media != nil {
-		if p.Media.Mosaic != nil {
-			urls = append(urls, p.Media.Mosaic.URL)
-		} else {
-			for _, i := range p.Media.Photos {
-				urls = append(urls, i.URL)
-			}
-		}
-		for _, v := range p.Media.Videos {
-			urls = append(urls, v.ThumbnailURL)
-		}
-	}
+	urls = append(urls, p.Media.imageURLs()...)
 	if p.Article != nil && p.Article.CoverMedia != nil {
 		urls = append(urls, p.Article.CoverMedia.URL)
 	}
@@ -390,7 +400,7 @@ func loadPostAssets(client *http.Client, p renderPost, images map[string][]byte,
 		}
 		images[u] = data
 	}
-	if p.Media != nil && mergePhotos {
+	if p.Media != nil && len(p.Media.Items) == 0 && mergePhotos {
 		if err := p.Media.preparePhotos(images); err != nil {
 			return err
 		}
@@ -401,7 +411,7 @@ func loadPostAssets(client *http.Client, p renderPost, images map[string][]byte,
 	return nil
 }
 
-func renderPostImage(request renderRequest) ([]byte, error) {
+func runPostRenderer(request renderRequest) ([]byte, error) {
 	input, err := json.Marshal(request)
 	if err != nil {
 		return nil, err
@@ -420,7 +430,14 @@ func renderPostImage(request renderRequest) ([]byte, error) {
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("rendering post image: %w: %s", err, stderr.String())
 	}
-	data := out.Bytes()
+	return out.Bytes(), nil
+}
+
+func renderPostImage(request renderRequest) ([]byte, error) {
+	data, err := runPostRenderer(request)
+	if err != nil {
+		return nil, err
+	}
 	if len(data) > 10_000_000 {
 		return nil, fmt.Errorf("rendered JPEG exceeds Telegram size limit")
 	}
@@ -447,15 +464,17 @@ func postImageTheme(id string, link *url.URL) string {
 	}
 	return ""
 }
-func findPostImage(db *sql.DB, id, theme, zone string) (string, string, error) {
-	var file, caption string
-	row := db.QueryRow(`SELECT file_id,caption FROM post_image_cache WHERE artwork_id=? AND theme=? AND timezone=? AND render_version=?`,
+func findPostImage(db *sql.DB, id, theme, zone string) (tgbotapi.BaseInputMedia, error) {
+	var file string
+	var media tgbotapi.BaseInputMedia
+	row := db.QueryRow(`SELECT file_id,caption,media_type FROM post_image_cache WHERE artwork_id=? AND theme=? AND timezone=? AND render_version=?`,
 		id, theme, zone, postImageVersion)
-	err := row.Scan(&file, &caption)
+	err := row.Scan(&file, &media.Caption, &media.Type)
 	if err == sql.ErrNoRows {
-		return "", "", nil
+		return media, nil
 	}
-	return file, caption, err
+	media.Media, media.ParseMode = tgbotapi.FileID(file), "HTML"
+	return media, err
 }
 func inlinePostImageResults(db *sql.DB, user int64, link *url.URL, previews *thumbnails, instant bool) []any {
 	zone, err := loadUserTimezone(db, user)
@@ -497,26 +516,25 @@ func inlinePostImageResults(db *sql.DB, user int64, link *url.URL, previews *thu
 }
 
 func postImageResult(db *sql.DB, link *url.URL, theme, zone string, previews *thumbnails, work *postImagePreviewWork) map[string]any {
-	file, caption, err := findPostImage(db, artworkID(xPostLink(link)), theme, zone)
+	media, err := findPostImage(db, artworkID(xPostLink(link)), theme, zone)
 	if err != nil {
 		log.Printf("loading cached post image: %v", err)
 	}
-	var photo previewPhoto
-	if file != "" {
-		photo = previewPhoto{fileID: file}
+	var result map[string]any
+	if media.Type != "" {
+		result = inlineCachedMedia(media.Type, string(media.Media.(tgbotapi.FileID)))
 	} else {
-		photo = previews.postImagePreview(link, theme, zone, work)
+		result = inlinePhoto(previews.postImagePreview(link, theme, zone, work))
 	}
-	result := inlinePhoto(photo)
 	result["id"] = postImageID(link, theme)
 	baseTheme := strings.TrimSuffix(theme, "-bars")
 	result["title"] = "Post image · " + strings.ToUpper(baseTheme[:1]) + baseTheme[1:]
 	if baseTheme != theme {
 		result["title"] = result["title"].(string) + " · Bars"
 	}
-	if file != "" {
+	if media.Type != "" {
 		result["id"] = postImageID(link, theme) + ":cached"
-		result["caption"] = caption
+		result["caption"] = media.Caption
 		result["parse_mode"] = "HTML"
 		return result
 	}
@@ -528,18 +546,20 @@ func postImageResult(db *sql.DB, link *url.URL, theme, zone string, previews *th
 	result["reply_markup"] = map[string]any{"inline_keyboard": []any{[]any{wait}}}
 	return result
 }
-func postImagePhoto(db *sql.DB, link *url.URL, theme, zone string, previews *thumbnails) (tgbotapi.InputMediaPhoto, error) {
-	file, caption, err := findPostImage(db, artworkID(xPostLink(link)), theme, zone)
+func postImageMedia(db *sql.DB, link *url.URL, theme, zone string, previews *thumbnails) (any, error) {
+	cached, err := findPostImage(db, artworkID(xPostLink(link)), theme, zone)
 	if err != nil {
-		return tgbotapi.InputMediaPhoto{}, err
+		return nil, err
 	}
-	if file != "" {
-		photo := tgbotapi.NewInputMediaPhoto(tgbotapi.FileID(file))
-		photo.Caption, photo.ParseMode = caption, "HTML"
-		return photo, nil
+	if cached.Type != "" {
+		return postImageInput(cached), nil
 	}
 	if previews != nil {
 		if variant := previews.existingPostImagePreview(link, theme, zone); variant != nil {
+			<-variant.done
+			if variant.request.hasMotion() {
+				return renderPostMedia(link, variant.request)
+			}
 			photo, err := variant.photo()
 			if err == nil {
 				return photo, nil
@@ -549,16 +569,9 @@ func postImagePhoto(db *sql.DB, link *url.URL, theme, zone string, previews *thu
 	}
 	request, err := preparePostImage(link, theme, zone)
 	if err != nil {
-		return tgbotapi.InputMediaPhoto{}, err
+		return nil, err
 	}
-	data, err := renderPostImage(request)
-	if err != nil {
-		return tgbotapi.InputMediaPhoto{}, err
-	}
-	photo := tgbotapi.NewInputMediaPhoto(tgbotapi.FileBytes{Name: "post.jpg", Bytes: data})
-	photo.Caption = postImageCaption(link, request)
-	photo.ParseMode = "HTML"
-	return photo, nil
+	return renderPostMedia(link, request)
 }
 
 func postImageCaption(link *url.URL, request renderRequest) string {
@@ -566,10 +579,10 @@ func postImageCaption(link *url.URL, request renderRequest) string {
 		html.EscapeString(xPostLink(link).String()), html.EscapeString(request.Post.AuthorName))
 }
 
-func savePostImage(db *sql.DB, link *url.URL, theme, zone, fileID, caption string) error {
-	_, err := db.Exec(`INSERT INTO post_image_cache(artwork_id,theme,timezone,render_version,file_id,caption) VALUES(?,?,?,?,?,?)
- ON CONFLICT(artwork_id,theme,timezone,render_version) DO UPDATE SET file_id=excluded.file_id,caption=excluded.caption`,
-		artworkID(xPostLink(link)), theme, zone, postImageVersion, fileID, caption)
+func savePostImage(db *sql.DB, link *url.URL, theme, zone, kind, fileID, caption string) error {
+	_, err := db.Exec(`INSERT INTO post_image_cache(artwork_id,theme,timezone,render_version,media_type,file_id,caption) VALUES(?,?,?,?,?,?,?)
+ ON CONFLICT(artwork_id,theme,timezone,render_version) DO UPDATE SET media_type=excluded.media_type,file_id=excluded.file_id,caption=excluded.caption`,
+		artworkID(xPostLink(link)), theme, zone, postImageVersion, kind, fileID, caption)
 	return err
 }
 
@@ -578,16 +591,17 @@ func sendPostImage(bot *tgbotapi.BotAPI, db *sql.DB, message *tgbotapi.Message, 
 	if err != nil {
 		return err
 	}
-	photo, err := postImagePhoto(db, link, theme, zone, nil)
+	media, err := postImageMedia(db, link, theme, zone, nil)
 	if err != nil {
 		return err
 	}
-	ids, err := sendPhotosWithIDs(bot, message.Chat.ID, message.MessageID, []any{photo})
+	ids, err := sendPhotosWithIDs(bot, message.Chat.ID, message.MessageID, []any{media})
 	if err != nil {
 		return err
 	}
 	if len(ids) == 1 {
-		if err := savePostImage(db, link, theme, zone, ids[0], photo.Caption); err != nil {
+		base := mediaBase(media)
+		if err := savePostImage(db, link, theme, zone, base.Type, ids[0], base.Caption); err != nil {
 			log.Printf("saving chat post image: %v", err)
 		}
 	}
@@ -599,23 +613,24 @@ func editInlinePostImage(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.Chos
 	if err != nil {
 		return err
 	}
-	photo, err := postImagePhoto(db, link, theme, zone, previews)
+	media, err := postImageMedia(db, link, theme, zone, previews)
 	if err != nil {
 		return err
 	}
-	file, cached := photo.Media.(tgbotapi.FileID)
+	base := mediaBase(media)
+	file, cached := base.Media.(tgbotapi.FileID)
 	if !cached {
-		id, err := cacheInlineMedia(bot, cacheChat, photo)
+		id, err := cacheInlineMedia(bot, cacheChat, media)
 		if err != nil {
 			return err
 		}
-		if err := savePostImage(db, link, theme, zone, id, photo.Caption); err != nil {
+		if err := savePostImage(db, link, theme, zone, base.Type, id, base.Caption); err != nil {
 			return err
 		}
 		file = tgbotapi.FileID(id)
 	}
 	payload, err := json.Marshal(map[string]any{
-		"type": "photo", "media": file, "caption": photo.Caption, "parse_mode": photo.ParseMode,
+		"type": base.Type, "media": file, "caption": base.Caption, "parse_mode": base.ParseMode,
 	})
 	if err != nil {
 		return err

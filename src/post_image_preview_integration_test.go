@@ -65,7 +65,7 @@ cat "$PREVIEW_TEST_IMAGE"
 				"text": "hello", "author": map[string]string{"name": "Artist", "screen_name": "user", "avatar_url": asset},
 				"media": map[string]any{
 					"photos": []map[string]any{{"url": asset, "formats": []any{}}, {"url": asset, "formats": []any{}}},
-					"all":    []map[string]any{{"url": asset, "type": "photo", "formats": []any{}}},
+					"all":    []map[string]any{{"url": asset, "type": "photo", "formats": []any{}}, {"url": asset, "type": "photo", "formats": []any{}}},
 				},
 			}})
 		case r.URL.Path == "/asset":

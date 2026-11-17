@@ -35,7 +35,7 @@ func TestXProviderFallback(t *testing.T) {
 
 	link, _ := url.Parse("https://x.com/user/status/123?view=1")
 	metadata := &artwork{}
-	media, err := handleXLink(link, metadata)
+	media, err := handleXLink(link, metadata, "")
 	if strings.Join(hosts, ",") != "api.fxtwitter.com,api.vxtwitter.com" {
 		t.Fatalf("requests = %v", hosts)
 	}
@@ -75,7 +75,7 @@ func TestXProvidersBothFail(t *testing.T) {
 
 	link, _ := url.Parse("https://x.com/user/status/123")
 	metadata := &artwork{}
-	_, err := handleXLink(link, metadata)
+	_, err := handleXLink(link, metadata, "")
 	if strings.Join(hosts, ",") != "api.fxtwitter.com,api.vxtwitter.com" {
 		t.Fatalf("requests = %v", hosts)
 	}
@@ -120,7 +120,7 @@ func TestXPostNotFound(t *testing.T) {
 				}, nil
 			})
 			link, _ := url.Parse("https://x.com/user/status/123")
-			_, err := handleXLink(link, &artwork{})
+			_, err := handleXLink(link, &artwork{}, "")
 			if errors.Is(err, errXPostNotFound) != tc.want404 || (err == nil) != tc.wantOK {
 				t.Fatalf("error = %v, want 404 = %v, success = %v", err, tc.want404, tc.wantOK)
 			}
@@ -156,7 +156,7 @@ func TestXQuotedMedia(t *testing.T) {
 			})
 			link, _ := url.Parse("https://x.com/user/status/123")
 			metadata := &artwork{}
-			media, err := handleXLink(link, metadata)
+			media, err := handleXLink(link, metadata, "")
 			if err != nil {
 				t.Fatal(err)
 			}

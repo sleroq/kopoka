@@ -336,3 +336,132 @@ fn cli_reply_rail_and_media_are_bounded() {
         assert_eq!(standalone.stdout, no_dots.stdout);
     }
 }
+
+#[test]
+fn cli_scene_exports_ordered_motion_geometry() {
+    let items = json!([
+        {"url":"red", "type":"photo"},
+        {"url":"animation", "type":"gif", "thumbnail_url":"green"},
+        {"url":"blue", "type":"photo"},
+        {"url":"animation", "type":"video", "thumbnail_url":"green"}
+    ]);
+    let media =
+        json!({"items":items,"photos":[{"url":"missing"}],"videos":[{"thumbnail_url":"missing"}]});
+    let post = json!({"author_name":"A","author_username":"a","author_avatar_url":"","text":"Hello", "media":media});
+    let images = json!({"red":asset(10,10,[220,30,30]),"green":asset(10,10,[30,220,30]),"blue":asset(10,10,[30,30,220])});
+    for bars in [false, true] {
+        let mut post = post.clone();
+        post["media"]["bars"] = json!(bars);
+        let output =
+            render_request(json!({"theme":"light","scene":true,"post":post,"images":images}));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let scene: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let image =
+            image::load_from_memory(&STANDARD.decode(scene["image"].as_str().unwrap()).unwrap())
+                .unwrap()
+                .to_rgb8();
+        let slots = scene["slots"].as_array().unwrap();
+        assert_eq!(slots.len(), 2);
+        assert_eq!(slots[0]["url"], "animation");
+        assert_eq!(slots[0]["kind"], "gif");
+        assert_eq!(slots[1]["kind"], "video");
+        for slot in slots {
+            let x = slot["x"].as_u64().unwrap() as u32;
+            let y = slot["y"].as_u64().unwrap() as u32;
+            let w = slot["width"].as_u64().unwrap() as u32;
+            let h = slot["height"].as_u64().unwrap() as u32;
+            assert_eq!(slot["radius"], if bars { 24 } else { 0 });
+            assert_eq!(image.get_pixel(x + w / 2, y + h / 2).0, [30, 220, 30]);
+            assert_eq!(image.get_pixel(x + w / 2, y + 1).0, [30, 220, 30]);
+            assert_eq!(image.get_pixel(x + w / 2, y - 1).0, [255, 255, 255]);
+            assert_eq!(image.get_pixel(x + w / 2, y + h).0, [255, 255, 255]);
+            if bars {
+                assert_eq!(image.get_pixel(x, y).0, [255, 255, 255]);
+                assert_eq!(image.get_pixel(x - 4, y + h / 2).0, [255, 255, 255]);
+            }
+        }
+        let first = &slots[0];
+        let x = first["x"].as_u64().unwrap() as u32;
+        let y = first["y"].as_u64().unwrap() as u32 + first["height"].as_u64().unwrap() as u32 / 2;
+        assert_eq!(
+            image.get_pixel(x - if bars { 12 } else { 1 }, y).0,
+            [220, 30, 30]
+        );
+        let right = x + first["width"].as_u64().unwrap() as u32 + if bars { 12 } else { 1 };
+        assert_eq!(image.get_pixel(right, y).0, [30, 30, 220]);
+    }
+}
+
+#[test]
+fn cli_scene_motion_panels_share_rounded_pixel_boundaries() {
+    let items = json!([
+        {"url":"a", "type":"gif", "thumbnail_url":"a", "fallback_urls":["alternate"]},
+        {"url":"b", "type":"gif", "thumbnail_url":"b"},
+        {"url":"c", "type":"gif", "thumbnail_url":"c"}
+    ]);
+    let output = render_request(json!({
+        "theme":"light", "scene":true,
+        "post":{"author_name":"A", "author_username":"a", "author_avatar_url":"", "text":"Hello", "media":{"items":items}},
+        "images":{"a":asset(77,95,[220,30,30]),"b":asset(55,20,[30,220,30]),"c":asset(40,74,[30,30,220])}
+    }));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let scene: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let slots = scene["slots"].as_array().unwrap();
+    assert_eq!(slots.len(), 3);
+    assert_eq!(slots[0]["fallback_urls"], json!(["alternate"]));
+    for pair in slots.windows(2) {
+        assert_eq!(
+            pair[0]["x"].as_i64().unwrap() + pair[0]["width"].as_i64().unwrap(),
+            pair[1]["x"].as_i64().unwrap()
+        );
+        assert_eq!(pair[0]["y"], pair[1]["y"]);
+        assert_eq!(pair[0]["height"], pair[1]["height"]);
+    }
+}
+
+#[test]
+fn cli_scene_maps_reply_and_nested_quote_occurrences() {
+    let motion = json!({"items":[{"url":"same","type":"gif","thumbnail_url":"green"}]});
+    let post = json!({"author_name":"A","author_username":"a","author_avatar_url":"","text":"Hello","media":motion});
+    let mut reply = post.clone();
+    reply["quote"] = post.clone();
+    let output = render_request(
+        json!({"theme":"light","scene":true,"post":post,"reply_chain":[reply],"images":{"green":asset(40,10,[30,220,30])}}),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let scene: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let image =
+        image::load_from_memory(&STANDARD.decode(scene["image"].as_str().unwrap()).unwrap())
+            .unwrap()
+            .to_rgb8();
+    let slots = scene["slots"].as_array().unwrap();
+    assert_eq!(slots.len(), 3);
+    let mut last_y = 0;
+    for slot in slots {
+        let x = slot["x"].as_u64().unwrap() as u32;
+        let y = slot["y"].as_u64().unwrap() as u32;
+        let w = slot["width"].as_u64().unwrap() as u32;
+        let h = slot["height"].as_u64().unwrap() as u32;
+        assert!(y > last_y);
+        last_y = y;
+        assert_eq!(slot["url"], "same");
+        assert_eq!(slot["radius"], 24);
+        assert_eq!(image.get_pixel(x + w / 2, y + h / 2).0, [30, 220, 30]);
+        assert_eq!(image.get_pixel(x + w / 2, y - 1).0, [255, 255, 255]);
+        assert_eq!(image.get_pixel(x + w / 2, y + 1).0, [30, 220, 30]);
+    }
+    assert!(slots[1]["x"].as_u64().unwrap() > slots[0]["x"].as_u64().unwrap());
+    assert!(slots[2]["x"].as_u64().unwrap() < slots[0]["x"].as_u64().unwrap());
+}

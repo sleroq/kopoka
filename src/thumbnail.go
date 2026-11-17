@@ -845,6 +845,14 @@ func (t *thumbnails) downloadSource(source thumbnailSource) ([]any, error) {
 }
 
 func (t *thumbnails) mergeSource(source thumbnailSource, media []any, mode string) (image.Image, int, bool, error) {
+	if mode != "" {
+		media = append([]any(nil), media...)
+		for i, item := range media {
+			if video, ok := item.(tgbotapi.InputMediaVideo); ok {
+				media[i] = tgbotapi.NewInputMediaPhoto(video.Media)
+			}
+		}
+	}
 	first, isPhoto := media[0].(tgbotapi.InputMediaPhoto)
 	if mode != "" {
 		var err error

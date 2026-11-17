@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"image/color"
 	"image/jpeg"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -19,6 +21,22 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
+type postTextMediaTransport struct {
+	target *url.URL
+	base   http.RoundTripper
+}
+
+func (r postTextMediaTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Host == "media.example" {
+		copy := req.Clone(req.Context())
+		u := *req.URL
+		u.Scheme, u.Host = r.target.Scheme, r.target.Host
+		copy.URL = &u
+		return r.base.RoundTrip(copy)
+	}
+	return redirectTransport(r).RoundTrip(req)
+}
+
 type postTextServer struct {
 	t            *testing.T
 	mu           sync.Mutex
@@ -28,6 +46,8 @@ type postTextServer struct {
 	uploadErrors map[string]string
 	paths        []string
 	message      url.Values
+	fixtures     map[string][]byte
+	composed     []byte
 }
 
 func (s *postTextServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -36,6 +56,13 @@ func (s *postTextServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	switch r.URL.Path {
+	case "/main.jpg", "/main.mp4", "/quote.jpg":
+		data := s.fixtures[r.URL.Path]
+		if data == nil {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(data)
 	case "/user/status/5":
 		_, _ = fmt.Fprint(w, `{
 			"code": 200,
@@ -138,7 +165,17 @@ func (s *postTextServer) telegram(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/sendVideo") {
 			kind, field = "video", "video"
 		}
-		s.uploads = append(s.uploads, r.FormValue(field))
+		upload := r.FormValue(field)
+		if file, _, err := r.FormFile(field); err == nil {
+			data, readErr := io.ReadAll(file)
+			_ = file.Close()
+			if readErr != nil {
+				s.t.Error(readErr)
+			}
+			s.composed = data
+			upload = kind + ":multipart"
+		}
+		s.uploads = append(s.uploads, upload)
 		if message := s.uploadErrors[r.FormValue(field)]; message != "" {
 			_, _ = fmt.Fprintf(w, `{"ok":false,"error_code":400,"description":%q}`, message)
 			return
@@ -244,16 +281,21 @@ func TestXPostRichMessageActions(t *testing.T) {
 }
 
 func TestXPostInlineFormats(t *testing.T) {
+	motionTestTools(t)
 	db := testArtworkDB(t)
 	if _, err := db.Exec(`INSERT INTO instant_inline_settings(user_id,x) VALUES (1,1)`); err != nil {
 		t.Fatal(err)
 	}
-	api := &postTextServer{t: t}
+	api := &postTextServer{t: t, fixtures: map[string][]byte{
+		"/main.jpg":  motionTestPNG(t, color.RGBA{B: 255, A: 255}),
+		"/main.mp4":  postMergeTestVideo(t),
+		"/quote.jpg": motionTestPNG(t, color.RGBA{R: 255, A: 255}),
+	}}
 	server := httptest.NewServer(api)
 	defer server.Close()
 	target, _ := url.Parse(server.URL)
 	original := http.DefaultTransport
-	http.DefaultTransport = redirectTransport{target, original}
+	http.DefaultTransport = postTextMediaTransport{target, original}
 	defer func() { http.DefaultTransport = original }()
 	bot, err := tgbotapi.NewBotAPIWithAPIEndpoint("token", server.URL+"/bot%s/%s")
 	if err != nil {
@@ -359,14 +401,20 @@ func testXPostOrdinaryFormat(t *testing.T, api *postTextServer, choose func(int6
 		t.Fatal(err)
 	}
 	caption := media["caption"].(string)
-	if media["type"] != "photo" || media["media"] != "file1" || media["show_caption_above_media"] != true ||
+	if media["type"] != "video" || media["media"] != "file1" || media["show_caption_above_media"] != true ||
 		strings.Count(caption, "<blockquote expandable>") != 3 || !strings.Contains(caption, `<blockquote><a href="https://x.com/quoted/status/9">Quoted</a>`) ||
 		strings.Contains(caption, "Attachment ") || strings.Contains(caption, "media.example") {
 		t.Fatalf("normal caption: %#v", media)
 	}
-	if len(api.uploads) != 1 || api.uploads[0] != "https://media.example/main.jpg" {
+	if len(api.uploads) != 1 || api.uploads[0] != "video:multipart" {
 		t.Fatalf("normal uploads: %v", api.uploads)
 	}
+
+	frame := motionTestFrame(t, api.composed, "0.1")
+	height := frame.Bounds().Dy()
+	motionAssertColor(t, frame, height/2, height/2, 2)
+	motionAssertColor(t, frame, frame.Bounds().Dx()/2, height/2, 0)
+	motionAssertColor(t, frame, frame.Bounds().Dx()-height/2, height/2, 0)
 
 	textOnly := choose(1, "https://x.com/user/status/6")
 	if textOnly.Get("parse_mode") != "HTML" || !strings.Contains(textOnly.Get("text"), "Text only") || textOnly.Get("media") != "" {

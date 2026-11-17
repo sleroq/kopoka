@@ -64,6 +64,10 @@ func openArtworkDB(path string) (*sql.DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := migratePostImageMedia(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	var hasOrigin int
 	if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info('history') WHERE name='inline_origin'`).Scan(&hasOrigin); err != nil {
 		_ = db.Close()
@@ -127,6 +131,19 @@ func openArtworkDB(path string) (*sql.DB, error) {
 		}
 	}
 	return db, nil
+}
+
+func migratePostImageMedia(db *sql.DB) error {
+	var exists int
+	row := db.QueryRow(`SELECT count(*) FROM pragma_table_info('post_image_cache') WHERE name='media_type'`)
+	if err := row.Scan(&exists); err != nil {
+		return err
+	}
+	if exists != 0 {
+		return nil
+	}
+	_, err := db.Exec(`ALTER TABLE post_image_cache ADD COLUMN media_type TEXT NOT NULL DEFAULT 'photo'`)
+	return err
 }
 
 func migratePostImageTimezone(db *sql.DB) error {

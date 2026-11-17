@@ -126,7 +126,7 @@ func handlePixivLink(app *pixiv.AppPixivAPI, link *url.URL, metadata *artwork) (
 	return photos, nil
 }
 
-func handleXLink(link *url.URL, metadata *artwork) ([]any, error) {
+func handleXLink(link *url.URL, metadata *artwork, merge string) ([]any, error) {
 	post, err := fetchXPost(link, false)
 	if err != nil {
 		return nil, err
@@ -137,6 +137,22 @@ func handleXLink(link *url.URL, metadata *artwork) ([]any, error) {
 	}
 	metadata.Author, metadata.Text = post.Author, post.Text
 	link.Host = "fxtwitter.com"
+	if merge != "" && hasMovingMedia(post.Media) {
+		media, err := mergeMotionMedia(post.Media, merge == "bars")
+		if err != nil {
+			return nil, err
+		}
+		base := mediaBase(media)
+		base.Caption = fmt.Sprintf(`<a href="%s">%s</a>`, html.EscapeString(link.String()), html.EscapeString(post.Author))
+		base.ParseMode = "HTML"
+		if video, ok := media.(tgbotapi.InputMediaVideo); ok {
+			video.BaseInputMedia = base
+			return []any{video}, nil
+		}
+		animation := media.(tgbotapi.InputMediaAnimation)
+		animation.BaseInputMedia = base
+		return []any{animation}, nil
+	}
 	var photos []any
 	for i, image := range post.Media {
 		var base tgbotapi.BaseInputMedia
@@ -208,7 +224,7 @@ func fetchArtPhotos(app *pixiv.AppPixivAPI, link *url.URL, metadata *artwork, me
 	case "www.pixiv.net", "pixiv.net":
 		photos, err = handlePixivLink(app, link, metadata)
 	default:
-		photos, err = handleXLink(link, metadata)
+		photos, err = handleXLink(link, metadata, merge)
 	}
 	if err != nil {
 		return nil, err

@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::{cell::RefCell, collections::HashMap};
 
 use anyhow::{Context, Result, bail};
 use base64::{Engine, engine::general_purpose::STANDARD};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use takumi::{measure, prelude::*, write_image};
 
 // Lucide icons (ISC): message-circle, repeat-2, heart.
@@ -20,6 +20,8 @@ enum Theme {
 }
 #[derive(Deserialize)]
 pub struct Request {
+    #[serde(default)]
+    scene: bool,
     theme: Theme,
     post: Post,
     reply_chain: Option<Vec<Post>>,
@@ -55,11 +57,46 @@ struct PollChoice {
 }
 #[derive(Deserialize)]
 struct Media {
+    items: Option<Vec<MediaItem>>,
     photos: Option<Vec<Image>>,
     videos: Option<Vec<Video>>,
     mosaic: Option<Image>,
     carousel: Option<bool>,
     bars: Option<bool>,
+}
+#[derive(Deserialize)]
+struct MediaItem {
+    url: String,
+    #[serde(rename = "type")]
+    kind: MediaKind,
+    thumbnail_url: Option<String>,
+    #[serde(default)]
+    fallback_urls: Vec<String>,
+}
+#[derive(Deserialize, Serialize, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+enum MediaKind {
+    Photo,
+    Gif,
+    Video,
+}
+struct Motion {
+    url: String,
+    fallback_urls: Vec<String>,
+    kind: MediaKind,
+    radius: i32,
+}
+#[derive(Serialize)]
+struct Slot {
+    url: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    fallback_urls: Vec<String>,
+    kind: MediaKind,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    radius: i32,
 }
 #[derive(Deserialize)]
 struct Image {
@@ -84,6 +121,7 @@ struct LinkCard {
 
 struct Card<'a> {
     images: &'a HashMap<String, String>,
+    motions: RefCell<Vec<Motion>>,
     text: &'static str,
     secondary: &'static str,
     border: &'static str,
@@ -217,6 +255,45 @@ impl Card<'_> {
         }
         Ok(column(rows, "gap:4px"))
     }
+    fn media_items(&self, items: &[MediaItem], width: f32, bars: bool) -> Result<Node> {
+        let gap = if bars { 4.0 } else { 0.0 };
+        let radius = if bars || items.len() == 1 { 12.0 } else { 0.0 };
+        let mut assets = Vec::new();
+        let mut ratios = 0.0;
+        for item in items {
+            let poster = match item.kind {
+                MediaKind::Photo => &item.url,
+                MediaKind::Gif | MediaKind::Video => item
+                    .thumbnail_url
+                    .as_ref()
+                    .context("motion item missing thumbnail_url")?,
+            };
+            let (bytes, w, h) = self.asset(poster)?;
+            let ratio = w as f32 / h as f32;
+            ratios += ratio;
+            assets.push((bytes, ratio));
+        }
+        let height = (width - gap * (items.len() - 1) as f32) / ratios;
+        let mut nodes = Vec::new();
+        for (item, (bytes, ratio)) in items.iter().zip(assets) {
+            let mut node = Self::image_node(bytes, height * ratio, height, radius);
+            if matches!(item.kind, MediaKind::Gif | MediaKind::Video) {
+                let mut motions = self.motions.borrow_mut();
+                node = node.with_id(format!("motion-{}", motions.len()));
+                motions.push(Motion {
+                    url: item.url.clone(),
+                    fallback_urls: item.fallback_urls.clone(),
+                    kind: item.kind,
+                    radius: (radius * 2.0) as i32,
+                });
+            }
+            nodes.push(node);
+        }
+        Ok(row(
+            nodes,
+            &format!("gap:{gap}px;background:{}", self.background),
+        ))
+    }
     fn avatar(&self, post: &Post, size: f32) -> Result<Node> {
         if post.author_avatar_url.is_empty() {
             return Ok(column(
@@ -323,21 +400,26 @@ impl Card<'_> {
             nodes.push(self.poll(poll, width, compact));
         }
         if let Some(media) = &post.media {
-            if let Some(mosaic) = &media.mosaic {
-                nodes.push(self.photo(&mosaic.url, width)?);
-            } else if let Some(photos) = &media.photos
-                && !photos.is_empty()
-            {
-                nodes.push(self.photos(
-                    photos,
-                    width,
-                    compact,
-                    media.carousel.unwrap_or(false),
-                    media.bars.unwrap_or(false),
-                )?);
-            }
-            for video in media.videos.as_deref().unwrap_or_default() {
-                nodes.push(column(
+            if let Some(items) = &media.items {
+                if !items.is_empty() {
+                    nodes.push(self.media_items(items, width, media.bars.unwrap_or(false))?);
+                }
+            } else {
+                if let Some(mosaic) = &media.mosaic {
+                    nodes.push(self.photo(&mosaic.url, width)?);
+                } else if let Some(photos) = &media.photos
+                    && !photos.is_empty()
+                {
+                    nodes.push(self.photos(
+                        photos,
+                        width,
+                        compact,
+                        media.carousel.unwrap_or(false),
+                        media.bars.unwrap_or(false),
+                    )?);
+                }
+                for video in media.videos.as_deref().unwrap_or_default() {
+                    nodes.push(column(
                     vec![
                         self.photo(&video.thumbnail_url, width)?,
                         text(
@@ -347,6 +429,7 @@ impl Card<'_> {
                     ],
                     "position:relative",
                 ));
+                }
             }
         }
         if let Some(article) = &post.article {
@@ -492,6 +575,7 @@ pub fn render(request: Request) -> Result<Vec<u8>> {
     };
     let card = Card {
         images: request.images.as_ref().unwrap_or(&empty),
+        motions: RefCell::new(Vec::new()),
         text: text_color,
         secondary,
         border,
@@ -529,6 +613,8 @@ pub fn render(request: Request) -> Result<Vec<u8>> {
             card.background
         ),
     );
+    let mut paths = vec![None; card.motions.borrow().len()];
+    collect_paths(&root, &mut Vec::new(), &mut paths);
     let mut fonts = Fonts::default();
     for bytes in [
         include_bytes!("../assets/fonts/Inter-Regular.ttf").as_slice(),
@@ -549,24 +635,71 @@ pub fn render(request: Request) -> Result<Vec<u8>> {
         .fonts(&fonts)
         .build();
     let measured = measure(options.clone()).context("measure card")?;
-    if measured.height.ceil() > 8900.0 {
+    if !request.scene && measured.height.ceil() > 8900.0 {
         bail!(
             "card too tall for Telegram photo without cropping text: {} pixels",
             measured.height.ceil()
         );
     }
     let bitmap = takumi::render(options).context("render card")?;
-    let mut jpeg = Vec::new();
-    write_image(
-        &bitmap,
-        &mut jpeg,
-        OutputFormat::Jpeg {
-            quality: Quality::new(85),
-        },
-    )
-    .context("encode JPEG")?;
-    if jpeg.len() > 10_000_000 {
-        bail!("JPEG exceeds Telegram's 10 MB photo limit");
+    let mut output = Vec::new();
+    if request.scene {
+        write_image(&bitmap, &mut output, OutputFormat::Png).context("encode PNG")?;
+        let motions = card.motions.into_inner();
+        let mut slots = Vec::new();
+        for (motion, path) in motions.into_iter().zip(paths) {
+            let mut node = &measured;
+            for index in path.context("missing motion node path")? {
+                node = node
+                    .children
+                    .get(index)
+                    .context("motion measurement path mismatch")?;
+            }
+            let x = node.transform[4].round() as i32;
+            let y = node.transform[5].round() as i32;
+            slots.push(Slot {
+                url: motion.url,
+                fallback_urls: motion.fallback_urls,
+                kind: motion.kind,
+                x,
+                y,
+                width: (node.transform[4] + node.width).round() as i32 - x,
+                height: (node.transform[5] + node.height).round() as i32 - y,
+                radius: motion.radius,
+            });
+        }
+        Ok(serde_json::to_vec(
+            &serde_json::json!({"image": STANDARD.encode(output), "slots": slots}),
+        )?)
+    } else {
+        write_image(
+            &bitmap,
+            &mut output,
+            OutputFormat::Jpeg {
+                quality: Quality::new(85),
+            },
+        )
+        .context("encode JPEG")?;
+        if output.len() > 10_000_000 {
+            bail!("JPEG exceeds Telegram's 10 MB photo limit");
+        }
+        Ok(output)
     }
-    Ok(jpeg)
+}
+
+fn collect_paths(node: &Node, path: &mut Vec<usize>, paths: &mut [Option<Vec<usize>>]) {
+    if let Some(index) = node
+        .id()
+        .and_then(|id| id.strip_prefix("motion-"))
+        .and_then(|id| id.parse::<usize>().ok())
+    {
+        paths[index] = Some(path.clone());
+    }
+    if let NodeKind::Container { children } = &node.kind {
+        for (index, child) in children.iter().enumerate() {
+            path.push(index);
+            collect_paths(child, path, paths);
+            path.pop();
+        }
+    }
 }

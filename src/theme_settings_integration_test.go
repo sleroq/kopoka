@@ -208,7 +208,7 @@ func TestPostImageThemeAutomaticFallback(t *testing.T) {
 	for _, id := range []string{"1", "2"} {
 		link := inlineLink("https://x.com/user/status/" + id)
 		caption := `<a href="https://fxtwitter.com/user/status/` + id + `">Artist</a>`
-		if err := savePostImage(db, link, "dim", defaultTimezone, "card", caption); err != nil {
+		if err := savePostImage(db, link, "dim", defaultTimezone, "photo", "card", caption); err != nil {
 			t.Fatal(err)
 		}
 	}

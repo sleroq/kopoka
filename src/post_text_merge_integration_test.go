@@ -7,9 +7,13 @@ import (
 	"image/color"
 	"image/draw"
 	"image/png"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -24,19 +28,22 @@ type postTextMergeCase struct {
 	wantURL    string
 	wantWidth  int
 	wantColors []color.RGBA
+	positions  []int
 }
 
 func TestPostTextInlinePhotoMerge(t *testing.T) {
 	cases := []postTextMergeCase{
 		{name: "root and quote", root: []string{"red", "blue"}, quote: []string{"green"}, wantType: "photo", wantWidth: 700, wantColors: []color.RGBA{{255, 0, 0, 255}, {0, 0, 255, 255}, {0, 255, 0, 255}}},
 		{name: "download failure", root: []string{"red", "broken"}, wantType: "photo", wantURL: "/red"},
-		{name: "video first", root: []string{"video", "red", "blue"}, wantType: "video", wantURL: "/video"},
+		{name: "video first", root: []string{"video", "red", "blue"}, wantType: "video", wantWidth: 700, positions: []int{100, 300, 550}, wantColors: []color.RGBA{{255, 255, 0, 255}, {255, 0, 0, 255}, {0, 0, 255, 255}}},
 		{name: "single photo", root: []string{"red"}, wantType: "photo", wantURL: "/red"},
-		{name: "video stops run", root: []string{"red", "blue", "video"}, quote: []string{"green"}, wantType: "photo", wantWidth: 500, wantColors: []color.RGBA{{255, 0, 0, 255}, {0, 0, 255, 255}}},
-		{name: "single photo before video", root: []string{"red", "video"}, quote: []string{"blue"}, wantType: "photo", wantURL: "/red"},
+		{name: "video includes quote", root: []string{"red", "blue", "video"}, quote: []string{"green"}, wantType: "video", wantWidth: 900, positions: []int{100, 350, 600, 800}, wantColors: []color.RGBA{{255, 0, 0, 255}, {0, 0, 255, 255}, {255, 255, 0, 255}, {0, 255, 0, 255}}},
+		{name: "single photo before video", root: []string{"red", "video"}, quote: []string{"blue"}, wantType: "video", wantWidth: 700, positions: []int{100, 300, 550}, wantColors: []color.RGBA{{255, 0, 0, 255}, {255, 255, 0, 255}, {0, 0, 255, 255}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			motionTestTools(t)
+			video := postMergeTestVideo(t)
 			db := testArtworkDB(t)
 			var server *httptest.Server
 			var uploads []string
@@ -44,7 +51,8 @@ func TestPostTextInlinePhotoMerge(t *testing.T) {
 			var merged image.Image
 			var edit url.Values
 			var editMethod string
-			server = httptest.NewServer(postTextMergeHandler(t, tc, &server, &uploads, &downloads, &merged, &edit, &editMethod))
+			handler := postTextMergeHandler(t, tc, &server, &uploads, &downloads, &merged, &edit, &editMethod, video)
+			server = httptest.NewServer(handler)
 			defer server.Close()
 			target, err := url.Parse(server.URL)
 			if err != nil {
@@ -73,7 +81,11 @@ func TestPostTextInlinePhotoMerge(t *testing.T) {
 				if merged == nil || merged.Bounds().Size() != image.Pt(tc.wantWidth, 300) {
 					t.Errorf("merged image = %v, want %dx300", merged, tc.wantWidth)
 				} else {
-					for i, x := range []int{100, 350, 600}[:len(tc.wantColors)] {
+					positions := tc.positions
+					if positions == nil {
+						positions = []int{100, 350, 600}
+					}
+					for i, x := range positions[:len(tc.wantColors)] {
 						got := color.RGBAModel.Convert(merged.At(x, 150)).(color.RGBA)
 						want := tc.wantColors[i]
 						if absColorDifference(got, want) > 30 {
@@ -81,9 +93,6 @@ func TestPostTextInlinePhotoMerge(t *testing.T) {
 						}
 					}
 				}
-			}
-			if tc.name == "video stops run" && strings.Contains(strings.Join(downloads, ","), "green") {
-				t.Errorf("downloaded photo after video: %v", downloads)
 			}
 			var media struct {
 				Type      string `json:"type"`
@@ -113,7 +122,7 @@ func absColorDifference(a, b color.RGBA) int {
 	return diff(a.R, b.R) + diff(a.G, b.G) + diff(a.B, b.B)
 }
 
-func postTextMergeHandler(t *testing.T, tc postTextMergeCase, server **httptest.Server, uploads, downloads *[]string, merged *image.Image, edit *url.Values, editMethod *string) http.HandlerFunc {
+func postTextMergeHandler(t *testing.T, tc postTextMergeCase, server **httptest.Server, uploads, downloads *[]string, merged *image.Image, edit *url.Values, editMethod *string, video []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 
 		switch {
@@ -149,6 +158,9 @@ func postTextMergeHandler(t *testing.T, tc postTextMergeCase, server **httptest.
 			img := image.NewRGBA(bounds)
 			draw.Draw(img, bounds, image.NewUniform(c), image.Point{}, draw.Src)
 			_ = png.Encode(w, img)
+		case r.URL.Path == "/video":
+			*downloads = append(*downloads, r.URL.Path)
+			_, _ = w.Write(video)
 		case r.URL.Path == "/broken":
 			*downloads = append(*downloads, r.URL.Path)
 			http.Error(w, "unavailable", http.StatusNotFound)
@@ -165,7 +177,15 @@ func postTextMergeHandler(t *testing.T, tc postTextMergeCase, server **httptest.
 			file, _, err := r.FormFile(kind)
 			if err == nil {
 				defer func() { _ = file.Close() }()
-				*merged, _, err = image.Decode(file)
+				if kind == "video" {
+					data, readErr := io.ReadAll(file)
+					if readErr != nil {
+						t.Fatal(readErr)
+					}
+					*merged = motionTestFrame(t, data, "0.1")
+				} else {
+					*merged, _, err = image.Decode(file)
+				}
 				if err != nil {
 					t.Errorf("decode upload: %v", err)
 				}
@@ -190,4 +210,19 @@ func postTextMergeHandler(t *testing.T, tc postTextMergeCase, server **httptest.
 			http.NotFound(w, r)
 		}
 	}
+}
+
+func postMergeTestVideo(t *testing.T) []byte {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "fixture.mp4")
+	cmd := exec.Command("ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=yellow:s=200x300:r=10",
+		"-t", "0.4", "-c:v", "libx264", "-pix_fmt", "yuv420p", path)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("video fixture: %v %s", err, out)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }

@@ -29,6 +29,7 @@ type postImagePreviewWork struct {
 	finished   time.Time
 }
 type postImagePreviewVariant struct {
+	request         renderRequest
 	done            chan struct{}
 	data, thumbnail []byte
 	width, height   int
@@ -61,7 +62,7 @@ func (t *thumbnails) startPostImagePreview(link *url.URL, zone string, themes ..
 			t.workers <- struct{}{}
 			work.request, work.bars, work.prepareErr = preparePostImageVariants(t.client, link, zone, true)
 			work.barsKnown = work.prepareErr == nil
-			work.hasBars = work.bars.Post.Media != nil && len(work.bars.Post.Media.Photos) > 1
+			work.hasBars = work.bars.Post.Media.hasBars()
 			close(work.prepared)
 			<-t.workers
 		}()
@@ -82,6 +83,7 @@ func (t *thumbnails) startPostImageVariant(work *postImagePreviewWork, link *url
 	work.variants[theme] = variant
 	work.active++
 	work.finished = time.Time{}
+
 	go func() {
 		<-work.prepared
 		if strings.HasSuffix(theme, "-bars") && work.duplicateBars() {
@@ -89,6 +91,7 @@ func (t *thumbnails) startPostImageVariant(work *postImagePreviewWork, link *url
 			normal := work.variants[strings.TrimSuffix(theme, "-bars")]
 			t.mu.Unlock()
 			<-normal.done
+			variant.request = normal.request
 			variant.data, variant.thumbnail = normal.data, normal.thumbnail
 			variant.width, variant.height = normal.width, normal.height
 			variant.caption, variant.err = normal.caption, normal.err
@@ -122,6 +125,7 @@ func (variant *postImagePreviewVariant) render(link *url.URL, request renderRequ
 		return
 	}
 	request.Theme = strings.TrimSuffix(theme, "-bars")
+	variant.request = request
 	variant.caption = postImageCaption(link, request)
 	variant.data, variant.err = renderPostImage(request)
 	if variant.err != nil {
@@ -145,7 +149,8 @@ func (variant *postImagePreviewVariant) render(link *url.URL, request renderRequ
 }
 
 func (work *postImagePreviewWork) duplicateBars() bool {
-	return work.prepareErr == nil && work.request.Post.Media != nil && work.request.Post.Media.Carousel
+	media := work.request.Post.Media
+	return work.prepareErr == nil && media != nil && len(media.Items) == 0 && media.Carousel
 }
 
 func (t *thumbnails) duplicatePostImageBars(link *url.URL, zone string, work *postImagePreviewWork) bool {

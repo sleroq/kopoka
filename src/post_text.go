@@ -58,7 +58,6 @@ func xPostAttachments(post *fxRichPost) ([]xMedia, error) {
 		case "", "photo":
 			kind = "photo"
 		case "video", "gif":
-			kind = "video"
 		default:
 			return nil, fmt.Errorf("unsupported FxTwitter media type %q", kind)
 		}
@@ -70,7 +69,7 @@ func xPostAttachments(post *fxRichPost) ([]xMedia, error) {
 			address = xPhotoURL(address)
 		}
 		item := xMedia{Type: kind, URL: address}
-		if kind == "video" {
+		if kind == "video" || kind == "gif" {
 			item.FallbackURLs = image.videoFallbackURLs()
 		}
 		media = append(media, item)
@@ -96,7 +95,7 @@ type cachedPostMedia struct {
 }
 
 func inputPostMedia(item xMedia) any {
-	if item.Type == "video" {
+	if item.Type == "video" || item.Type == "gif" {
 		return tgbotapi.NewInputMediaVideo(tgbotapi.FileURL(item.URL))
 	}
 	return tgbotapi.NewInputMediaPhoto(tgbotapi.FileURL(item.URL))
@@ -105,16 +104,29 @@ func inputPostMedia(item xMedia) any {
 func cachePostMedia(bot *tgbotapi.BotAPI, cacheChat string, media []xMedia) ([]cachedPostMedia, error) {
 	cached := make([]cachedPostMedia, 0, len(media))
 	for _, item := range media {
-		id, err := cachePostMediaItem(bot, cacheChat, item, inputPostMedia(item))
+		input := inputPostMedia(item)
+		id, err := cachePostMediaItem(bot, cacheChat, item, input)
 		if err != nil {
 			return nil, err
 		}
-		cached = append(cached, cachedPostMedia{kind: item.Type, id: id})
+		cached = append(cached, cachedPostMedia{kind: mediaBase(input).Type, id: id})
 	}
 	return cached, nil
 }
 
 func cacheNormalPostMedia(bot *tgbotapi.BotAPI, cacheChat string, media []xMedia) (cachedPostMedia, error) {
+	if len(media) == 1 && media[0].Type == "video" {
+		id, err := cachePostMediaItem(bot, cacheChat, media[0], inputPostMedia(media[0]))
+		return cachedPostMedia{kind: "video", id: id}, err
+	}
+	if hasMovingMedia(media) {
+		input, err := mergeMotionMedia(media, false)
+		if err != nil {
+			return cachedPostMedia{}, err
+		}
+		id, err := cacheInlineMedia(bot, cacheChat, input)
+		return cachedPostMedia{kind: mediaBase(input).Type, id: id}, err
+	}
 	var photos []any
 	for _, item := range media {
 		if item.Type != "photo" {
@@ -139,7 +151,7 @@ func cachePostMediaItem(bot *tgbotapi.BotAPI, cacheChat string, item xMedia, inp
 	id, err := cacheInlineMedia(bot, cacheChat, input)
 	for _, address := range item.FallbackURLs {
 		var telegramErr *tgbotapi.Error
-		if item.Type != "video" || !errors.As(err, &telegramErr) || telegramErr.Code != 400 ||
+		if mediaBase(input).Type != "video" || !errors.As(err, &telegramErr) || telegramErr.Code != 400 ||
 			!strings.Contains(telegramErr.Message, "failed to get HTTP URL content") {
 			break
 		}

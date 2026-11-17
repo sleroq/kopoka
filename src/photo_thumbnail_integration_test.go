@@ -120,7 +120,11 @@ func TestSelectedPhotoThumbnailHTTP(t *testing.T) {
 	if fmt.Sprint(api.paths) != "[/user/status/30 /user/status/30 /user/status/30 /user/status/31 /user/status/30 /user/status/30 /user/status/32 /user/status/32 /user/status/33 /missing /user/status/33]" {
 		t.Errorf("FxTwitter paths: %v", api.paths)
 	}
-	if fmt.Sprint(api.downloads) != "[/p0 /p1 /p0 /p1 /p0 /p0 /p0 /p0]" {
+	downloads := map[string]int{}
+	for _, path := range api.downloads {
+		downloads[path]++
+	}
+	if len(api.downloads) != 10 || downloads["/p0"] != 8 || downloads["/p1"] != 2 {
 		t.Errorf("image downloads: %v", api.downloads)
 	}
 }
