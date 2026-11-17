@@ -26,7 +26,7 @@ func TestInlineForceMerge(t *testing.T) {
 		switch {
 		case r.URL.Path == "/user/status/42" || r.URL.Path == "/user/status/42/en":
 			tweet := map[string]any{
-				"author": map[string]string{"name": "Artist"},
+				"author": map[string]string{"name": "Artist", "screen_name": "artist"},
 				"media":  map[string]any{"photos": []map[string]string{{"url": server.URL + "/red"}, {"url": server.URL + "/blue"}}},
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "tweet": tweet})
