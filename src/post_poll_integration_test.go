@@ -78,8 +78,7 @@ func TestXPollThreadPropagation(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, text := range map[string]string{
-		"normal": normalXPost(post, parents, more, false),
-		"rich":   richXPost(post, parents, more, nil, nil)["html"].(string),
+		"rich": richXPost(post, parents, more, nil, nil)["html"].(string),
 	} {
 		for _, want := range []string{"■■■□□□□□□□ A &lt;&amp;&gt; 25.5%", "■■■■■■■□□□ B 74.5%"} {
 			if strings.Count(text, want) != 3 {

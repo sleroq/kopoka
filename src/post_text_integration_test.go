@@ -17,7 +17,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"unicode/utf16"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -97,7 +96,7 @@ func (s *postTextServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}`, id, id, id, parent)
 	case "/user/status/6":
-		_, _ = fmt.Fprint(w, `{"code":200,"tweet":{"text":"Text only","author":{"name":"Solo","screen_name":"user"}}}`)
+		_, _ = fmt.Fprint(w, `{"code":200,"tweet":{"text":"Text only","author":{"name":"User","screen_name":"user"}}}`)
 	case "/user/status/7":
 		_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "tweet": map[string]any{
 			"author": map[string]string{"name": "Long", "screen_name": "user"},
@@ -208,49 +207,41 @@ func (s *postTextServer) telegram(w http.ResponseWriter, r *http.Request) {
 }
 
 func TestXPostInlineVideoURLRetry(t *testing.T) {
-	for _, rich := range []bool{false, true} {
-		for _, failure := range []string{"Bad Request: failed to get HTTP URL content", "Bad Request: unrelated"} {
-			t.Run(fmt.Sprintf("rich=%t/%s", rich, failure), func(t *testing.T) {
-				db := testArtworkDB(t)
-				if rich {
-					if err := toggleXPostFormat(db, 1); err != nil {
-						t.Fatal(err)
-					}
-				}
+	for _, failure := range []string{"Bad Request: failed to get HTTP URL content", "Bad Request: unrelated"} {
+		t.Run(failure, func(t *testing.T) {
+			db := testArtworkDB(t)
 
-				api := &postTextServer{t: t, uploadErrors: map[string]string{
-					"https://media.example/original.mp4": failure,
-					"https://media.example/mid.mp4":      "Bad Request: failed to get HTTP URL content",
-				}}
-				server := httptest.NewServer(api)
-				defer server.Close()
-				target, _ := url.Parse(server.URL)
-				original := http.DefaultTransport
-				http.DefaultTransport = redirectTransport{target, original}
-				defer func() { http.DefaultTransport = original }()
-				bot, err := tgbotapi.NewBotAPIWithAPIEndpoint("token", server.URL+"/bot%s/%s")
-				if err != nil {
-					t.Fatal(err)
+			api := &postTextServer{t: t, uploadErrors: map[string]string{
+				"https://media.example/original.mp4": failure,
+				"https://media.example/mid.mp4":      "Bad Request: failed to get HTTP URL content",
+			}}
+			server := httptest.NewServer(api)
+			defer server.Close()
+			target, _ := url.Parse(server.URL)
+			original := http.DefaultTransport
+			http.DefaultTransport = redirectTransport{target, original}
+			defer func() { http.DefaultTransport = original }()
+			bot, err := tgbotapi.NewBotAPIWithAPIEndpoint("token", server.URL+"/bot%s/%s")
+			if err != nil {
+				t.Fatal(err)
+			}
+			queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})
+			handleChosenInlineResult(bot, nil, db, &tgbotapi.ChosenInlineResult{
+				From: &tgbotapi.User{ID: 1}, ResultID: inlinePostTextID, InlineMessageID: "inline",
+				Query: "https://x.com/user/status/12",
+			}, "@cache", queue, nil)
+			want := []string{"https://media.example/original.mp4"}
+			if strings.Contains(failure, "failed to get HTTP URL content") {
+				want = append(want, "https://media.example/mid.mp4", "https://media.example/low.mp4")
+				if len(api.edits) != 1 || !strings.Contains(api.edits[0].Get("rich_message"), "file3") {
+					t.Fatalf("expected cached video in edit: %#v", api.edits)
 				}
-				queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})
-				handleChosenInlineResult(bot, nil, db, &tgbotapi.ChosenInlineResult{
-					From: &tgbotapi.User{ID: 1}, ResultID: inlinePostTextID, InlineMessageID: "inline",
-					Query: "https://x.com/user/status/12",
-				}, "@cache", queue, nil)
-				want := []string{"https://media.example/original.mp4"}
-				if strings.Contains(failure, "failed to get HTTP URL content") {
-					want = append(want, "https://media.example/mid.mp4", "https://media.example/low.mp4")
-					if len(api.edits) != 1 || (!strings.Contains(api.edits[0].Get("media"), "file3") &&
-						!strings.Contains(api.edits[0].Get("rich_message"), "file3")) {
-						t.Fatalf("expected cached video in edit: %#v", api.edits)
-					}
-				}
+			}
 
-				if !slices.Equal(api.uploads, want) {
-					t.Fatalf("uploads = %v, want %v", api.uploads, want)
-				}
-			})
-		}
+			if !slices.Equal(api.uploads, want) {
+				t.Fatalf("uploads = %v, want %v", api.uploads, want)
+			}
+		})
 	}
 }
 
@@ -338,12 +329,13 @@ func TestXPostInlineFormats(t *testing.T) {
 		return api.edits[before]
 	}
 
-	testXPostOrdinaryFormat(t, api, choose, link)
-	if err := toggleXPostFormat(db, 1); err != nil {
-		t.Fatal(err)
-	}
-	api.uploads, api.paths = nil, nil
 	testXPostRichFormat(t, api, choose, link)
+	for _, user := range []int64{2, 3} {
+		edit := choose(user, "https://x.com/user/status/6")
+		if !strings.Contains(edit.Get("rich_message"), "Text only") {
+			t.Fatalf("user %d received unexpected rich text: %v", user, edit)
+		}
+	}
 }
 
 func testXPostRichFormat(t *testing.T, api *postTextServer, choose func(int64, string) url.Values, link string) {
@@ -362,7 +354,7 @@ func testXPostRichFormat(t *testing.T, api *postTextServer, choose func(int64, s
 	if err := json.Unmarshal([]byte(rich.Get("rich_message")), &richPayload); err != nil {
 		t.Fatal(err)
 	}
-	for _, text := range []string{`Reply thread from <a href="https://x.com/user/status/5">X</a>`, "Author 2", "Parent 3", "Parent 4", "Main &amp; Co", `Main &lt;text&gt; &amp; 50% \%`, `href="https://x.com/quoted/status/9"`, "Quoted text", "<tg-slideshow>"} {
+	for _, text := range []string{`Reply thread from <a href="https://x.com/user/status/5">X</a>`, "Author 2", "Parent 3", "Parent 4", "Main &amp; Co", " · @user", `Main &lt;text&gt; &amp; 50% \%`, `href="https://x.com/quoted/status/9"`, "Quoted text", "<tg-slideshow>"} {
 		if !strings.Contains(richPayload.HTML, text) {
 			t.Errorf("rich message missing %q: %s", text, richPayload.HTML)
 		}
@@ -392,69 +384,6 @@ func testXPostRichFormat(t *testing.T, api *postTextServer, choose func(int64, s
 		t.Fatalf("long rich post: %d characters", len([]rune(richVisible)))
 	}
 
-}
-
-func testXPostOrdinaryFormat(t *testing.T, api *postTextServer, choose func(int64, string) url.Values, link string) {
-	t.Helper()
-	normal := choose(1, link)
-	var media map[string]any
-	if err := json.Unmarshal([]byte(normal.Get("media")), &media); err != nil {
-		t.Fatal(err)
-	}
-	caption := media["caption"].(string)
-	if media["type"] != "video" || media["media"] != "file1" || media["show_caption_above_media"] != true ||
-		strings.Count(caption, "<blockquote expandable>") != 3 || !strings.Contains(caption, `<blockquote><a href="https://x.com/quoted/status/9">Quoted</a>`) ||
-		strings.Contains(caption, "Attachment ") || strings.Contains(caption, "media.example") {
-		t.Fatalf("normal caption: %#v", media)
-	}
-	if len(api.uploads) != 1 || api.uploads[0] != "video:multipart" {
-		t.Fatalf("normal uploads: %v", api.uploads)
-	}
-
-	frame := motionTestFrame(t, api.composed, "0.1")
-	height := frame.Bounds().Dy()
-	motionAssertColor(t, frame, height/2, height/2, 2)
-	motionAssertColor(t, frame, frame.Bounds().Dx()/2, height/2, 0)
-	motionAssertColor(t, frame, frame.Bounds().Dx()-height/2, height/2, 0)
-
-	textOnly := choose(1, "https://x.com/user/status/6")
-	if textOnly.Get("parse_mode") != "HTML" || !strings.Contains(textOnly.Get("text"), "Text only") || textOnly.Get("media") != "" {
-		t.Fatalf("text-only post: %v", textOnly)
-	}
-	testXPostOrdinaryLimits(t, choose)
-	quoted := choose(1, "https://x.com/user/status/11")
-	if err := json.Unmarshal([]byte(quoted.Get("media")), &media); err != nil {
-		t.Fatal(err)
-	}
-	if media["type"] != "video" || media["media"] != "file3" ||
-		!strings.Contains(media["caption"].(string), `href="https://x.com/quoted/status/12"`) ||
-		len(api.uploads) != 3 || api.uploads[1] != "https://media.example/long.jpg" || api.uploads[2] != "https://media.example/quoted.mp4" {
-		t.Fatalf("quoted attachment: %#v, uploads %v", media, api.uploads)
-	}
-	partial := choose(1, "https://x.com/user/status/8")
-	if !strings.Contains(partial.Get("text"), "Still here") || !strings.Contains(partial.Get("text"), "…") {
-		t.Fatalf("inaccessible parent: %v", partial)
-	}
-}
-
-func testXPostOrdinaryLimits(t *testing.T, choose func(int64, string) url.Values) {
-	t.Helper()
-	long := choose(1, "https://x.com/user/status/7")
-	var media map[string]any
-	if err := json.Unmarshal([]byte(long.Get("media")), &media); err != nil {
-		t.Fatal(err)
-	}
-	caption := media["caption"].(string)
-	visible := html.UnescapeString(regexp.MustCompile(`<[^>]*>`).ReplaceAllString(caption, ""))
-	if media["type"] != "photo" || media["media"] != "file2" || media["show_caption_above_media"] != true ||
-		len(utf16.Encode([]rune(visible))) > 1024 || !strings.Contains(visible, "…") || strings.Contains(caption, "Attachment ") {
-		t.Fatalf("long caption: %d units, %#v", len(utf16.Encode([]rune(visible))), media)
-	}
-	longText := choose(1, "https://x.com/user/status/10")
-	visible = html.UnescapeString(regexp.MustCompile(`<[^>]*>`).ReplaceAllString(longText.Get("text"), ""))
-	if len(utf16.Encode([]rune(visible))) > 4096 || !strings.Contains(visible, "…") || longText.Get("media") != "" {
-		t.Fatalf("long text: %d units, %s", len(utf16.Encode([]rune(visible))), longText.Get("text"))
-	}
 }
 
 func TestLocalPostTextUploadsOriginalVideo(t *testing.T) {

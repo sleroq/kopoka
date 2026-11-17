@@ -355,7 +355,7 @@ func inlineArtworkResults(db *sql.DB, user int64, link *url.URL, previews *thumb
 	var postText chan map[string]any
 	if xLinkHosts[strings.ToLower(link.Host)] {
 		postText = make(chan map[string]any, 1)
-		go func() { postText <- inlinePostTextResult(db, user, link, previews, instant) }()
+		go func() { postText <- inlinePostTextResult(link, previews, instant) }()
 		postImages = inlinePostImageResults(db, user, link, previews, instant)
 	}
 

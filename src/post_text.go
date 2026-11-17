@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
-	"log"
 	"math"
 	"net/http"
 	"net/url"
@@ -22,12 +21,8 @@ import (
 
 const inlinePostTextID = "post:text"
 
-func inlinePostTextResult(db *sql.DB, user int64, link *url.URL, previews *thumbnails, instant bool) map[string]any {
-	rich, err := xPostRichTextEnabled(db, user)
-	if err != nil {
-		log.Printf("loading X post format: %v", err)
-	}
-	result := inlinePhoto(previews.postTextPreview(link, rich, instant))
+func inlinePostTextResult(link *url.URL, previews *thumbnails, instant bool) map[string]any {
+	result := inlinePhoto(previews.postTextPreview(link, instant))
 	result["id"], result["title"] = inlinePostTextID, "Post with text"
 	result["description"] = "Post, quote and reply thread"
 	result["input_message_content"] = map[string]any{
@@ -116,39 +111,6 @@ func cachePostMedia(bot *tgbotapi.BotAPI, cacheChat string, media []xMedia) ([]c
 		cached = append(cached, cachedPostMedia{kind: mediaBase(input).Type, id: id})
 	}
 	return cached, nil
-}
-
-func cacheNormalPostMedia(bot *tgbotapi.BotAPI, cacheChat string, media []xMedia) (cachedPostMedia, error) {
-	if len(media) == 1 && media[0].Type == "video" {
-		id, err := cachePostMediaItem(bot, cacheChat, media[0], inputPostMedia(media[0]))
-		return cachedPostMedia{kind: "video", id: id}, err
-	}
-	if hasMovingMedia(media) {
-		input, err := mergeMotionMedia(media, false)
-		if err != nil {
-			return cachedPostMedia{}, err
-		}
-		_, id, err := cacheInlineMediaWithVideoRetry(bot, cacheChat, input, false)
-		return cachedPostMedia{kind: mediaBase(input).Type, id: id}, err
-	}
-	var photos []any
-	for _, item := range media {
-		if item.Type != "photo" {
-			break
-		}
-		photos = append(photos, inputPostMedia(item))
-	}
-	first := inputPostMedia(media[0])
-	if len(photos) > 1 {
-		merged, err := forceMergePanels(photos, false)
-		if err != nil {
-			log.Printf("merging post attachments: %v", err)
-		} else {
-			first = merged[0]
-		}
-	}
-	id, err := cachePostMediaItem(bot, cacheChat, media[0], first)
-	return cachedPostMedia{kind: media[0].Type, id: id}, err
 }
 
 func cachePostMediaItem(bot *tgbotapi.BotAPI, cacheChat string, item xMedia, input any) (string, error) {
@@ -342,45 +304,38 @@ func editInlinePostText(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.Chose
 		return fmt.Errorf("post exceeds Telegram's 50 attachment limit")
 	}
 
-	rich, err := xPostRichTextEnabled(db, chosen.From.ID)
+	cached, err := cachePostMedia(bot, cacheChat, attachments)
 	if err != nil {
 		return err
 	}
-
-	params := tgbotapi.Params{"inline_message_id": chosen.InlineMessageID, "reply_markup": `{"inline_keyboard":[]}`}
-	method := "editMessageText"
-	if rich {
-		cached, err := cachePostMedia(bot, cacheChat, attachments)
-		if err != nil {
-			return err
-		}
-		payload, err := json.Marshal(richXPost(post, parents, more, cached[:len(own)], cached[len(own):]))
-		if err != nil {
-			return err
-		}
-		params["rich_message"] = string(payload)
-	} else {
-		text := normalXPost(post, parents, more, len(attachments) > 0)
-		if len(attachments) > 0 {
-			cached, err := cacheNormalPostMedia(bot, cacheChat, attachments)
-			if err != nil {
-				return err
-			}
-			payload, err := json.Marshal(map[string]any{
-				"type": cached.kind, "media": cached.id, "caption": text,
-				"parse_mode": "HTML", "show_caption_above_media": true,
-			})
-			if err != nil {
-				return err
-			}
-			method, params["media"] = "editMessageMedia", string(payload)
-		} else {
-			params["text"], params["parse_mode"], params["disable_web_page_preview"] = text, "HTML", "true"
-		}
+	payload, err := json.Marshal(richXPost(post, parents, more, cached[:len(own)], cached[len(own):]))
+	if err != nil {
+		return err
+	}
+	params := tgbotapi.Params{
+		"inline_message_id": chosen.InlineMessageID,
+		"reply_markup":      `{"inline_keyboard":[]}`,
+		"rich_message":      string(payload),
 	}
 
-	if _, err := retryTelegram(func() (*tgbotapi.APIResponse, error) { return bot.MakeRequest(method, params) }); err != nil {
+	if _, err := retryTelegram(func() (*tgbotapi.APIResponse, error) { return bot.MakeRequest("editMessageText", params) }); err != nil {
 		return fmt.Errorf("editing inline post: %w", err)
 	}
 	return selectArtwork(db, chosen.From.ID, artworkID(xPostLink(link)))
+}
+
+func xPostLinkHTML(post *fxRichPost, label string) string {
+	label = html.EscapeString(label)
+	link := inlineLink(post.URL)
+	if link == nil || !xLinkHosts[link.Host] {
+		link = inlineLink("https://x.com/" + post.Author.ScreenName + "/status/" + post.ID)
+	}
+	if link == nil {
+		return label
+	}
+	return `<a href="` + html.EscapeString(link.String()) + `">` + label + `</a>`
+}
+
+func xPostAuthorHTML(post *fxRichPost) string {
+	return xPostLinkHTML(post, post.Author.Name)
 }

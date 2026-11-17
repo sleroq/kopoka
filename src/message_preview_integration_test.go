@@ -241,18 +241,6 @@ func TestMessagePreviewVideoAndPostText(t *testing.T) {
 	noQuote := previewResult(t, f.query(t, p, bot, "https://x.com/user/status/5"), inlinePostTextID)
 	n := servedMessagePreview(t, p, noQuote, "/post-text-preview")
 	if bytes.Equal(r, n) {
-		t.Fatal("regular preview does not reflect quote")
-	}
-	if err := toggleXPostFormat(p.db, 1); err != nil {
-		t.Fatal(err)
-	}
-	rich := previewResult(t, f.query(t, p, bot, link), inlinePostTextID)
-	richData := servedMessagePreview(t, p, rich, "/post-text-preview")
-	if bytes.Equal(r, richData) {
-		t.Fatal("regular and rich previews are identical")
-	}
-	richNoQuote := previewResult(t, f.query(t, p, bot, "https://x.com/user/status/5"), inlinePostTextID)
-	if bytes.Equal(richData, servedMessagePreview(t, p, richNoQuote, "/post-text-preview")) {
 		t.Fatal("rich preview does not reflect quote")
 	}
 	for _, id := range []string{"x:2", "x:3"} {

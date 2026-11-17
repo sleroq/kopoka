@@ -2,12 +2,10 @@ package main
 
 import (
 	"bytes"
-	"html"
 	"image/jpeg"
 	"log"
 	"net/http"
 	"net/url"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,11 +21,9 @@ type postTextPreviewWork struct {
 	finished      time.Time
 }
 
-var previewHTMLTags = regexp.MustCompile(`<[^>]*>`)
-
-func (t *thumbnails) startPostTextPreview(link *url.URL, rich bool) *postTextPreviewWork {
+func (t *thumbnails) startPostTextPreview(link *url.URL) *postTextPreviewWork {
 	link = xPostLink(link)
-	key := artworkID(link) + ":" + strconv.FormatBool(rich)
+	key := artworkID(link)
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for k, work := range t.postTextWork {
@@ -42,7 +38,7 @@ func (t *thumbnails) startPostTextPreview(link *url.URL, rich bool) *postTextPre
 	t.postTextWork[key] = work
 	go func() {
 		t.workers <- struct{}{}
-		blocks, err := t.postTextPreviewBlocks(link, rich)
+		blocks, err := t.postTextPreviewBlocks(link)
 		if err == nil {
 			work.thumbnail, work.large, work.width, work.height, err = t.renderMessagePreview(blocks)
 		}
@@ -58,19 +54,19 @@ func (t *thumbnails) startPostTextPreview(link *url.URL, rich bool) *postTextPre
 	return work
 }
 
-func (t *thumbnails) postTextPreview(link *url.URL, rich, instant bool) previewPhoto {
+func (t *thumbnails) postTextPreview(link *url.URL, instant bool) previewPhoto {
 	if instant {
 		return t.postTextPhoto()
 	}
-	work := t.startPostTextPreview(link, rich)
+	work := t.startPostTextPreview(link)
 	select {
 	case <-work.done:
 		if work.err == nil {
 			address := *t.base
 			address.Path += "/post-text-preview"
 			address.RawQuery = url.Values{
-				"url": {xPostLink(link).String()}, "rich": {strconv.FormatBool(rich)},
-				"v": {strconv.Itoa(thumbnailRenderVersion)},
+				"url": {xPostLink(link).String()},
+				"v":   {strconv.Itoa(thumbnailRenderVersion)},
 			}.Encode()
 			u := address.String()
 			return previewPhoto{photoURL: u + "&size=large", thumbnailURL: u, width: work.width, height: work.height}
@@ -83,13 +79,12 @@ func (t *thumbnails) postTextPreview(link *url.URL, rich, instant bool) previewP
 
 func (t *thumbnails) servePostTextPreview(w http.ResponseWriter, r *http.Request) {
 	link := inlineLink(r.URL.Query().Get("url"))
-	rich, err := strconv.ParseBool(r.URL.Query().Get("rich"))
 	size := r.URL.Query().Get("size")
-	if link == nil || !xLinkHosts[strings.ToLower(link.Host)] || err != nil || size != "" && size != "large" {
+	if link == nil || !xLinkHosts[strings.ToLower(link.Host)] || size != "" && size != "large" {
 		http.Error(w, "invalid preview request", http.StatusBadRequest)
 		return
 	}
-	work := t.startPostTextPreview(link, rich)
+	work := t.startPostTextPreview(link)
 	select {
 	case <-r.Context().Done():
 		return
@@ -167,7 +162,7 @@ func (t *thumbnails) postTextMediaBlock(items []thumbnailMedia, carousel bool) (
 	return previewBlock{Kind: "media", Image: encoded.Bytes(), Video: video, Count: count}, nil
 }
 
-func (t *thumbnails) postTextPreviewBlocks(link *url.URL, rich bool) ([]previewBlock, error) {
+func (t *thumbnails) postTextPreviewBlocks(link *url.URL) ([]previewBlock, error) {
 	post, parents, more, err := loadXPostThread(t.client, link)
 	if err != nil {
 		return nil, err
@@ -178,36 +173,7 @@ func (t *thumbnails) postTextPreviewBlocks(link *url.URL, rich bool) ([]previewB
 		}
 	}
 	own, quote := previewPostMedia(post), previewPostMedia(post.Quote)
-	if rich {
-		return t.richPostPreviewBlocks(post, parents, more, own, quote)
-	}
-	markup := normalXPost(post, parents, more, len(own)+len(quote) > 0)
-	blocks := normalPostPreviewBlocks(markup)
-	if items := slices.Concat(own, quote); len(items) > 0 {
-		media, err := t.postTextMediaBlock(items, false)
-		if err != nil {
-			return nil, err
-		}
-		blocks = append(blocks, media)
-	}
-	return blocks, nil
-}
-
-func normalPostPreviewBlocks(markup string) []previewBlock {
-	var blocks []previewBlock
-	for {
-		text, quote, found := strings.Cut(markup, "<blockquote")
-		if text = strings.TrimSpace(html.UnescapeString(previewHTMLTags.ReplaceAllString(text, ""))); text != "" {
-			blocks = append(blocks, previewBlock{Kind: "text", Text: text})
-		}
-		if !found {
-			return blocks
-		}
-		_, quote, _ = strings.Cut(quote, ">")
-		text, markup, _ = strings.Cut(quote, "</blockquote>")
-		text = html.UnescapeString(previewHTMLTags.ReplaceAllString(text, ""))
-		blocks = append(blocks, previewBlock{Kind: "quote", Text: text})
-	}
+	return t.richPostPreviewBlocks(post, parents, more, own, quote)
 }
 
 func previewPostAuthor(post *fxRichPost) string {

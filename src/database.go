@@ -45,7 +45,7 @@ func openArtworkDB(path string) (*sql.DB, error) {
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS artwork (id TEXT PRIMARY KEY, url TEXT NOT NULL, author TEXT NOT NULL, text TEXT NOT NULL, caption TEXT NOT NULL, photos TEXT NOT NULL, preview_width INTEGER NOT NULL DEFAULT 0, preview_height INTEGER NOT NULL DEFAULT 0);
  CREATE TABLE IF NOT EXISTS history (sequence INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, artwork_id TEXT NOT NULL, UNIQUE(user_id, artwork_id));
  CREATE TABLE IF NOT EXISTS photo_link_opt_out (user_id INTEGER PRIMARY KEY);
- CREATE TABLE IF NOT EXISTS x_post_rich_text_opt_in (user_id INTEGER PRIMARY KEY);
+ DROP TABLE IF EXISTS x_post_rich_text_opt_in;
  DROP TABLE IF EXISTS x_post_rich_text_opt_out;
  CREATE TABLE IF NOT EXISTS history_opt_out (user_id INTEGER PRIMARY KEY);
  CREATE TABLE IF NOT EXISTS history_chat_hidden (user_id INTEGER PRIMARY KEY);
@@ -252,25 +252,6 @@ func togglePictureHistory(db *sql.DB, user int64) error {
 		_, err = db.Exec(`DELETE FROM history_picture_view WHERE user_id=?`, user)
 	} else {
 		_, err = db.Exec(`INSERT INTO history_picture_view(user_id) VALUES (?)`, user)
-	}
-	return err
-}
-
-func xPostRichTextEnabled(db *sql.DB, user int64) (bool, error) {
-	var enabled bool
-	err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM x_post_rich_text_opt_in WHERE user_id=?)`, user).Scan(&enabled)
-	return enabled, err
-}
-
-func toggleXPostFormat(db *sql.DB, user int64) error {
-	enabled, err := xPostRichTextEnabled(db, user)
-	if err != nil {
-		return err
-	}
-	if enabled {
-		_, err = db.Exec(`DELETE FROM x_post_rich_text_opt_in WHERE user_id=?`, user)
-	} else {
-		_, err = db.Exec(`INSERT INTO x_post_rich_text_opt_in(user_id) VALUES (?)`, user)
 	}
 	return err
 }
