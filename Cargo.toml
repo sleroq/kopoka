@@ -16,6 +16,7 @@ path = "renderer/tests/cli.rs"
 anyhow = "1"
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
+regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 takumi = { version = "=2.19.0", default-features = false, features = ["raster-backend", "image-decoding", "svg-source"] }

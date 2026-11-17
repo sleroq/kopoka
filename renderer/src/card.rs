@@ -1,7 +1,8 @@
-use std::{cell::RefCell, collections::HashMap};
+use std::{cell::RefCell, collections::HashMap, sync::LazyLock};
 
 use anyhow::{Context, Result, bail};
 use base64::{Engine, engine::general_purpose::STANDARD};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use takumi::{measure, prelude::*, write_image};
 
@@ -316,6 +317,39 @@ impl Card<'_> {
             ),
         )
     }
+    fn post_body(&self, value: &str, size: u32) -> Node {
+        static LINKS: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"https?://[^\s<>]+|@[A-Za-z0-9_]{1,15}").unwrap());
+        let mut nodes = Vec::new();
+        let mut end = 0;
+        for found in LINKS.find_iter(value) {
+            if found.as_str().starts_with('@')
+                && value[..found.start()]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '@')
+            {
+                continue;
+            }
+            let link = found
+                .as_str()
+                .trim_end_matches(['.', ',', '!', '?', ':', ';', ')', ']']);
+            nodes.push(Node::text(value[end..found.start()].to_string()));
+            nodes.push(text(link, "color:#1d9bf0"));
+            end = found.start() + link.len();
+        }
+        if end == 0 {
+            return self.body(value, size);
+        }
+        nodes.push(Node::text(value[end..].to_string()));
+        styled(
+            Node::container(nodes),
+            &format!(
+                "color:{};font-size:{size}px;line-height:1.4;white-space:pre-wrap;overflow-wrap:anywhere",
+                self.text
+            ),
+        )
+    }
     fn post(&self, post: &Post, width: f32, compact: bool) -> Result<Node> {
         let size = if compact { 24.0 } else { 48.0 };
         let timestamp = if compact {
@@ -350,7 +384,10 @@ impl Card<'_> {
             ],
             "gap:12px;align-items:center",
         );
-        let mut nodes = vec![header, self.body(&post.text, if compact { 14 } else { 16 })];
+        let mut nodes = vec![
+            header,
+            self.post_body(&post.text, if compact { 14 } else { 16 }),
+        ];
         nodes.extend(self.extras(post, width, compact)?);
         Ok(column(nodes, "gap:12px;min-width:0"))
     }
@@ -521,7 +558,7 @@ impl Card<'_> {
         }
         let mut nodes = vec![
             row(header, "align-items:baseline;min-width:0"),
-            self.body(&post.text, 14),
+            self.post_body(&post.text, 14),
         ];
         let extras = self.extras(post, 442.0, true)?;
         if !extras.is_empty() {

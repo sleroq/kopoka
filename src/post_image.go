@@ -22,7 +22,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-const postImageVersion = 13
+const postImageVersion = 14
 const defaultPostImageTheme = "dark"
 
 type postImage struct {

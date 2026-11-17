@@ -71,7 +71,7 @@ func (s *postTextServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"code": 200,
 			"tweet": {
 				"id": "5", "url": "https://x.com/user/status/5",
-				"text": "Main <text> & 50% \\%",
+				"text": "Main <text> & 50% \\% @alice https://example.com/path?a=1&b=2. email@example.com",
 				"author": {"name": "Main & Co", "screen_name": "user"},
 				"replying_to_status": "4",
 				"media": {"all": [
@@ -433,7 +433,7 @@ func testXPostRichFormat(t *testing.T, api *postTextServer, choose func(int64, s
 	if err := json.Unmarshal([]byte(rich.Get("rich_message")), &richPayload); err != nil {
 		t.Fatal(err)
 	}
-	for _, text := range []string{`Reply thread on <a href="https://x.com/user/status/5">X</a>:`, "Author 2", "Parent 3", "Parent 4", "Main &amp; Co", `Main &lt;text&gt; &amp; 50% \%`, `href="https://x.com/quoted/status/9"`, "Quoted text", "<tg-slideshow>"} {
+	for _, text := range []string{`Reply thread on <a href="https://x.com/user/status/5">X</a>:`, "Author 2", "Parent 3", "Parent 4", "Main &amp; Co", `Main &lt;text&gt; &amp; 50% \% <a href="https://x.com/alice">@alice</a> <a href="https://example.com/path?a=1&amp;b=2">https://example.com/path?a=1&amp;b=2</a>. email@example.com`, `href="https://x.com/quoted/status/9"`, "Quoted text", "<tg-slideshow>"} {
 		if !strings.Contains(richPayload.HTML, text) {
 			t.Errorf("rich message missing %q: %s", text, richPayload.HTML)
 		}

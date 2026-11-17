@@ -10,10 +10,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -171,6 +173,32 @@ func richPostBody(text string) string {
 	return strings.ReplaceAll(html.EscapeString(text), "\n", "<br>")
 }
 
+var postTextLinks = regexp.MustCompile(`https?://[^\s<>]+|@[A-Za-z0-9_]{1,15}`)
+
+func richPostLinkedBody(value string) string {
+	var markup strings.Builder
+	end := 0
+	for _, match := range postTextLinks.FindAllStringIndex(value, -1) {
+		start := match[0]
+		if value[start] == '@' && start > 0 {
+			previous, _ := utf8.DecodeLastRuneInString(value[:start])
+			if unicode.IsLetter(previous) || unicode.IsDigit(previous) || previous == '_' || previous == '@' {
+				continue
+			}
+		}
+		label := strings.TrimRight(value[start:match[1]], ".,!?;:)]")
+		target := label
+		if label[0] == '@' {
+			target = "https://x.com/" + label[1:]
+		}
+		markup.WriteString(richPostBody(value[end:start]))
+		fmt.Fprintf(&markup, `<a href="%s">%s</a>`, html.EscapeString(target), html.EscapeString(label))
+		end = start + len(label)
+	}
+	markup.WriteString(richPostBody(value[end:]))
+	return markup.String()
+}
+
 func richPostAuthor(post *fxRichPost) string {
 	return "<b>" + xPostAuthorHTML(post) + "</b>"
 }
@@ -234,7 +262,7 @@ func richXPost(post *fxRichPost, parents []*fxRichPost, more bool, cached map[*f
 		markup.WriteString("</summary>")
 		if p.Text != "" {
 			markup.WriteString("<p>")
-			markup.WriteString(richPostBody(p.Text))
+			markup.WriteString(richPostLinkedBody(p.Text))
 			markup.WriteString("</p>")
 		}
 		if polls[p] != "" {
@@ -276,7 +304,7 @@ func richXPost(post *fxRichPost, parents []*fxRichPost, more bool, cached map[*f
 	}
 	if post.Text != "" {
 		markup.WriteString("<p>")
-		markup.WriteString(richPostBody(post.Text))
+		markup.WriteString(richPostLinkedBody(post.Text))
 		markup.WriteString("</p>")
 	}
 	if polls[post] != "" {

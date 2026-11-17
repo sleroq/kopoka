@@ -49,6 +49,35 @@ fn height(output: &Output) -> u32 {
 }
 
 #[test]
+fn cli_highlights_post_mentions_and_links() {
+    for theme in ["light", "warm", "dark", "dim"] {
+        for body in ["Hello @alice!", "See https://example.com/path?x=1."] {
+            let post = json!({"author_name":"A", "author_username":"a", "author_avatar_url":"", "text":body});
+            let blank = json!({"author_name":"A", "author_username":"a", "author_avatar_url":"", "text":""});
+            for request in [
+                json!({"theme":theme,"post":post}),
+                json!({"theme":theme,"post":{ "author_name":"A", "author_username":"a", "author_avatar_url":"", "text":"", "quote":post }}),
+                json!({"theme":theme,"post":blank,"reply_chain":[post]}),
+            ] {
+                let output = render_request(request);
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let image = image::load_from_memory(&output.stdout).unwrap().to_rgb8();
+                assert!(
+                    image
+                        .pixels()
+                        .any(|p| p[2] > 170 && p[1] > 80 && p[2].saturating_sub(p[0]) > 60),
+                    "missing blue text: {theme} {body}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn cli_renders_polls_in_posts_quotes_and_replies() {
     let poll = json!({"choices":[{"label":"A long choice that wraps inside the narrower quoted and reply posts when needed", "percentage":55.2},{"label":"Other", "percentage":18.0}], "total_votes":1019, "time_left_en":"21 hours left"});
     let post =
