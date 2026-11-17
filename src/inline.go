@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/everpcpc/pixiv"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -18,6 +19,19 @@ import (
 const inlineResultID = "artwork"
 const inlineMergedResultID = "artwork:merged"
 const inlineBarsResultID = "artwork:merged:bars"
+const inlineFeedbackID = "feedback:"
+
+func inlineFeedback(id, title, description, message string) map[string]any {
+	return map[string]any{
+		"type": "article", "id": inlineFeedbackID + id, "title": title, "description": description,
+		"input_message_content": map[string]any{"message_text": message, "disable_web_page_preview": true},
+	}
+}
+
+func inlinePreferenceFailure() []any {
+	message := "Could not load preferences. Please try again."
+	return []any{inlineFeedback("preferences", "Could not load preferences", "Please try again.", message)}
+}
 
 func inlineLink(text string) *url.URL {
 	link, err := url.Parse(strings.TrimSpace(text))
@@ -220,7 +234,7 @@ func inlineHistoryView(db *sql.DB, query *tgbotapi.InlineQuery, source string, i
 	pictures, err := pictureHistoryEnabled(db, query.From.ID)
 	if err != nil {
 		log.Printf("loading history view: %v", err)
-		return []any{}, ""
+		return inlinePreferenceFailure(), ""
 	}
 	if invert {
 		pictures = !pictures
@@ -335,8 +349,13 @@ func inlineArtworkResults(db *sql.DB, user int64, link *url.URL, previews *thumb
 		instant = settings.Pixiv
 	}
 	if err != nil {
-		instant = true
 		log.Printf("loading instant inline settings: %v", err)
+		return inlinePreferenceFailure()
+	}
+	if !instant {
+		if failure := inlineSourceFailure(db, link, previews); failure != nil {
+			return []any{failure}
+		}
 	}
 	if explicit {
 		if result := inlineArtworkResult(db, link, previews, instant); result != nil {
@@ -376,6 +395,31 @@ func inlineArtworkResults(db *sql.DB, user int64, link *url.URL, previews *thumb
 	return results
 }
 
+func inlineSourceFailure(db *sql.DB, link *url.URL, previews *thumbnails) map[string]any {
+	cached, err := findArtwork(db, artworkID(link))
+	if err != nil {
+		log.Printf("loading cached artwork: %v", err)
+	}
+	if cached != nil {
+		return nil
+	}
+	work := previews.warmup(link, 0)
+	title, description := "Could not load post", "Please try again."
+	select {
+	case <-work.sourceDone:
+		if work.sourceErr == nil || errors.Is(work.sourceErr, errNoXMedia) {
+			return nil
+		}
+		if errors.Is(work.sourceErr, errXPostNotFound) {
+			title, description = "Post not found (404)", "Check the link and try again."
+		}
+	case <-time.After(8 * time.Second):
+		title = "Post is taking too long"
+	}
+	message := title + ". " + description + "\n\n" + link.String()
+	return inlineFeedback("source", title, description, message)
+}
+
 func inlineQueryResults(db *sql.DB, query *tgbotapi.InlineQuery, previews *thumbnails) ([]any, string) {
 	if family, filter, ok := themeQuery(query.Query); ok {
 		return themeResults(db, query.From.ID, family, filter, previews), ""
@@ -393,12 +437,19 @@ func inlineQueryResults(db *sql.DB, query *tgbotapi.InlineQuery, previews *thumb
 		link, err := preferredInlineLink(db, query.From.ID, query.Query)
 		if err != nil {
 			log.Printf("loading photo preference: %v", err)
-			return []any{}, ""
+			return inlinePreferenceFailure(), ""
 		}
 		_, explicit := inlineQuerySelection(query.Query)
 		return inlineArtworkResults(db, query.From.ID, link, previews, explicit), ""
 	}
-	return []any{}, ""
+	guide := "Search guide\n\n" +
+		"• Paste an X or Pixiv post link to choose a view.\n" +
+		"• Add a number after the link to select a media item or page.\n" +
+		"• Leave the query empty for history; use x or p to filter, and . to switch history view.\n" +
+		"• Use theme light or theme dark to choose a post image theme.\n" +
+		"• Use language target or language ignore to search languages.\n" +
+		"• Use tz to search time zones. Use /settings for more options."
+	return []any{inlineFeedback("guide", "Query not understood", "Select for a usage guide.", guide)}, ""
 }
 
 func handleInlineQuery(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.InlineQuery, previews *thumbnails) {
@@ -418,6 +469,9 @@ func handleInlineQuery(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.InlineQ
 }
 
 func handleChosenInlineResult(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, cacheChat string, queue *mediaQueue, previews *thumbnails) {
+	if strings.HasPrefix(chosen.ResultID, inlineFeedbackID) {
+		return
+	}
 	if strings.HasPrefix(chosen.ResultID, "theme:") {
 		handleThemeSelection(bot, db, chosen)
 		return

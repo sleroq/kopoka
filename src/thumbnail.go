@@ -773,6 +773,9 @@ func (t *thumbnails) xSource(link *url.URL) (thumbnailSource, error) {
 		return thumbnailSource{}, err
 	}
 	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode == http.StatusNotFound {
+		return thumbnailSource{}, errXPostNotFound
+	}
 	if res.StatusCode != http.StatusOK {
 		return thumbnailSource{}, fmt.Errorf("FxTwitter HTTP %s", res.Status)
 	}
@@ -796,6 +799,9 @@ func (t *thumbnails) xSource(link *url.URL) (thumbnailSource, error) {
 	}
 	if err := json.NewDecoder(res.Body).Decode(&response); err != nil {
 		return thumbnailSource{}, err
+	}
+	if response.Code == http.StatusNotFound {
+		return thumbnailSource{}, errXPostNotFound
 	}
 	if response.Code != http.StatusOK || response.Tweet == nil {
 		return thumbnailSource{}, fmt.Errorf("FxTwitter API error %d", response.Code)

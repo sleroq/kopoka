@@ -1164,3 +1164,71 @@ func TestInlineVideoURLRetryAnimation(t *testing.T) {
 		t.Fatalf("cached rich artwork: %#v", rich)
 	}
 }
+
+func TestInlineSearchFeedbackFlow(t *testing.T) {
+	db := testArtworkDB(t)
+	var answer []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/getMe"):
+			_, _ = io.WriteString(w, `{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`)
+		case strings.HasSuffix(r.URL.Path, "/answerInlineQuery"):
+			_ = r.ParseForm()
+			if err := json.Unmarshal([]byte(r.FormValue("results")), &answer); err != nil {
+				t.Error(err)
+			}
+			_, _ = io.WriteString(w, `{"ok":true,"result":true}`)
+		case r.URL.Path == "/user/status/404":
+			http.NotFound(w, r)
+		case r.URL.Path == "/user/status/5":
+			_, _ = io.WriteString(w, `{"code":200,"tweet":{"author":{"name":"Artist"},"text":"Text only"}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	target, _ := url.Parse(server.URL)
+	bot, err := tgbotapi.NewBotAPIWithAPIEndpoint("token", server.URL+"/bot%s/%s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	previews := testPreviews(t, db, bot)
+	previews.client = &http.Client{Transport: redirectTransport{target, http.DefaultTransport}}
+	query := &tgbotapi.InlineQuery{ID: "query", From: &tgbotapi.User{ID: 1}, Query: "https://x.com/user/status/404"}
+	handleInlineQuery(bot, db, query, previews)
+	if len(answer) != 1 || answer[0]["type"] != "article" || !strings.Contains(answer[0]["title"].(string), "404") || !strings.Contains(answer[0]["input_message_content"].(map[string]any)["message_text"].(string), query.Query) {
+		t.Fatalf("404 answer: %#v", answer)
+	}
+	chosen := &tgbotapi.ChosenInlineResult{From: query.From, ResultID: answer[0]["id"].(string), Query: query.Query}
+	handleChosenInlineResult(bot, nil, db, chosen, "", nil, nil)
+
+	query.Query = "not a link"
+	handleInlineQuery(bot, db, query, previews)
+	if len(answer) != 1 || answer[0]["type"] != "article" || !strings.Contains(answer[0]["title"].(string), "not understood") {
+		t.Fatalf("guide answer: %#v", answer)
+	}
+	guide := answer[0]["input_message_content"].(map[string]any)["message_text"].(string)
+	for _, term := range []string{"X", "Pixiv", "history", "theme light", "language target", "tz"} {
+		if !strings.Contains(guide, term) {
+			t.Errorf("guide missing %q: %s", term, guide)
+		}
+	}
+	chosen = &tgbotapi.ChosenInlineResult{From: query.From, ResultID: answer[0]["id"].(string), Query: query.Query}
+	handleChosenInlineResult(bot, nil, db, chosen, "", nil, nil)
+
+	query.Query = ""
+	handleInlineQuery(bot, db, query, previews)
+	if len(answer) != 0 {
+		t.Fatalf("feedback polluted history: %#v", answer)
+	}
+
+	query.Query = "https://x.com/user/status/5"
+	handleInlineQuery(bot, db, query, previews)
+	for _, result := range answer {
+		if result["id"] == inlinePostTextID {
+			return
+		}
+	}
+	t.Fatalf("text-only answer: %#v", answer)
+}

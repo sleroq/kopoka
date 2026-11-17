@@ -255,6 +255,11 @@ func TestInlineNumericPhotoSelection(t *testing.T) {
 	if err := togglePhotoLinks(db, user.ID); err != nil {
 		t.Fatal(err)
 	}
+	for _, id := range []int64{11, 12} {
+		if err := toggleInstantInline(db, id, "x"); err != nil {
+			t.Fatal(err)
+		}
+	}
 	previews := testPreviews(t, db, bot)
 	queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})
 	query := "look https://x.com/artist/status/123/photo/1 2 now"
