@@ -40,11 +40,13 @@ var pixivLogo []byte
 
 type thumbnailWork struct {
 	done          chan struct{}
+	sourceDone    chan struct{}
 	forcedDone    chan struct{}
 	barsDone      chan struct{}
 	bars          thumbnailVariant
 	forced        thumbnailVariant
 	photoCount    int
+	moving        bool
 	sourceOK      bool
 	caching       map[int]bool
 	data          []byte
@@ -286,6 +288,17 @@ func (t *thumbnails) mergedPhotoVariant(link *url.URL, instant, bars bool) (prev
 	}
 
 	var work *thumbnailWork
+	if !bars && xLinkHosts[strings.ToLower(link.Host)] {
+		work = t.warmup(link, 0)
+		select {
+		case <-work.sourceDone:
+			if !work.sourceOK || work.moving {
+				return previewPhoto{}, false
+			}
+		case <-time.After(8 * time.Second):
+			return previewPhoto{}, false
+		}
+	}
 	if instant {
 		t.mu.Lock()
 		work = t.work[link.String()]
@@ -457,13 +470,14 @@ func (t *thumbnails) start(link *url.URL) *thumbnailWork {
 		}
 		if oldestKey == "" {
 			w := &thumbnailWork{
-				done: make(chan struct{}), forcedDone: make(chan struct{}), barsDone: make(chan struct{}),
+				done: make(chan struct{}), sourceDone: make(chan struct{}), forcedDone: make(chan struct{}), barsDone: make(chan struct{}),
 				err: fmt.Errorf("thumbnail service busy"),
 			}
 			w.forced.err = w.err
 			w.bars.err = w.err
 			w.caching = make(map[int]bool)
 			close(w.done)
+			close(w.sourceDone)
 			close(w.forcedDone)
 			close(w.barsDone)
 			return w
@@ -472,7 +486,7 @@ func (t *thumbnails) start(link *url.URL) *thumbnailWork {
 	}
 
 	w := &thumbnailWork{
-		done: make(chan struct{}), forcedDone: make(chan struct{}), barsDone: make(chan struct{}),
+		done: make(chan struct{}), sourceDone: make(chan struct{}), forcedDone: make(chan struct{}), barsDone: make(chan struct{}),
 		caching: make(map[int]bool),
 	}
 	t.work[key] = w
@@ -480,14 +494,14 @@ func (t *thumbnails) start(link *url.URL) *thumbnailWork {
 		t.workers <- struct{}{}
 		source, err := t.source(link)
 		w.sourceOK = err == nil
+		w.photoCount = len(source.media)
+		for _, item := range source.media {
+			w.moving = w.moving || item.moving()
+		}
+		close(w.sourceDone)
 		var media []any
 		if err == nil {
 			media, err = t.downloadSource(source)
-		}
-		for _, item := range source.media {
-			if item.Type == "" || item.Type == "photo" {
-				w.photoCount++
-			}
 		}
 		sourceErr := err
 		for _, item := range []struct {

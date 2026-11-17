@@ -79,6 +79,15 @@ func TestMotionViewsIntegration(t *testing.T) {
 				t.Fatalf("cached %+v: %v", cached, err)
 			}
 			previews := testPreviews(t, db, bot)
+			previews.client = &http.Client{Transport: redirectTransport{target, original}}
+			for _, instant := range []bool{true, false} {
+				if result := inlineMergedResult(link, previews, instant, false); result != nil {
+					t.Fatalf("instant=%v: unexpected merged result %v", instant, result)
+				}
+				if result := inlineMergedResult(link, previews, instant, true); result == nil {
+					t.Fatalf("instant=%v: missing merged with bars result", instant)
+				}
+			}
 			result := postImageResult(db, link, "light", defaultTimezone, defaultTranslationSettings(), previews, nil)
 			if result["type"] != "photo" || result["id"] != postImageID(link, "light")+":cached" || result["input_message_content"].(map[string]any)["message_text"] != "Loading post image…" {
 				t.Fatalf("inline result %v", result)
