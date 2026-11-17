@@ -191,6 +191,8 @@ func (s *instantSettingsScenario) inline(user int64, link string, merged bool) m
 	}
 	if !merged {
 		want -= 2
+	} else if !strings.Contains(link, "pixiv.net") {
+		want-- // Unavailable X metadata hides the no-bars variant.
 	}
 	if len(results) != want {
 		s.t.Fatalf("inline results: %#v", results)
@@ -205,6 +207,7 @@ func (s *instantSettingsScenario) expectThumbnail(user int64, link string, withP
 	s.t.Helper()
 	before := s.api.sources.Load()
 	attempts := s.network.attempts.Load()
+
 	s.network.previews.Store(withPreview)
 	result := s.inline(user, link, !withPreview)
 	if withPreview {
@@ -228,8 +231,12 @@ func (s *instantSettingsScenario) expectThumbnail(user int64, link string, withP
 		}
 		return
 	}
+	if !strings.Contains(link, "pixiv.net") {
+		attempts++ // X metadata determines whether no-bars merging is available.
+	}
 	if s.api.sources.Load() != before || s.network.attempts.Load() != attempts {
-		s.t.Fatalf("instant mode fetched %s", link)
+		s.t.Fatalf("instant mode requests for %s: sources=%d attempts=%d, want %d and %d",
+			link, s.api.sources.Load(), s.network.attempts.Load(), before, attempts)
 	}
 	want := "https://preview.example.com/thumbnail-placeholder-x.jpg"
 	if strings.Contains(link, "pixiv.net") {
@@ -371,6 +378,7 @@ func verifyInstantInlineSelection(t *testing.T, s *instantSettingsScenario) {
 	if attempts, edits := s.network.attempts.Load(), s.api.snapshot().mediaEdits; attempts != before+1 || edits != 1 {
 		t.Fatalf("selection: upstream requests %d, media edits %d", attempts, edits)
 	}
+	s.network.selected.Store(false)
 	result := s.inline(1, link, true)
 	if result["type"] != "photo" || result["photo_url"] != "https://preview.example.com/thumbnail-placeholder-x.jpg" || !strings.Contains(fmt.Sprint(result["input_message_content"]), "file") {
 		t.Fatalf("cached result: %#v", result)

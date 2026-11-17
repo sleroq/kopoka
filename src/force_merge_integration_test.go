@@ -76,7 +76,7 @@ func TestInlineForceMerge(t *testing.T) {
 	query := &tgbotapi.InlineQuery{ID: "query", From: &tgbotapi.User{ID: 1}, Query: "https://x.com/user/status/42"}
 	previews := testPreviews(t, db, bot)
 	handleInlineQuery(bot, db, query, previews)
-	if len(answer) != 8 || answer[7]["id"] != "post:text" || answer[0]["id"] != inlineResultID || answer[1]["id"] != inlineMergedResultID {
+	if len(answer) != 7 || answer[6]["id"] != "post:text" || answer[0]["id"] != inlineResultID || answer[1]["id"] != inlineBarsResultID {
 		t.Fatalf("uncached: %#v", answer)
 	}
 
@@ -85,7 +85,7 @@ func TestInlineForceMerge(t *testing.T) {
 		t.Fatal(err)
 	}
 	handleInlineQuery(bot, db, query, previews)
-	if len(answer) != 8 || answer[7]["id"] != "post:text" || answer[0]["id"] != "x:42" || answer[1]["id"] != inlineMergedResultID {
+	if len(answer) != 7 || answer[6]["id"] != "post:text" || answer[0]["id"] != "x:42" || answer[1]["id"] != inlineBarsResultID {
 		t.Fatalf("cached: %#v", answer)
 	}
 

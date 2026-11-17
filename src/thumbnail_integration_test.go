@@ -255,6 +255,7 @@ func TestInlineThumbnailFlow(t *testing.T) {
 	}
 	checkInvalidArtworkThumbnails(t, db, bot, previews, s.answers)
 	checkCachedSourceFailure(t, db, bot, previews, s.answers, previewServer)
+	s.failures.Store(0)
 	checkThumbnailFailures(t, db, previewServer.URL, "https://x.com/user/status/2", &s.uploads)
 }
 
@@ -375,7 +376,7 @@ func checkInstantThumbnail(t *testing.T, db *sql.DB, bot *tgbotapi.BotAPI, previ
 	before := upstream.Load()
 	query := &tgbotapi.InlineQuery{ID: "query", From: &tgbotapi.User{ID: 1}, Query: "https://x.com/user/status/2"}
 	handleInlineQuery(bot, db, query, previews)
-	if result := (<-answers)[0]; result["photo_url"] != "https://preview.example.com/thumbnail-placeholder-x.jpg" || result["thumbnail_url"] != result["photo_url"] || upstream.Load() != before {
+	if result := (<-answers)[0]; result["photo_url"] != "https://preview.example.com/thumbnail-placeholder-x.jpg" || result["thumbnail_url"] != result["photo_url"] || upstream.Load() != before+1 {
 		t.Fatal("instant inline mode started a preview")
 	}
 	for _, source := range []string{"x", "pixiv"} {
@@ -385,7 +386,7 @@ func checkInstantThumbnail(t *testing.T, db *sql.DB, bot *tgbotapi.BotAPI, previ
 		}
 		_ = readThumbnail(t, res)
 	}
-	if upstream.Load() != before {
+	if upstream.Load() != before+1 {
 		t.Fatal("placeholder contacted an upstream source")
 	}
 }

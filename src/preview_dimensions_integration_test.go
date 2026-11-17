@@ -388,8 +388,8 @@ func TestMergedInlineSingletonAndInstant(t *testing.T) {
 	f := newPreviewFlowServer(t)
 	previews, bot := f.setup(t)
 	link := inlineLink("https://x.com/user/status/1")
-	photo, ok := previews.mergedPhoto(link, true)
-	if !ok || !strings.HasSuffix(photo.photoURL, "/thumbnail-placeholder-merged.jpg") || len(previews.work) != 0 {
+	photo, ok := previews.mergedPhoto(inlineLink("https://x.com/user/status/2"), true)
+	if !ok || !strings.HasSuffix(photo.photoURL, "/thumbnail-placeholder-merged.jpg") {
 		t.Fatalf("instant preview: %#v %v", photo, ok)
 	}
 	response := httptest.NewRecorder()

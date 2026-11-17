@@ -292,7 +292,7 @@ func (t *thumbnails) mergedPhotoVariant(link *url.URL, instant, bars bool) (prev
 		work = t.warmup(link, 0)
 		select {
 		case <-work.sourceDone:
-			if !work.sourceOK || work.moving {
+			if !work.sourceOK || work.moving || work.photoCount < 2 {
 				return previewPhoto{}, false
 			}
 		case <-time.After(8 * time.Second):

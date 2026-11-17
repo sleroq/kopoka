@@ -99,7 +99,7 @@ func TestPostImageBarsInlineResults(t *testing.T) {
 		user    int64
 		artwork int
 	}{
-		{"3", 1, 0}, {"1", 1, 1}, {"2", 1, 3}, {"3", 2, 3},
+		{"3", 1, 0}, {"1", 1, 1}, {"2", 1, 3}, {"3", 2, 2},
 	} {
 		link := inlineLink("https://x.com/user/status/" + tc.id)
 		results := inlineArtworkResults(db, tc.user, link, previews, false)

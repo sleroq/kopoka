@@ -128,11 +128,11 @@ func TestInlineTelegramFlow(t *testing.T) {
 				From: &tgbotapi.User{ID: 1}, ID: "query", Query: "Artist https://x.com/user/status/1?tracking=1 shared post",
 			}
 			handleInlineQuery(bot, db, query, testPreviews(t, db, bot))
-			if strings.Join(calls, ",") != "answer" || len(answer) != 8 || answer[7]["id"] != "post:text" {
+			if strings.Join(calls, ",") != "answer" || len(answer) != 7 || answer[6]["id"] != "post:text" {
 				t.Fatalf("calls: %v, answer: %#v", calls, answer)
 			}
 			checkInlineAnswer(t, answer[0])
-			if answer[1]["id"] != inlineMergedResultID || answer[1]["title"] != "Merged" {
+			if answer[1]["id"] != inlineBarsResultID || answer[1]["title"] != "Merged with bars" {
 				t.Fatalf("merged result: %#v", answer[1])
 			}
 			chosen := &tgbotapi.ChosenInlineResult{
@@ -164,7 +164,7 @@ func checkCachedInlineFlow(t *testing.T, bot *tgbotapi.BotAPI, db *sql.DB, query
 	// The same status under another host and user resolves to the cached artwork.
 	query.Query = "https://vxtwitter.com/another/status/1?ref=2"
 	handleInlineQuery(bot, db, query, testPreviews(t, db, bot))
-	if len(*answer) != 8 || (*answer)[7]["id"] != "post:text" || (*answer)[1]["id"] != inlineMergedResultID {
+	if len(*answer) != 7 || (*answer)[6]["id"] != "post:text" || (*answer)[1]["id"] != inlineBarsResultID {
 		t.Fatalf("cached results: %#v", *answer)
 	}
 	cached := (*answer)[0]
@@ -1029,7 +1029,7 @@ func TestXVideoChatAndInline(t *testing.T) {
 			}
 			inlineQuery := &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 1}, Query: link}
 			handleInlineQuery(bot, db, inlineQuery, testPreviews(t, db, bot))
-			if len(answer) != 8 || answer[7]["id"] != "post:text" || answer[0]["type"] != "photo" || answer[0]["photo_url"] != "https://preview.example.com/thumbnail-placeholder-x.jpg" {
+			if len(answer) != 7 || answer[6]["id"] != "post:text" || answer[0]["type"] != "photo" || answer[0]["photo_url"] != "https://preview.example.com/thumbnail-placeholder-x.jpg" {
 				t.Fatalf("cached: %#v", answer)
 			}
 			rich := answer[0]["input_message_content"].(map[string]any)["rich_message"].(map[string]any)

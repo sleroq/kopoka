@@ -266,8 +266,8 @@ func TestMessagePreviewInstant(t *testing.T) {
 		t.Fatal(err)
 	}
 	results := f.query(t, p, bot, "https://x.com/user/status/1")
-	if f.calls.Load() != 0 {
-		t.Fatalf("instant mode fetched upstream %d times", f.calls.Load())
+	if f.calls.Load() != 1 {
+		t.Fatalf("instant mode metadata requests = %d, want 1", f.calls.Load())
 	}
 	if !strings.Contains(fmt.Sprint(previewResult(t, results, inlineResultID)["photo_url"]), "placeholder") {
 		t.Fatalf("instant result: %v", results)
@@ -296,8 +296,8 @@ func TestMessagePreviewCachedPostImage(t *testing.T) {
 	queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})
 	handleChosenInlineResult(bot, nil, p.db, chosen, "@cache", queue, p)
 	assertCachedPreviewEdit(t, f)
-	if f.calls.Load() != 0 {
-		t.Fatalf("cached post image fetched upstream %d times", f.calls.Load())
+	if f.calls.Load() != 1 {
+		t.Fatalf("cached post image metadata requests = %d, want 1", f.calls.Load())
 	}
 }
 
