@@ -1,8 +1,10 @@
 package main
 
 import (
+	"cmp"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"log"
@@ -48,6 +50,7 @@ func xPostAttachments(post *fxRichPost) ([]xMedia, error) {
 			images = append(images, video)
 		}
 	}
+
 	media := make([]xMedia, 0, len(images))
 	for _, image := range images {
 		kind := image.Type
@@ -66,9 +69,26 @@ func xPostAttachments(post *fxRichPost) ([]xMedia, error) {
 		if kind == "photo" {
 			address = xPhotoURL(address)
 		}
-		media = append(media, xMedia{Type: kind, URL: address})
+		item := xMedia{Type: kind, URL: address}
+		if kind == "video" {
+			item.FallbackURLs = image.videoFallbackURLs()
+		}
+		media = append(media, item)
 	}
 	return media, nil
+}
+
+func (image fxImage) videoFallbackURLs() []string {
+	slices.SortStableFunc(image.Formats, func(a, b fxVideoFormat) int { return cmp.Compare(b.Bitrate, a.Bitrate) })
+	seen := map[string]bool{image.URL: true}
+	var urls []string
+	for _, format := range image.Formats {
+		if format.Container == "mp4" && format.URL != "" && !seen[format.URL] {
+			urls = append(urls, format.URL)
+			seen[format.URL] = true
+		}
+	}
+	return urls
 }
 
 type cachedPostMedia struct {
@@ -85,7 +105,7 @@ func inputPostMedia(item xMedia) any {
 func cachePostMedia(bot *tgbotapi.BotAPI, cacheChat string, media []xMedia) ([]cachedPostMedia, error) {
 	cached := make([]cachedPostMedia, 0, len(media))
 	for _, item := range media {
-		id, err := cacheInlineMedia(bot, cacheChat, inputPostMedia(item))
+		id, err := cachePostMediaItem(bot, cacheChat, item, inputPostMedia(item))
 		if err != nil {
 			return nil, err
 		}
@@ -111,8 +131,22 @@ func cacheNormalPostMedia(bot *tgbotapi.BotAPI, cacheChat string, media []xMedia
 			first = merged[0]
 		}
 	}
-	id, err := cacheInlineMedia(bot, cacheChat, first)
+	id, err := cachePostMediaItem(bot, cacheChat, media[0], first)
 	return cachedPostMedia{kind: media[0].Type, id: id}, err
+}
+
+func cachePostMediaItem(bot *tgbotapi.BotAPI, cacheChat string, item xMedia, input any) (string, error) {
+	id, err := cacheInlineMedia(bot, cacheChat, input)
+	for _, address := range item.FallbackURLs {
+		var telegramErr *tgbotapi.Error
+		if item.Type != "video" || !errors.As(err, &telegramErr) || telegramErr.Code != 400 ||
+			!strings.Contains(telegramErr.Message, "failed to get HTTP URL content") {
+			break
+		}
+		item.URL = address
+		id, err = cacheInlineMedia(bot, cacheChat, inputPostMedia(item))
+	}
+	return id, err
 }
 
 func richPostMedia(markup *strings.Builder, media []cachedPostMedia, offset int) {

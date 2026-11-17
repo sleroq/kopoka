@@ -36,8 +36,9 @@ var xLinkHosts = map[string]bool{
 }
 
 type xMedia struct {
-	Type string `json:"type"`
-	URL  string `json:"url"`
+	Type         string   `json:"type"`
+	URL          string   `json:"url"`
+	FallbackURLs []string `json:"-"`
 }
 
 type xPost struct {

@@ -80,10 +80,17 @@ type renderRequest struct {
 	Images     map[string][]byte `json:"images,omitempty"`
 }
 
+type fxVideoFormat struct {
+	URL       string `json:"url"`
+	Container string `json:"container"`
+	Bitrate   int    `json:"bitrate"`
+}
+
 type fxImage struct {
-	URL          string `json:"url"`
-	ThumbnailURL string `json:"thumbnail_url"`
-	Type         string `json:"type"`
+	URL          string          `json:"url"`
+	ThumbnailURL string          `json:"thumbnail_url"`
+	Type         string          `json:"type"`
+	Formats      []fxVideoFormat `json:"formats"`
 }
 type fxRichPost struct {
 	ID       string `json:"id"`

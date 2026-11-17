@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -19,13 +20,14 @@ import (
 )
 
 type postTextServer struct {
-	t       *testing.T
-	mu      sync.Mutex
-	results []map[string]any
-	edits   []url.Values
-	uploads []string
-	paths   []string
-	message url.Values
+	t            *testing.T
+	mu           sync.Mutex
+	results      []map[string]any
+	edits        []url.Values
+	uploads      []string
+	uploadErrors map[string]string
+	paths        []string
+	message      url.Values
 }
 
 func (s *postTextServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -105,6 +107,15 @@ func (s *postTextServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}`)
+	case "/user/status/12":
+		_, _ = fmt.Fprint(w, `{"code":200,"tweet":{"text":"Video","author":{"name":"Author","screen_name":"user"},
+			"media":{"all":[{"type":"video","url":"https://media.example/original.mp4","formats":[
+				{"url":"https://media.example/low.mp4","container":"mp4","bitrate":256000},
+				{"url":"https://media.example/original.mp4","container":"mp4","bitrate":3000000},
+				{"url":"https://media.example/stream.m3u8","container":"m3u8","bitrate":2000000},
+				{"url":"https://media.example/mid.mp4","container":"mp4","bitrate":832000},
+				{"url":"https://media.example/mid.mp4","container":"mp4","bitrate":832000}
+			]}]}}}`)
 	case "/i/status/99":
 		http.Error(w, "unavailable", http.StatusNotFound)
 	default:
@@ -120,6 +131,7 @@ func (s *postTextServer) telegram(w http.ResponseWriter, r *http.Request) {
 		if err := json.Unmarshal([]byte(r.FormValue("results")), &s.results); err != nil {
 			s.t.Error(err)
 		}
+
 		_, _ = fmt.Fprint(w, `{"ok":true,"result":true}`)
 	case strings.HasSuffix(r.URL.Path, "/sendPhoto"), strings.HasSuffix(r.URL.Path, "/sendVideo"):
 		kind, field := "photo", "photo"
@@ -127,6 +139,10 @@ func (s *postTextServer) telegram(w http.ResponseWriter, r *http.Request) {
 			kind, field = "video", "video"
 		}
 		s.uploads = append(s.uploads, r.FormValue(field))
+		if message := s.uploadErrors[r.FormValue(field)]; message != "" {
+			_, _ = fmt.Fprintf(w, `{"ok":false,"error_code":400,"description":%q}`, message)
+			return
+		}
 		id := fmt.Sprintf("file%d", len(s.uploads))
 		if kind == "photo" {
 			_, _ = fmt.Fprintf(w, `{"ok":true,"result":{"message_id":42,"photo":[{"file_id":%q}]}}`, id)
@@ -150,6 +166,53 @@ func (s *postTextServer) telegram(w http.ResponseWriter, r *http.Request) {
 	default:
 		s.t.Errorf("unexpected request: %s", r.URL.Path)
 		http.NotFound(w, r)
+	}
+}
+
+func TestXPostInlineVideoURLRetry(t *testing.T) {
+	for _, rich := range []bool{false, true} {
+		for _, failure := range []string{"Bad Request: failed to get HTTP URL content", "Bad Request: unrelated"} {
+			t.Run(fmt.Sprintf("rich=%t/%s", rich, failure), func(t *testing.T) {
+				db := testArtworkDB(t)
+				if rich {
+					if err := toggleXPostFormat(db, 1); err != nil {
+						t.Fatal(err)
+					}
+				}
+
+				api := &postTextServer{t: t, uploadErrors: map[string]string{
+					"https://media.example/original.mp4": failure,
+					"https://media.example/mid.mp4":      "Bad Request: failed to get HTTP URL content",
+				}}
+				server := httptest.NewServer(api)
+				defer server.Close()
+				target, _ := url.Parse(server.URL)
+				original := http.DefaultTransport
+				http.DefaultTransport = redirectTransport{target, original}
+				defer func() { http.DefaultTransport = original }()
+				bot, err := tgbotapi.NewBotAPIWithAPIEndpoint("token", server.URL+"/bot%s/%s")
+				if err != nil {
+					t.Fatal(err)
+				}
+				queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})
+				handleChosenInlineResult(bot, nil, db, &tgbotapi.ChosenInlineResult{
+					From: &tgbotapi.User{ID: 1}, ResultID: inlinePostTextID, InlineMessageID: "inline",
+					Query: "https://x.com/user/status/12",
+				}, "@cache", queue, nil)
+				want := []string{"https://media.example/original.mp4"}
+				if strings.Contains(failure, "failed to get HTTP URL content") {
+					want = append(want, "https://media.example/mid.mp4", "https://media.example/low.mp4")
+					if len(api.edits) != 1 || (!strings.Contains(api.edits[0].Get("media"), "file3") &&
+						!strings.Contains(api.edits[0].Get("rich_message"), "file3")) {
+						t.Fatalf("expected cached video in edit: %#v", api.edits)
+					}
+				}
+
+				if !slices.Equal(api.uploads, want) {
+					t.Fatalf("uploads = %v, want %v", api.uploads, want)
+				}
+			})
+		}
 	}
 }
 
