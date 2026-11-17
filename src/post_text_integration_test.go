@@ -55,6 +55,9 @@ func (s *postTextServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.serveLimitFixture(w, r.URL.Path) {
+		return
+	}
 	switch r.URL.Path {
 	case "/main.jpg", "/main.mp4", "/quote.jpg":
 		data := s.fixtures[r.URL.Path]
@@ -83,18 +86,7 @@ func (s *postTextServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}`)
 	case "/i/status/4", "/i/status/3", "/i/status/2":
-		id := r.URL.Path[len(r.URL.Path)-1:]
-		parent := map[string]string{"4": "3", "3": "2", "2": "1"}[id]
-		s.paths = append(s.paths, r.URL.Path)
-		_, _ = fmt.Fprintf(w, `{
-			"code": 200,
-			"tweet": {
-				"text": "Parent %s",
-				"author": {"name": "Author %s", "screen_name": "parent%s"},
-				"replying_to_status": "%s",
-				"media": {"photos": [{"url": "https://media.example/parent.jpg"}]}
-			}
-		}`, id, id, id, parent)
+		s.serveReplyFixture(w, r.URL.Path)
 	case "/user/status/6":
 		_, _ = fmt.Fprint(w, `{"code":200,"tweet":{"text":"Text only","author":{"name":"User","screen_name":"user"}}}`)
 	case "/user/status/7":
@@ -143,11 +135,71 @@ func (s *postTextServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				{"url":"https://media.example/mid.mp4","container":"mp4","bitrate":832000},
 				{"url":"https://media.example/mid.mp4","container":"mp4","bitrate":832000}
 			]}]}}}`)
+
 	case "/i/status/99":
 		http.Error(w, "unavailable", http.StatusNotFound)
 	default:
 		s.telegram(w, r)
 	}
+}
+
+func (s *postTextServer) serveReplyFixture(w http.ResponseWriter, path string) {
+	id := path[len(path)-1:]
+	quote := ""
+	if id == "4" {
+		quote = `, "quote": {
+			"id": "44", "author": {"name": "Parent quote", "screen_name": "pq"},
+			"text": "Hidden parent quote",
+			"media": {"photos": [{"url": "https://media.example/parent-quote.jpg"}]}
+		}`
+	}
+	parent := map[string]string{"4": "3", "3": "2", "2": "1"}[id]
+	s.paths = append(s.paths, path)
+	_, _ = fmt.Fprintf(w, `{
+		"code": 200,
+		"tweet": {
+			"text": "Parent %s",
+			"author": {"name": "Author %s", "screen_name": "parent%s"},
+			"replying_to_status": "%s",
+			"media": {"photos": [{"url": "https://media.example/parent.jpg"}]}%s
+		}
+	}`, id, id, id, parent, quote)
+}
+
+func (s *postTextServer) serveLimitFixture(w http.ResponseWriter, path string) bool {
+	switch path {
+	case "/user/status/13", "/user/status/14":
+		id := strings.TrimPrefix(path, "/user/status/")
+		_, _ = fmt.Fprintf(w, `{
+			"code": 200,
+			"tweet": {"text": "Focus", "author": {"name": "Focus", "screen_name": "user"},
+				"replying_to_status": "%s"}
+		}`, id)
+	case "/i/status/13":
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "tweet": map[string]any{
+			"author": map[string]string{"name": "Parent", "screen_name": "parent"},
+			"quote": map[string]any{
+				"author": map[string]string{"name": "Parent quote", "screen_name": "pq"},
+				"text":   strings.Repeat("z", 40000),
+			},
+		}})
+	case "/i/status/14":
+		s.paths = append(s.paths, path)
+		photos := make([]map[string]string, 51)
+		for i := range photos {
+			photos[i] = map[string]string{"url": "https://media.example/parent-quote.jpg"}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "tweet": map[string]any{
+			"author": map[string]string{"name": "Parent", "screen_name": "parent"},
+			"quote": map[string]any{
+				"author": map[string]string{"name": "Quote", "screen_name": "q"},
+				"media":  map[string]any{"photos": photos},
+			},
+		}})
+	default:
+		return false
+	}
+	return true
 }
 
 func (s *postTextServer) telegram(w http.ResponseWriter, r *http.Request) {
@@ -317,6 +369,23 @@ func TestXPostInlineFormats(t *testing.T) {
 		image.Width != 384 || image.Height != 384 || bytes.Equal(response.Body.Bytes(), previews.placeholders[false]) {
 		t.Fatalf("post icon: status %d, image %+v, error %v", response.Code, image, err)
 	}
+	previews.client = &http.Client{}
+	previewLink, _ := url.Parse(link)
+	blocks, err := previews.postTextPreviewBlocks(previewLink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var previewText []string
+	for _, block := range blocks {
+		previewText = append(previewText, block.Text)
+	}
+	visible := strings.Join(previewText, "|")
+	if !strings.Contains(visible, "Author 4") || !strings.Contains(visible, "Quoted") ||
+		!strings.Contains(visible, "Main <text>") || strings.Contains(visible, "Parent 4") ||
+		strings.Contains(visible, "Quoted text") || strings.Contains(visible, "Parent quote") {
+		t.Fatalf("collapsed preview: %#v", blocks)
+	}
+	api.paths = nil
 	choose := func(id int64, link string) url.Values {
 		t.Helper()
 		before := len(api.edits)
@@ -330,6 +399,16 @@ func TestXPostInlineFormats(t *testing.T) {
 	}
 
 	testXPostRichFormat(t, api, choose, link)
+	capLink, _ := url.Parse("https://x.com/user/status/14")
+	before := len(api.uploads)
+	chosen := &tgbotapi.ChosenInlineResult{
+		From: &tgbotapi.User{ID: 1}, InlineMessageID: "inline",
+	}
+	err = editInlinePostText(bot, db, chosen, "@cache", capLink)
+	if err == nil || api.paths[len(api.paths)-1] != "/i/status/14" || len(api.uploads) != before {
+		t.Fatalf("attachment cap: error %v, uploads %v, paths %v", err, api.uploads[before:], api.paths)
+	}
+
 	for _, user := range []int64{2, 3} {
 		edit := choose(user, "https://x.com/user/status/6")
 		if !strings.Contains(edit.Get("rich_message"), "Text only") || strings.Contains(edit.Get("rich_message"), "@user") {
@@ -359,19 +438,20 @@ func testXPostRichFormat(t *testing.T, api *postTextServer, choose func(int64, s
 			t.Errorf("rich message missing %q: %s", text, richPayload.HTML)
 		}
 	}
-	if strings.Count(richPayload.HTML, "<blockquote expandable>") != 4 ||
-		!strings.Contains(richPayload.HTML, `</blockquote><p><br><b><a href="https://x.com/user/status/5">Main &amp; Co</a></b>:</p><p>Main &lt;text&gt; &amp; 50% \%</p><tg-slideshow>`) ||
-		strings.Contains(richPayload.HTML, " · @") ||
-		!strings.Contains(richPayload.HTML, `</tg-slideshow><blockquote expandable><p>`) ||
+	if strings.Count(richPayload.HTML, "<details><summary>") != 5 ||
+		!strings.Contains(richPayload.HTML, `<details><summary><b><a href="https://x.com/i/status/4">Author 4</a></b></summary><p>Parent 4</p><img src="tg://photo?id=5"/><details><summary><b><a href="https://x.com/pq/status/44">Parent quote</a></b></summary><p>Hidden parent quote</p><img src="tg://photo?id=6"/></details></details>`) ||
+		!strings.Contains(richPayload.HTML, `</details><p><br><b><a href="https://x.com/user/status/5">Main &amp; Co</a></b>:</p>`) ||
+		!strings.Contains(richPayload.HTML, `</tg-slideshow><details><summary>`) ||
 		strings.Index(richPayload.HTML, "Parent 2") > strings.Index(richPayload.HTML, "Parent 3") ||
 		strings.Index(richPayload.HTML, "Parent 3") > strings.Index(richPayload.HTML, "Parent 4") ||
 		strings.Index(richPayload.HTML, "tg://video?id=1") > strings.Index(richPayload.HTML, "Quoted text") ||
 		strings.Index(richPayload.HTML, "Quoted text") > strings.Index(richPayload.HTML, "tg://photo?id=2") {
 		t.Fatalf("rich thread or media order: %s", richPayload.HTML)
 	}
-	if len(richPayload.Media) != 3 || richPayload.Media[0].Media.Type != "photo" || richPayload.Media[1].Media.Type != "video" || richPayload.Media[2].Media.Media != "file3" || strings.Join(api.uploads, ",") != "https://media.example/main.jpg,https://media.example/main.mp4,https://media.example/quote.jpg" {
+	if len(richPayload.Media) != 7 || richPayload.Media[0].Media.Type != "photo" || richPayload.Media[1].Media.Type != "video" || richPayload.Media[6].Media.Media != "file7" || strings.Join(api.uploads, ",") != "https://media.example/main.jpg,https://media.example/main.mp4,https://media.example/quote.jpg,https://media.example/parent.jpg,https://media.example/parent.jpg,https://media.example/parent.jpg,https://media.example/parent-quote.jpg" {
 		t.Fatalf("rich attachments: %#v, uploads %v", richPayload.Media, api.uploads)
 	}
+
 	if strings.Join(api.paths, ",") != "/i/status/4,/i/status/3,/i/status/2" {
 		t.Fatalf("resolved parents: %v", api.paths)
 	}
@@ -385,6 +465,15 @@ func testXPostRichFormat(t *testing.T, api *postTextServer, choose func(int64, s
 	richVisible := html.UnescapeString(regexp.MustCompile(`<[^>]*>`).ReplaceAllString(longPayload.HTML, ""))
 	if len([]rune(richVisible)) > 32768 || !strings.Contains(richVisible, "…") || !strings.Contains(richVisible, "Quoted") {
 		t.Fatalf("long rich post: %d characters", len([]rune(richVisible)))
+	}
+
+	parentRich := choose(1, "https://x.com/user/status/13")
+	if err := json.Unmarshal([]byte(parentRich.Get("rich_message")), &longPayload); err != nil {
+		t.Fatal(err)
+	}
+	richVisible = html.UnescapeString(regexp.MustCompile(`<[^>]*>`).ReplaceAllString(longPayload.HTML, ""))
+	if len([]rune(richVisible)) > 32768 || !strings.Contains(richVisible, "…") || !strings.Contains(richVisible, "Parent quote") {
+		t.Fatalf("long parent quote: %d characters", len([]rune(richVisible)))
 	}
 
 }

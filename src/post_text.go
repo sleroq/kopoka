@@ -182,6 +182,9 @@ func limitRichPostText(post *fxRichPost, parents []*fxRichPost) map[*fxRichPost]
 	}
 	for _, parent := range slices.Backward(parents) {
 		posts = append(posts, parent)
+		if parent.Quote != nil {
+			posts = append(posts, parent.Quote)
+		}
 	}
 	remaining := 32768 - 64
 	for _, p := range posts {
@@ -208,9 +211,43 @@ func limitRichPostText(post *fxRichPost, parents []*fxRichPost) map[*fxRichPost]
 	return polls
 }
 
-func richXPost(post *fxRichPost, parents []*fxRichPost, more bool, own, quote []cachedPostMedia) map[string]any {
+func richXPost(post *fxRichPost, parents []*fxRichPost, more bool, cached map[*fxRichPost][]cachedPostMedia, attachments []cachedPostMedia) map[string]any {
 	polls := limitRichPostText(post, parents)
+	offsets := make(map[*fxRichPost]int)
+	offset := 0
+	for _, p := range append([]*fxRichPost{post, post.Quote}, parents...) {
+		if p == nil {
+			continue
+		}
+		offsets[p] = offset
+		offset += len(cached[p])
+		if p != post && p.Quote != nil {
+			offsets[p.Quote] = offset
+			offset += len(cached[p.Quote])
+		}
+	}
 	var markup strings.Builder
+	var details func(*fxRichPost, bool)
+	details = func(p *fxRichPost, includeQuote bool) {
+		markup.WriteString("<details><summary>")
+		markup.WriteString(richPostAuthor(p))
+		markup.WriteString("</summary>")
+		if p.Text != "" {
+			markup.WriteString("<p>")
+			markup.WriteString(richPostBody(p.Text))
+			markup.WriteString("</p>")
+		}
+		if polls[p] != "" {
+			markup.WriteString("<p>")
+			markup.WriteString(richPostBody(polls[p]))
+			markup.WriteString("</p>")
+		}
+		richPostMedia(&markup, cached[p], offsets[p])
+		if includeQuote && p.Quote != nil {
+			details(p.Quote, false)
+		}
+		markup.WriteString("</details>")
+	}
 	thread := len(parents) > 0 || more
 	if thread {
 		markup.WriteString(`<p>Reply thread on `)
@@ -224,17 +261,7 @@ func richXPost(post *fxRichPost, parents []*fxRichPost, more bool, own, quote []
 			markup.WriteString("<p>…</p>")
 		}
 		for _, parent := range parents {
-			markup.WriteString("<blockquote expandable>")
-			markup.WriteString(richPostAuthor(parent))
-			if parent.Text != "" {
-				markup.WriteString("<br>")
-				markup.WriteString(richPostBody(parent.Text))
-			}
-			if polls[parent] != "" {
-				markup.WriteString("<br>")
-				markup.WriteString(richPostBody(polls[parent]))
-			}
-			markup.WriteString("</blockquote>")
+			details(parent, true)
 		}
 	}
 	markup.WriteString("<p>")
@@ -257,27 +284,13 @@ func richXPost(post *fxRichPost, parents []*fxRichPost, more bool, own, quote []
 		markup.WriteString(richPostBody(polls[post]))
 		markup.WriteString("</p>")
 	}
-	richPostMedia(&markup, own, 0)
+	richPostMedia(&markup, cached[post], offsets[post])
 	if post.Quote != nil {
-		markup.WriteString("<blockquote expandable><p>")
-		markup.WriteString(richPostAuthor(post.Quote))
-		markup.WriteString("</p>")
-		if post.Quote.Text != "" {
-			markup.WriteString("<p>")
-			markup.WriteString(richPostBody(post.Quote.Text))
-			markup.WriteString("</p>")
-		}
-		if polls[post.Quote] != "" {
-			markup.WriteString("<p>")
-			markup.WriteString(richPostBody(polls[post.Quote]))
-			markup.WriteString("</p>")
-		}
-		richPostMedia(&markup, quote, len(own))
-		markup.WriteString("</blockquote>")
+		details(post.Quote, false)
 	}
 
-	media := make([]any, 0, len(own)+len(quote))
-	for i, item := range slices.Concat(own, quote) {
+	media := make([]any, 0, len(attachments))
+	for i, item := range attachments {
 		media = append(media, map[string]any{
 			"id": strconv.Itoa(i), "media": map[string]any{"type": item.kind, "media": item.id},
 		})
@@ -295,24 +308,40 @@ func editInlinePostText(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.Chose
 		return err
 	}
 
-	own, err := xPostAttachments(post)
-	if err != nil {
-		return err
+	posts := []*fxRichPost{post, post.Quote}
+	for _, parent := range parents {
+		posts = append(posts, parent, parent.Quote)
 	}
-	quote, err := xPostAttachments(post.Quote)
-	if err != nil {
-		return err
+	var attachments []xMedia
+	counts := make(map[*fxRichPost]int)
+	for _, p := range posts {
+		media, err := xPostAttachments(p)
+		if err != nil {
+			return err
+		}
+		if p != nil {
+			counts[p] = len(media)
+		}
+		attachments = append(attachments, media...)
 	}
-	attachments := slices.Concat(own, quote)
 	if len(attachments) > 50 {
 		return fmt.Errorf("post exceeds Telegram's 50 attachment limit")
 	}
-
 	cached, err := cachePostMedia(bot, cacheChat, attachments)
 	if err != nil {
 		return err
 	}
-	payload, err := json.Marshal(richXPost(post, parents, more, cached[:len(own)], cached[len(own):]))
+	byPost := make(map[*fxRichPost][]cachedPostMedia)
+	offset := 0
+	for _, p := range posts {
+		if p == nil {
+			continue
+		}
+		count := counts[p]
+		byPost[p] = cached[offset : offset+count]
+		offset += count
+	}
+	payload, err := json.Marshal(richXPost(post, parents, more, byPost, cached))
 	if err != nil {
 		return err
 	}

@@ -172,22 +172,11 @@ func (t *thumbnails) postTextPreviewBlocks(link *url.URL) ([]previewBlock, error
 			return nil, err
 		}
 	}
-	own, quote := previewPostMedia(post), previewPostMedia(post.Quote)
-	return t.richPostPreviewBlocks(post, parents, more, own, quote)
+	own := previewPostMedia(post)
+	return t.richPostPreviewBlocks(post, parents, more, own)
 }
 
-func previewPostQuote(post *fxRichPost, poll string) previewBlock {
-	text := post.Author.Name
-	if post.Text != "" {
-		text += "\n" + post.Text
-	}
-	if poll != "" {
-		text += "\n" + poll
-	}
-	return previewBlock{Kind: "quote", Text: text}
-}
-
-func previewReplyThread(parents []*fxRichPost, more bool, polls map[*fxRichPost]string) []previewBlock {
+func previewReplyThread(parents []*fxRichPost, more bool) []previewBlock {
 	if len(parents) == 0 && !more {
 		return nil
 	}
@@ -196,14 +185,14 @@ func previewReplyThread(parents []*fxRichPost, more bool, polls map[*fxRichPost]
 		blocks = append(blocks, previewBlock{Kind: "text", Text: "…"})
 	}
 	for _, parent := range parents {
-		blocks = append(blocks, previewPostQuote(parent, polls[parent]))
+		blocks = append(blocks, previewBlock{Kind: "quote", Text: parent.Author.Name})
 	}
 	return blocks
 }
 
-func (t *thumbnails) richPostPreviewBlocks(post *fxRichPost, parents []*fxRichPost, more bool, own, quote []thumbnailMedia) ([]previewBlock, error) {
+func (t *thumbnails) richPostPreviewBlocks(post *fxRichPost, parents []*fxRichPost, more bool, own []thumbnailMedia) ([]previewBlock, error) {
 	polls := limitRichPostText(post, parents)
-	blocks := previewReplyThread(parents, more, polls)
+	blocks := previewReplyThread(parents, more)
 	author := post.Author.Name + " on X"
 	if len(parents) > 0 || more {
 		author = post.Author.Name + ":"
@@ -223,14 +212,7 @@ func (t *thumbnails) richPostPreviewBlocks(post *fxRichPost, parents []*fxRichPo
 		blocks = append(blocks, media)
 	}
 	if post.Quote != nil {
-		blocks = append(blocks, previewPostQuote(post.Quote, polls[post.Quote]))
-	}
-	if len(quote) > 0 {
-		media, err := t.postTextMediaBlock(quote, true)
-		if err != nil {
-			return nil, err
-		}
-		blocks = append(blocks, media)
+		blocks = append(blocks, previewBlock{Kind: "quote", Text: post.Quote.Author.Name})
 	}
 	return blocks, nil
 }
