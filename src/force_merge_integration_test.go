@@ -24,7 +24,7 @@ func TestInlineForceMerge(t *testing.T) {
 
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.URL.Path == "/user/status/42":
+		case r.URL.Path == "/user/status/42" || r.URL.Path == "/user/status/42/en":
 			tweet := map[string]any{
 				"author": map[string]string{"name": "Artist"},
 				"media":  map[string]any{"photos": []map[string]string{{"url": server.URL + "/red"}, {"url": server.URL + "/blue"}}},
@@ -75,8 +75,9 @@ func TestInlineForceMerge(t *testing.T) {
 
 	query := &tgbotapi.InlineQuery{ID: "query", From: &tgbotapi.User{ID: 1}, Query: "https://x.com/user/status/42"}
 	previews := testPreviews(t, db, bot)
+	previews.client = &http.Client{Transport: redirectTransport{target, original}}
 	handleInlineQuery(bot, db, query, previews)
-	if len(answer) != 7 || answer[6]["id"] != "post:text" || answer[0]["id"] != inlineResultID || answer[1]["id"] != inlineBarsResultID {
+	if len(answer) != 8 || answer[7]["id"] != "post:text" || answer[0]["id"] != inlineResultID || answer[1]["id"] != inlineMergedResultID || answer[2]["id"] != inlineBarsResultID {
 		t.Fatalf("uncached: %#v", answer)
 	}
 
@@ -85,7 +86,7 @@ func TestInlineForceMerge(t *testing.T) {
 		t.Fatal(err)
 	}
 	handleInlineQuery(bot, db, query, previews)
-	if len(answer) != 7 || answer[6]["id"] != "post:text" || answer[0]["id"] != "x:42" || answer[1]["id"] != inlineBarsResultID {
+	if len(answer) != 8 || answer[7]["id"] != "post:text" || answer[0]["id"] != "x:42" || answer[1]["id"] != inlineMergedResultID || answer[2]["id"] != inlineBarsResultID {
 		t.Fatalf("cached: %#v", answer)
 	}
 
@@ -104,7 +105,7 @@ func TestInlineForceMerge(t *testing.T) {
 	if err != nil || saved == nil || len(saved.Photos) != 1 || saved.Photos[0] != "merged-file" || !strings.Contains(saved.Caption, "Artist") {
 		t.Fatalf("merged saved: %#v, %v", saved, err)
 	}
-	checkBarsSelection(t, bot, db, chosen, queue, previews, &merged)
+	checkBarsSelection(t, bot, db, chosen, queue, testPreviews(t, db, bot), &merged)
 	previews = testPreviews(t, db, bot)
 	previews.client = &http.Client{Transport: redirectTransport{target, original}}
 	query.Query = ""
