@@ -97,8 +97,11 @@ func artworkActionData(action string, user int64, link *url.URL) string {
 		name := strings.Split(link.Path, "/")[1]
 		encoded := base64.RawURLEncoding.EncodeToString([]byte(name))
 		suffix := ""
-		if index := xPhotoIndex(link); index > 0 {
+		if kind, index := xMediaSelection(link); index > 0 {
 			suffix = ":" + strconv.FormatInt(int64(index), 36)
+			if kind != "photo" {
+				suffix += ":" + kind[:1]
+			}
 		}
 		if len(data)+1+len(encoded)+len(suffix) > 64 {
 			// FxTwitter identifies posts by ID and ignores the screen name.
@@ -113,6 +116,7 @@ func artworkActionLink(parts []string) *url.URL {
 	if len(parts) < 4 || len(parts[3]) < 2 {
 		return nil
 	}
+
 	id, err := strconv.ParseUint(parts[3][1:], 36, 64)
 	if err != nil || id == 0 {
 		return nil
@@ -128,18 +132,29 @@ func artworkActionLink(parts []string) *url.URL {
 			link += "?photo=" + strconv.FormatUint(n, 10)
 		}
 		return inlineLink(link)
-	case parts[3][0] == 'x' && (len(parts) == 5 || len(parts) == 6):
+	case parts[3][0] == 'x' && (len(parts) == 5 || len(parts) == 6 || len(parts) == 7):
 		name, err := base64.RawURLEncoding.DecodeString(parts[4])
 		if err != nil {
 			return nil
 		}
 		link := &url.URL{Scheme: "https", Host: "x.com", Path: fmt.Sprintf("/%s/status/%d", name, id)}
-		if len(parts) == 6 {
+		if len(parts) >= 6 {
 			n, err := strconv.ParseUint(parts[5], 36, 63)
 			if err != nil || n == 0 {
 				return nil
 			}
-			link.Path += "/photo/" + strconv.FormatUint(n, 10)
+			kind := "photo"
+			if len(parts) == 7 {
+				switch parts[6] {
+				case "v":
+					kind = "video"
+				case "m":
+					kind = "media"
+				default:
+					return nil
+				}
+			}
+			link.Path += "/" + kind + "/" + strconv.FormatUint(n, 10)
 		}
 		return inlineLink(link.String())
 	}

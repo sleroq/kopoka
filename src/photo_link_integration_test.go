@@ -283,7 +283,7 @@ func TestInlineNumericPhotoSelection(t *testing.T) {
 	handleChosenInlineResult(bot, nil, db, chosen, "11", queue, nil)
 	chosen.ResultID, chosen.Query = inlineResultID, "https://x.com/artist/status/123 9"
 	handleChosenInlineResult(bot, nil, db, chosen, "11", queue, nil)
-	if !strings.Contains(api.edit, "photo 9 is unavailable") {
+	if !strings.Contains(api.edit, "media 9 is unavailable") {
 		t.Fatal(api.edit)
 	}
 
@@ -292,5 +292,66 @@ func TestInlineNumericPhotoSelection(t *testing.T) {
 	}, previews)
 	if !strings.Contains(api.inlineResults, "Post image") {
 		t.Fatalf("photo link without explicit selection lost post-image results: %s", api.inlineResults)
+	}
+}
+
+func TestSelectedXVideoFlow(t *testing.T) {
+	db := testArtworkDB(t)
+	api, bot := startPhotoLinkServer(t)
+
+	api.fullPost = true
+	user := &tgbotapi.User{ID: 11}
+	message := &tgbotapi.Message{MessageID: 1, Chat: &tgbotapi.Chat{ID: 11}, From: user}
+	if err := togglePhotoLinks(db, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})
+	query := "https://x.com/artist/status/123 1"
+	chosen := &tgbotapi.ChosenInlineResult{From: user, ResultID: inlineResultID, InlineMessageID: "inline", Query: query}
+	handleChosenInlineResult(bot, nil, db, chosen, "11", queue, nil)
+	selected, err := findArtwork(db, "x:123:photo:1")
+	if err != nil || selected == nil || len(selected.Types) != 1 || selected.Types[0] != "video" || !strings.Contains(selected.Caption, "/video/1") || strings.Contains(selected.Caption, "/media/") {
+		t.Fatalf("inline video: %+v %v", selected, err)
+	}
+	if err := saveThumbnail(db, selected.ID, 1, 1, "video-thumb"); err != nil {
+		t.Fatal(err)
+	}
+	previews := testPreviews(t, db, bot)
+	handleInlineQuery(bot, db, &tgbotapi.InlineQuery{ID: "q", From: user, Query: query}, previews)
+	if !strings.Contains(api.inlineResults, `"id":"x:123:photo:1"`) || !strings.Contains(api.inlineResults, "video-thumb") {
+		t.Fatal(api.inlineResults)
+	}
+	link := inlineLink("https://x.com/artist/status/123/video/001?ignored=1")
+	if link == nil || link.Path != "/artist/status/123/video/1" {
+		t.Fatal(link)
+	}
+	if err := processLink(bot, nil, db, message, link, nil); err != nil {
+		t.Fatal(err)
+	}
+	direct, err := findArtwork(db, "x:123:photo:1")
+	if err != nil || direct == nil || len(direct.Types) != 1 || direct.Types[0] != "video" {
+		t.Fatalf("direct: %+v %v", direct, err)
+	}
+	for _, path := range []string{"/video/2", "/photo/1", "/media/9"} {
+		_, err := fetchXPost(inlineLink("https://x.com/artist/status/123"+path), false)
+		if _, ok := errors.AsType[unavailablePhotoError](err); !ok {
+			t.Fatalf("%s: %v", path, err)
+		}
+	}
+	for _, path := range []string{"/video/1", "/media/1", "/media/2"} {
+		link := inlineLink("https://x.com/artist/status/123" + path)
+		data := artworkActionData("original", user.ID, link)
+		restored := artworkActionLink(strings.Split(data, ":"))
+		if restored == nil || restored.Path != link.Path || len(data) > 64 {
+			t.Fatalf("callback %s: %q %v", path, data, restored)
+		}
+	}
+	callback := &tgbotapi.CallbackQuery{
+		ID: "original", From: user, Message: message,
+		Data: artworkActionData("original", user.ID, link),
+	}
+	handleArtworkCallback(bot, nil, db, callback, queue)
+	if len(api.documents) != 1 || api.documents[0] != "https://example.com/video" {
+		t.Fatal(api.documents)
 	}
 }

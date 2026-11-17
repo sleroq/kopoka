@@ -138,3 +138,26 @@ func absColor(a, b uint32) uint32 {
 	}
 	return b - a
 }
+
+func TestSelectedXVideoThumbnail(t *testing.T) {
+	scene := artScene(image.Rect(0, 0, 200, 320), 0)
+	api := &photoThumbnailServer{panels: []image.Image{scene, scene}}
+	upstream := httptest.NewServer(http.HandlerFunc(api.serveHTTP))
+	defer upstream.Close()
+	api.url = upstream.URL
+	previews := testPreviews(t, nil, nil)
+	target, _ := url.Parse(upstream.URL)
+	previews.client = &http.Client{Transport: redirectTransport{target, http.DefaultTransport}}
+	for _, suffix := range []string{"/video/3", "/media/3", "/media/1"} {
+		source, err := previews.xSource(inlineLink("https://x.com/user/status/30" + suffix))
+		if err != nil || len(source.media) != 1 {
+			t.Fatalf("%s: %+v %v", suffix, source, err)
+		}
+		if (suffix != "/media/1") != source.media[0].moving() {
+			t.Fatalf("%s: %+v", suffix, source.media)
+		}
+	}
+	if _, err := previews.xSource(inlineLink("https://x.com/user/status/30/video/1")); err == nil {
+		t.Fatal("video selection accepted photo")
+	}
+}

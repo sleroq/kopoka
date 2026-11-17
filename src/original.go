@@ -113,8 +113,8 @@ func originalFileURLs(app *pixiv.AppPixivAPI, link *url.URL) ([]originalSource, 
 	if err != nil {
 		return nil, false, err
 	}
-	index := xPhotoIndex(link)
-	if err := selectXPhoto(&post, link); err != nil {
+	_, index := xMediaSelection(link)
+	if err := selectXMedia(&post, link); err != nil {
 		return nil, false, err
 	}
 	sources := make([]originalSource, 0, len(post.Media))

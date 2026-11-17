@@ -132,11 +132,20 @@ func handleXLink(link *url.URL, metadata *artwork, merge string) ([]any, error) 
 		return nil, err
 	}
 
-	if err := selectXPhoto(&post, link); err != nil {
+	if err := selectXMedia(&post, link); err != nil {
 		return nil, err
 	}
 	metadata.Author, metadata.Text = post.Author, post.Text
 	link.Host = "fxtwitter.com"
+	captionLink := *link
+	if kind, index := xMediaSelection(link); kind == "media" {
+		actual := "photo"
+		if post.Media[0].Type == "video" || post.Media[0].Type == "gif" {
+			actual = "video"
+		}
+		captionLink.Path = xPostLink(link).Path + "/" + actual + "/" + strconv.Itoa(index)
+	}
+	link = &captionLink
 	if merge != "" && hasMovingMedia(post.Media) {
 		media, err := mergeMotionMedia(post.Media, merge == "bars")
 		if err != nil {
@@ -232,7 +241,7 @@ func fetchArtPhotos(app *pixiv.AppPixivAPI, link *url.URL, metadata *artwork, me
 	if merge != "" {
 		return forceMergePanels(photos, merge == "bars")
 	}
-	if xPhotoIndex(link) > 0 || pixivPhotoIndex(link) > 0 {
+	if _, index := xMediaSelection(link); index > 0 || pixivPhotoIndex(link) > 0 {
 		return photos, nil
 	}
 	return mergeArtPhotos(photos), nil
@@ -246,7 +255,7 @@ func processLink(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, messa
 	valid := inlineLink(link.String())
 	a := artwork{}
 	parts := strings.Split(link.Path, "/")
-	if valid == nil && link.Host != "pixiv.net" && link.Host != "www.pixiv.net" && len(parts) >= 5 && parts[2] == "status" && parts[4] == "photo" {
+	if valid == nil && link.Host != "pixiv.net" && link.Host != "www.pixiv.net" && len(parts) >= 5 && parts[2] == "status" && (parts[4] == "photo" || parts[4] == "video" || parts[4] == "media") {
 		return fmt.Errorf("invalid photo link")
 	}
 	if valid != nil {

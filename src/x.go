@@ -47,25 +47,45 @@ type xPost struct {
 	Media  []xMedia
 }
 
-func xPhotoIndex(link *url.URL) int {
+func xMediaSelection(link *url.URL) (string, int) {
 	parts := strings.Split(link.Path, "/")
-	if len(parts) != 6 || parts[0] != "" || parts[1] == "" || parts[2] != "status" || parts[4] != "photo" {
-		return 0
+	if len(parts) != 6 || parts[0] != "" || parts[1] == "" || parts[2] != "status" || (parts[4] != "photo" && parts[4] != "video" && parts[4] != "media") {
+		return "", 0
 	}
 	id, err := strconv.ParseUint(parts[3], 10, 64)
 	if err != nil || id == 0 {
-		return 0
+		return "", 0
 	}
 	n, err := strconv.Atoi(parts[5])
 	if err != nil || n <= 0 || strings.Trim(parts[5], "0123456789") != "" {
-		return 0
+		return "", 0
 	}
-	return n
+	return parts[4], n
+}
+
+func xPhotoIndex(link *url.URL) int {
+	kind, index := xMediaSelection(link)
+	if kind == "photo" {
+		return index
+	}
+	return 0
+}
+
+func xMediaMatches(selection, kind string) bool {
+	switch selection {
+	case "photo":
+		return kind == "" || kind == "photo"
+	case "video":
+		return kind == "video" || kind == "gif"
+	case "media":
+		return kind == "" || kind == "photo" || kind == "video" || kind == "gif"
+	}
+	return false
 }
 
 func xPostLink(link *url.URL) *url.URL {
 	copy := *link
-	if xPhotoIndex(link) > 0 {
+	if _, index := xMediaSelection(link); index > 0 {
 		copy.Path = strings.Join(strings.Split(link.Path, "/")[:4], "/")
 		copy.RawPath = ""
 	}
@@ -74,17 +94,26 @@ func xPostLink(link *url.URL) *url.URL {
 
 var errXPostNotFound = errors.New("post not found (404)")
 
-type unavailablePhotoError struct{ index int }
+type unavailablePhotoError struct {
+	index int
+	kind  string
+}
 
-func (e unavailablePhotoError) Error() string { return fmt.Sprintf("photo %d is unavailable", e.index) }
+func (e unavailablePhotoError) Error() string {
+	kind := e.kind
+	if kind == "" {
+		kind = "photo"
+	}
+	return fmt.Sprintf("%s %d is unavailable", kind, e.index)
+}
 
-func selectXPhoto(post *xPost, link *url.URL) error {
-	index := xPhotoIndex(link)
+func selectXMedia(post *xPost, link *url.URL) error {
+	kind, index := xMediaSelection(link)
 	if index == 0 {
 		return nil
 	}
-	if index > len(post.Media) || (post.Media[index-1].Type != "" && post.Media[index-1].Type != "photo") || post.Media[index-1].URL == "" {
-		return unavailablePhotoError{index}
+	if index > len(post.Media) || !xMediaMatches(kind, post.Media[index-1].Type) || post.Media[index-1].URL == "" {
+		return unavailablePhotoError{index: index, kind: kind}
 	}
 	post.Media = post.Media[index-1 : index]
 	return nil
@@ -233,8 +262,8 @@ func xPhotoURL(rawURL string) string {
 }
 
 func validateXPostForLink(post xPost, provider string, link *url.URL, requireURLs bool) error {
-	if xPhotoIndex(link) > 0 {
-		if err := selectXPhoto(&post, link); err != nil {
+	if _, index := xMediaSelection(link); index > 0 {
+		if err := selectXMedia(&post, link); err != nil {
 			return err
 		}
 	}

@@ -20,7 +20,7 @@ type artwork struct {
 }
 
 func artworkID(link *url.URL) string {
-	index := xPhotoIndex(link)
+	_, index := xMediaSelection(link)
 	parts := strings.Split(xPostLink(link).Path, "/")
 	id, _ := strconv.ParseUint(parts[len(parts)-1], 10, 64)
 	site := "x"

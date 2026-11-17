@@ -37,9 +37,9 @@ func inlineLink(text string) *url.URL {
 		}
 	} else {
 		parts := strings.Split(strings.TrimPrefix(link.Path, "/"), "/")
-		if index := xPhotoIndex(link); index > 0 {
+		if kind, index := xMediaSelection(link); index > 0 {
 			parts = parts[:3]
-			link.Path = "/" + strings.Join(parts, "/") + "/photo/" + strconv.Itoa(index)
+			link.Path = "/" + strings.Join(parts, "/") + "/" + kind + "/" + strconv.Itoa(index)
 			link.RawPath = ""
 		}
 		if len(parts) != 3 || parts[0] == "" || parts[1] != "status" {
@@ -82,7 +82,7 @@ func inlineQuerySelection(query string) (*url.URL, bool) {
 			if n, err := strconv.Atoi(words[i+1]); err == nil && n > 0 {
 				if xLinkHosts[strings.ToLower(link.Host)] {
 					link = xPostLink(link)
-					link.Path += "/photo/" + strconv.Itoa(n)
+					link.Path += "/media/" + strconv.Itoa(n)
 				} else {
 					link.RawQuery = url.Values{"photo": {strconv.Itoa(n)}}.Encode()
 				}

@@ -33,7 +33,7 @@ func selectPixivPhoto(illust *pixiv.Illust, link *url.URL) (int, error) {
 		count = 1
 	}
 	if selected > count {
-		return 0, unavailablePhotoError{selected}
+		return 0, unavailablePhotoError{index: selected}
 	}
 	return selected, nil
 }

@@ -281,7 +281,7 @@ func (t *thumbnails) mergedPhoto(link *url.URL, instant bool) (previewPhoto, boo
 }
 
 func (t *thumbnails) mergedPhotoVariant(link *url.URL, instant, bars bool) (previewPhoto, bool) {
-	if xPhotoIndex(link) > 0 || pixivPhotoIndex(link) > 0 {
+	if _, index := xMediaSelection(link); index > 0 || pixivPhotoIndex(link) > 0 {
 		return previewPhoto{}, false
 	}
 
@@ -796,14 +796,14 @@ func (t *thumbnails) xSource(link *url.URL) (thumbnailSource, error) {
 		return thumbnailSource{}, errNoXMedia
 	}
 	count := len(items)
-	selected := xPhotoIndex(link)
+	kind, selected := xMediaSelection(link)
 	if selected > 0 {
 		if selected > count {
 			return thumbnailSource{}, fmt.Errorf("FxTwitter photo %d out of range", selected)
 		}
 		item := items[selected-1]
-		if item.Type != "" && item.Type != "photo" {
-			return thumbnailSource{}, fmt.Errorf("FxTwitter media %d is not a photo", selected)
+		if !xMediaMatches(kind, item.Type) {
+			return thumbnailSource{}, fmt.Errorf("FxTwitter media %d does not match %s", selected, kind)
 		}
 		items = items[selected-1 : selected]
 	}
