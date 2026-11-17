@@ -183,8 +183,8 @@ cat "$TEST_IMAGE"
 	if got := ids(inlinePostImageResults(db, 1, link, previews, true)); got != "light,dark,light-bars,dark-bars" {
 		t.Fatalf("instant without preparation: %s", got)
 	}
-	if fetches.Load() != 0 {
-		t.Fatal("instant mode fetched post data")
+	if fetches.Load() == 0 {
+		t.Fatal("instant mode did not fetch post media")
 	}
 	if got := ids(inlinePostImageResults(db, 1, link, previews, false)); got != "light,dark" {
 		t.Fatalf("carousel: %s", got)

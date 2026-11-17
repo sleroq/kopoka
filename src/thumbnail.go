@@ -48,6 +48,7 @@ type thumbnailWork struct {
 	photoCount    int
 	moving        bool
 	sourceOK      bool
+	sourceErr     error
 	caching       map[int]bool
 	data          []byte
 	large         []byte
@@ -474,6 +475,7 @@ func (t *thumbnails) start(link *url.URL) *thumbnailWork {
 				done: make(chan struct{}), sourceDone: make(chan struct{}), forcedDone: make(chan struct{}), barsDone: make(chan struct{}),
 				err: fmt.Errorf("thumbnail service busy"),
 			}
+			w.sourceErr = w.err
 			w.forced.err = w.err
 			w.bars.err = w.err
 			w.caching = make(map[int]bool)
@@ -495,6 +497,7 @@ func (t *thumbnails) start(link *url.URL) *thumbnailWork {
 		t.workers <- struct{}{}
 		source, err := t.source(link)
 		w.sourceOK = err == nil
+		w.sourceErr = err
 		w.photoCount = len(source.media)
 		for _, item := range source.media {
 			w.moving = w.moving || item.moving()
@@ -777,6 +780,7 @@ func (t *thumbnails) xSource(link *url.URL) (thumbnailSource, error) {
 	type fxMedia struct {
 		All    []thumbnailMedia `json:"all"`
 		Photos []thumbnailMedia `json:"photos"`
+		Videos []thumbnailMedia `json:"videos"`
 	}
 	var response struct {
 		Code  int `json:"code"`
@@ -797,14 +801,23 @@ func (t *thumbnails) xSource(link *url.URL) (thumbnailSource, error) {
 		return thumbnailSource{}, fmt.Errorf("FxTwitter API error %d", response.Code)
 	}
 
+	for _, videos := range [][]thumbnailMedia{response.Tweet.Media.Videos, response.Tweet.Quote.Media.Videos} {
+		for i := range videos {
+			if videos[i].Type == "" {
+				videos[i].Type = "video"
+			}
+		}
+	}
 	items := response.Tweet.Media.All
-	if items == nil {
-		items = response.Tweet.Media.Photos
+	if len(items) == 0 {
+		items = append(items, response.Tweet.Media.Photos...)
+		items = append(items, response.Tweet.Media.Videos...)
 	}
 	if len(items) == 0 {
 		items = response.Tweet.Quote.Media.All
-		if items == nil {
-			items = response.Tweet.Quote.Media.Photos
+		if len(items) == 0 {
+			items = append(items, response.Tweet.Quote.Media.Photos...)
+			items = append(items, response.Tweet.Quote.Media.Videos...)
 		}
 	}
 	if len(items) == 0 {

@@ -88,6 +88,18 @@ func TestMotionViewsIntegration(t *testing.T) {
 					t.Fatalf("instant=%v: missing merged with bars result", instant)
 				}
 			}
+			selected, _ := url.Parse("https://fxtwitter.com/user/status/42/video/1")
+			for _, instant := range []bool{true, false} {
+				results := inlinePostImageResults(db, 1, selected, previews, instant)
+				if len(results) != 2 {
+					t.Fatalf("instant=%v: post image results %v", instant, results)
+				}
+				for _, result := range results {
+					if id := result.(map[string]any)["id"].(string); !strings.Contains(id, "-bars:") {
+						t.Fatalf("instant=%v: unexpected post image %s", instant, id)
+					}
+				}
+			}
 			result := postImageResult(db, link, "light", defaultTimezone, defaultTranslationSettings(), previews, nil)
 			if result["type"] != "photo" || result["id"] != postImageID(link, "light")+":cached" || result["input_message_content"].(map[string]any)["message_text"] != "Loading post image…" {
 				t.Fatalf("inline result %v", result)
@@ -172,6 +184,8 @@ func motionViewHandler(t *testing.T, kind string, server **httptest.Server, file
 			*uploads = append(*uploads, typ)
 			response := `{"ok":true,"result":{"message_id":1,%q:{"file_id":"card","width":32,"height":32,"duration":1}}}`
 			_, _ = fmt.Fprintf(w, response, typ)
+		case strings.HasSuffix(r.URL.Path, "/sendPhoto"):
+			_, _ = fmt.Fprint(w, `{"ok":true,"result":{"message_id":1,"photo":[{"file_id":"preview","width":32,"height":32}]}}`)
 		case strings.HasSuffix(r.URL.Path, "/deleteMessage"):
 			_, _ = fmt.Fprint(w, `{"ok":true,"result":true}`)
 		case strings.HasSuffix(r.URL.Path, "/editMessageMedia"):

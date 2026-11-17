@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"image/jpeg"
@@ -503,6 +504,7 @@ func inlinePostImageResults(db *sql.DB, user int64, link *url.URL, previews *thu
 		return nil
 	}
 
+	metadata := previews.start(xPostLink(link))
 	var work *postImagePreviewWork
 	var barsAvailable chan bool
 	if !instant {
@@ -520,10 +522,16 @@ func inlinePostImageResults(db *sql.DB, user int64, link *url.URL, previews *thu
 
 	showBars := barsAvailable == nil || <-barsAvailable
 	duplicateBars := previews.duplicatePostImageBars(link, zone, translation, work)
+	onlyBars := true
+	select {
+	case <-metadata.sourceDone:
+		onlyBars = metadata.moving || !metadata.sourceOK && !errors.Is(metadata.sourceErr, errNoXMedia)
+	case <-time.After(8 * time.Second):
+	}
 	var results []any
 	for i, result := range postImages {
 		image := <-result
-		if i < 2 || showBars && !duplicateBars {
+		if i < 2 && !onlyBars || i >= 2 && (onlyBars || showBars && !duplicateBars) {
 			results = append(results, image)
 		}
 	}
