@@ -538,7 +538,8 @@ func (t *thumbnails) start(link *url.URL) *thumbnailWork {
 		}
 		t.mu.Lock()
 		w.err, w.finished = err, time.Now()
-		if err != nil {
+		// A text-only post is a valid result. Only failed work needs a retry.
+		if err != nil && !errors.Is(err, errNoXMedia) {
 			delete(t.work, key)
 		}
 		close(w.done)
