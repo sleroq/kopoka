@@ -145,9 +145,9 @@ func (s *thumbnailTestServer) serveHTTP(w http.ResponseWriter, r *http.Request) 
 			map[string]any{"type": "video", "url": s.server.URL + "/video.mp4", "thumbnail_url": s.server.URL + "/cover.png"},
 			map[string]any{"type": "photo", "url": s.server.URL + "/cover.png"},
 		}}}})
-	case r.URL.Path == "/user/status/2":
+	case r.URL.Path == "/user/status/2", r.URL.Path == "/user/status/4":
 		s.upstream.Add(1)
-		if s.failures.Add(1) == 1 {
+		if r.URL.Path == "/user/status/2" && s.failures.Add(1) == 1 {
 			http.Error(w, "unavailable", http.StatusServiceUnavailable)
 			return
 		}
@@ -255,7 +255,6 @@ func TestInlineThumbnailFlow(t *testing.T) {
 	}
 	checkInvalidArtworkThumbnails(t, db, bot, previews, s.answers)
 	checkCachedSourceFailure(t, db, bot, previews, s.answers, previewServer)
-	s.failures.Store(0)
 	checkThumbnailFailures(t, db, previewServer.URL, "https://x.com/user/status/2", &s.uploads)
 }
 
@@ -374,10 +373,14 @@ func checkInstantThumbnail(t *testing.T, db *sql.DB, bot *tgbotapi.BotAPI, previ
 		t.Fatal(err)
 	}
 	before := upstream.Load()
-	query := &tgbotapi.InlineQuery{ID: "query", From: &tgbotapi.User{ID: 1}, Query: "https://x.com/user/status/2"}
+	// Keep the instant query separate from the source that fails on its first request.
+	query := &tgbotapi.InlineQuery{ID: "query", From: &tgbotapi.User{ID: 1}, Query: "https://x.com/user/status/4"}
 	handleInlineQuery(bot, db, query, previews)
-	if result := (<-answers)[0]; result["photo_url"] != "https://preview.example.com/thumbnail-placeholder-x.jpg" || result["thumbnail_url"] != result["photo_url"] || upstream.Load() != before+1 {
-		t.Fatal("instant inline mode started a preview")
+	if result := (<-answers)[0]; result["photo_url"] != "https://preview.example.com/thumbnail-placeholder-x.jpg" || result["thumbnail_url"] != result["photo_url"] {
+		t.Fatalf("instant inline thumbnail: %#v", result)
+	}
+	if got := upstream.Load() - before; got != 1 {
+		t.Fatalf("instant inline source requests = %d, want 1", got)
 	}
 	for _, source := range []string{"x", "pixiv"} {
 		res, err := http.Get(server.URL + "/thumbnail-placeholder-" + source + ".jpg")
@@ -389,6 +392,7 @@ func checkInstantThumbnail(t *testing.T, db *sql.DB, bot *tgbotapi.BotAPI, previ
 	if upstream.Load() != before+1 {
 		t.Fatal("placeholder contacted an upstream source")
 	}
+	awaitCachedThumbnail(t, db, "x:4", 0)
 }
 
 func checkInvalidArtworkThumbnails(t *testing.T, db *sql.DB, bot *tgbotapi.BotAPI, previews *thumbnails, answers <-chan []map[string]any) {
