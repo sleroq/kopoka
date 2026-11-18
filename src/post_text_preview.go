@@ -12,6 +12,8 @@ import (
 	"time"
 )
 
+const postTextPreviewVersion = 11
+
 type postTextPreviewWork struct {
 	done          chan struct{}
 	thumbnail     []byte
@@ -66,7 +68,7 @@ func (t *thumbnails) postTextPreview(link *url.URL, instant bool) previewPhoto {
 			address.Path += "/post-text-preview"
 			address.RawQuery = url.Values{
 				"url": {xPostLink(link).String()},
-				"v":   {strconv.Itoa(thumbnailRenderVersion)},
+				"v":   {strconv.Itoa(postTextPreviewVersion)},
 			}.Encode()
 			u := address.String()
 			return previewPhoto{photoURL: u + "&size=large", thumbnailURL: u, width: work.width, height: work.height}

@@ -87,6 +87,9 @@ func (f *messagePreviewFixture) serve(w http.ResponseWriter, r *http.Request) {
 				"text":   "A distinctive quotation",
 				"author": map[string]string{"name": "Quoted", "screen_name": "quoted"},
 			}
+		case "6":
+			row := "✦" + strings.Repeat("\u2800", 29) + "⣿⣿⣿"
+			tweet["text"] = strings.Join([]string{row, row, row, row}, " ")
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "tweet": tweet})
 	case r.URL.Path == "/image":
@@ -245,6 +248,44 @@ func TestMessagePreviewVideoAndPostText(t *testing.T) {
 	}
 	for _, id := range []string{"x:2", "x:3"} {
 		awaitCachedThumbnail(t, p.db, id, 0)
+	}
+}
+
+func TestPostTextPreviewBrailleArt(t *testing.T) {
+	f, p, bot := newMessagePreviewFixture(t)
+	result := previewResult(t, f.query(t, p, bot, "https://x.com/user/status/6"), inlinePostTextID)
+	data := servedMessagePreview(t, p, result, "/post-text-preview")
+	img, err := jpeg.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// All four stars must share a line with their dots, with blank cells between.
+	hasInk := func(y, left, right int) bool {
+		for x := left; x < right; x++ {
+			r, g, b, _ := img.At(x, y).RGBA()
+			if min(r, g, b) > 0xc000 {
+				return true
+			}
+		}
+		return false
+	}
+	width := img.Bounds().Dx()
+	rows, previous := 0, -10
+	for y := range img.Bounds().Dy() {
+		if hasInk(y, width/4, 3*width/4) {
+			t.Fatal("Braille blank cells painted as visible glyphs")
+		}
+		if !hasInk(y, 0, width/4) || !hasInk(y, 3*width/4, width) {
+			continue
+		}
+		if y-previous > 8 {
+			rows++
+		}
+		previous = y
+	}
+	if rows != 4 {
+		t.Fatalf("got %d intact Braille rows, want 4", rows)
 	}
 }
 

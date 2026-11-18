@@ -129,7 +129,17 @@ pub fn render(preview: Preview) -> Result<Vec<u8>> {
     for block in preview.blocks {
         let is_media = matches!(&block, Block::Media { .. });
         let node = match block {
-            Block::Text { text: value } => text(limited(&value, &mut budget), "color:#f1f4f6"),
+            Block::Text { text: value } => {
+                let value = limited(&value, &mut budget);
+                // Braille art uses U+2800 as a blank cell. Fit the rows
+                // instead of wrapping them in the middle of the drawing.
+                let css = if value.contains('\u{2800}') {
+                    "color:#f1f4f6;overflow-wrap:normal;text-fit:shrink"
+                } else {
+                    "color:#f1f4f6"
+                };
+                text(value, css)
+            }
             Block::Author { text: value } => text(
                 limited(&value, &mut budget),
                 "color:#75bde9;font-weight:bold",
