@@ -167,6 +167,7 @@ pub fn render(preview: Preview) -> Result<Vec<u8>> {
         include_bytes!("../assets/fonts/NotoSansCJKsc-Regular.otf").as_slice(),
         include_bytes!("../assets/fonts/NotoSansMath-Regular.ttf").as_slice(),
         include_bytes!("../assets/fonts/NotoColorEmoji.ttf").as_slice(),
+        include_bytes!("../assets/fonts/NotoSansSymbols2-Regular.ttf").as_slice(),
     ] {
         fonts
             .register(FontResource::new(bytes))

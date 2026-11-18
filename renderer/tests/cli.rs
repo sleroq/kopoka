@@ -49,6 +49,26 @@ fn height(output: &Output) -> u32 {
 }
 
 #[test]
+fn cli_renders_braille_art_and_preserves_its_spacing() {
+    let output = render_request(json!({
+        "theme": "light",
+        "post": {"author_name": "A", "author_username": "a", "author_avatar_url": "", "text": "✦⠀⠀⣿"}
+    }));
+    height(&output);
+    let image = image::load_from_memory(&output.stdout).unwrap().to_rgb8();
+    // Count bands of ink across each part of the first body line.
+    let bands = |xs: std::ops::Range<u32>| {
+        let has_ink = |y| xs.clone().any(|x| image.get_pixel(x, y)[0] < 128);
+        (160..220)
+            .filter(|&y| has_ink(y) && !has_ink(y - 1))
+            .count()
+    };
+    assert_eq!(bands(48..76), 1, "four-pointed star");
+    assert_eq!(bands(76..120), 0, "blank Braille cells");
+    assert_eq!(bands(120..150), 4, "four rows of Braille dots");
+}
+
+#[test]
 fn cli_highlights_post_mentions_and_links() {
     for theme in ["light", "warm", "dark", "dim"] {
         for body in ["Hello @alice!", "See https://example.com/path?x=1."] {
