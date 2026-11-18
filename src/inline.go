@@ -38,6 +38,10 @@ func inlineLink(text string) *url.URL {
 	if err != nil || (link.Scheme != "https" && link.Scheme != "http") || !supportedLink(link) || link.User != nil {
 		return nil
 	}
+	if path, ok := strings.CutSuffix(link.Path, "/"); ok {
+		link.Path = path
+		link.RawPath = ""
+	}
 
 	if link.Host == "pixiv.net" || link.Host == "www.pixiv.net" {
 		if strings.HasPrefix(link.Path, "/en/artworks/") {

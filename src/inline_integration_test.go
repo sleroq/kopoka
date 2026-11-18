@@ -151,7 +151,7 @@ func TestInlineTelegramFlow(t *testing.T) {
 				t.Fatal(err)
 			}
 			query := &tgbotapi.InlineQuery{
-				From: &tgbotapi.User{ID: 1}, ID: "query", Query: "Artist https://x.com/user/status/1?tracking=1 shared post",
+				From: &tgbotapi.User{ID: 1}, ID: "query", Query: "Artist https://x.com/user/status/1/?tracking=1 shared post",
 			}
 			previewBot, err := tgbotapi.NewBotAPIWithAPIEndpoint("token", source.URL+"/bot%s/%s")
 			if err != nil {
@@ -442,7 +442,7 @@ func TestInlinePixivThumbnail(t *testing.T) {
 	}
 	previews.client = &http.Client{Transport: base}
 	handleInlineQuery(bot, db, &tgbotapi.InlineQuery{
-		ID: "query", From: &tgbotapi.User{ID: 1}, Query: "Artwork by Artist\nhttps://www.pixiv.net/artworks/82775556?ref=1 shared",
+		ID: "query", From: &tgbotapi.User{ID: 1}, Query: "Artwork by Artist\nhttps://www.pixiv.net/en/artworks/82775556/?ref=1 shared",
 	}, previews)
 	awaitCachedThumbnail(t, db, "pixiv:82775556", 0)
 }

@@ -240,7 +240,7 @@ func saveSelectedPhoto(t *testing.T, db *sql.DB, bot *tgbotapi.BotAPI, message *
 	}
 
 	chosen := &tgbotapi.ChosenInlineResult{From: &tgbotapi.User{ID: 11},
-		Query: "https://x.com/artist/status/123/photo/2", InlineMessageID: "inline"}
+		Query: "https://x.com/artist/status/123/photo/2/", InlineMessageID: "inline"}
 	if err := editInlineArtwork(bot, nil, db, chosen, "11", nil); err != nil {
 		t.Fatal(err)
 	}
