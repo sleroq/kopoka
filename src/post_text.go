@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"log"
 	"math"
 	"net/http"
 	"net/url"
@@ -102,11 +103,11 @@ func inputPostMedia(item xMedia) any {
 	return tgbotapi.NewInputMediaPhoto(tgbotapi.FileURL(item.URL))
 }
 
-func cachePostMedia(bot *tgbotapi.BotAPI, cacheChat string, media []xMedia) ([]cachedPostMedia, error) {
+func cachePostMedia(bot *tgbotapi.BotAPI, cacheChat string, media []xMedia, r *inlineRetry) ([]cachedPostMedia, error) {
 	cached := make([]cachedPostMedia, 0, len(media))
 	for _, item := range media {
 		input := inputPostMedia(item)
-		id, err := cachePostMediaItem(bot, cacheChat, item, input)
+		id, err := cachePostMediaItem(bot, cacheChat, item, input, r)
 		if err != nil {
 			return nil, err
 		}
@@ -115,22 +116,22 @@ func cachePostMedia(bot *tgbotapi.BotAPI, cacheChat string, media []xMedia) ([]c
 	return cached, nil
 }
 
-func cachePostMediaItem(bot *tgbotapi.BotAPI, cacheChat string, item xMedia, input any) (string, error) {
+func cachePostMediaItem(bot *tgbotapi.BotAPI, cacheChat string, item xMedia, input any, r *inlineRetry) (string, error) {
 	if os.Getenv("TELEGRAM_BOT_API_URL") != "" && mediaBase(input).Type == "video" {
-		_, id, err := cacheInlineMediaWithVideoRetry(bot, cacheChat, input, true)
+		_, id, err := cacheInlineMediaWithVideoRetry(bot, cacheChat, input, true, r)
 		return id, err
 	}
-	_, id, err := cacheInlineMediaWithVideoRetry(bot, cacheChat, input, false)
+	_, id, err := cacheInlineMediaWithVideoRetry(bot, cacheChat, input, false, r)
 	for _, address := range item.FallbackURLs {
 		if mediaBase(input).Type != "video" || !telegramURLFailure(err) {
 			break
 		}
 		item.URL = address
 		input = inputPostMedia(item)
-		_, id, err = cacheInlineMediaWithVideoRetry(bot, cacheChat, input, false)
+		_, id, err = cacheInlineMediaWithVideoRetry(bot, cacheChat, input, false, r)
 	}
 	if mediaBase(input).Type == "video" && telegramURLFailure(err) {
-		_, id, err = cacheInlineMediaWithVideoRetry(bot, cacheChat, input, true)
+		_, id, err = cacheInlineMediaWithVideoRetry(bot, cacheChat, input, true, r)
 	}
 	return id, err
 }
@@ -330,12 +331,21 @@ func richXPost(post *fxRichPost, parents []*fxRichPost, more bool, cached map[*f
 	return result
 }
 
-func editInlinePostText(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, cacheChat string, link *url.URL) error {
-	post, parents, more, err := loadXPostThread(&http.Client{Timeout: 10 * time.Second}, link)
+func editInlinePostText(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, cacheChat string, link *url.URL, r *inlineRetry) error {
+	type thread struct {
+		post    *fxRichPost
+		parents []*fxRichPost
+		more    bool
+	}
+	result, err := retryInline(r, func() (thread, error) {
+		post, parents, more, err := loadXPostThread(&http.Client{Timeout: 10 * time.Second}, link)
+		return thread{post, parents, more}, err
+	})
 	if err != nil {
 		return err
 	}
 
+	post, parents, more := result.post, result.parents, result.more
 	posts := []*fxRichPost{post, post.Quote}
 	for _, parent := range parents {
 		posts = append(posts, parent, parent.Quote)
@@ -355,7 +365,7 @@ func editInlinePostText(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.Chose
 	if len(attachments) > 50 {
 		return fmt.Errorf("post exceeds Telegram's 50 attachment limit")
 	}
-	cached, err := cachePostMedia(bot, cacheChat, attachments)
+	cached, err := cachePostMedia(bot, cacheChat, attachments, r)
 	if err != nil {
 		return err
 	}
@@ -379,10 +389,13 @@ func editInlinePostText(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.Chose
 		"rich_message":      string(payload),
 	}
 
-	if _, err := retryTelegram(func() (*tgbotapi.APIResponse, error) { return bot.MakeRequest("editMessageText", params) }); err != nil {
+	if err := editInlineMessage(bot, r, "editMessageText", params); err != nil {
 		return fmt.Errorf("editing inline post: %w", err)
 	}
-	return selectArtwork(db, chosen.From.ID, artworkID(xPostLink(link)))
+	if err := selectArtwork(db, chosen.From.ID, artworkID(xPostLink(link))); err != nil {
+		log.Printf("recording inline post text selection: %v", err)
+	}
+	return nil
 }
 
 func xPostLinkHTML(post *fxRichPost, label string) string {

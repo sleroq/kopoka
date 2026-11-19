@@ -278,6 +278,9 @@ func fetchRichPost(client *http.Client, link *url.URL, target string) (*fxRichPo
 		return nil, errXPostNotFound
 	}
 	if response.Code != http.StatusOK || response.Tweet == nil {
+		if response.Code >= 100 && response.Code <= 599 && response.Code != http.StatusOK {
+			return nil, upstreamHTTPError{operation: "FxTwitter API", status: response.Code}
+		}
 		return nil, fmt.Errorf("FxTwitter API error %d: %s", response.Code, response.Message)
 	}
 	return response.Tweet, nil
@@ -401,12 +404,16 @@ func loadPostAssets(client *http.Client, p renderPost, images map[string][]byte,
 		if err != nil {
 			return fmt.Errorf("fetching image: %w", err)
 		}
+		if res.StatusCode != http.StatusOK {
+			_ = res.Body.Close()
+			return upstreamHTTPError{operation: "fetching image", status: res.StatusCode}
+		}
 		data, readErr := io.ReadAll(io.LimitReader(res.Body, 10_000_001))
 		_ = res.Body.Close()
 		if readErr != nil {
 			return readErr
 		}
-		if res.StatusCode != http.StatusOK || len(data) == 0 || len(data) > 10_000_000 {
+		if len(data) == 0 || len(data) > 10_000_000 {
 			return fmt.Errorf("fetching image %s: HTTP %s, %d bytes", u, res.Status, len(data))
 		}
 		images[u] = data
@@ -439,6 +446,9 @@ func runRenderer(request any) ([]byte, error) {
 	cmd.Stdout = &out
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
 		return nil, fmt.Errorf("rendering image: %w: %s", err, stderr.String())
 	}
 	return out.Bytes(), nil
@@ -631,7 +641,7 @@ func sendPostImage(bot *tgbotapi.BotAPI, db *sql.DB, message *tgbotapi.Message, 
 	return nil
 }
 
-func editInlinePostImage(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, cacheChat string, link *url.URL, theme string, previews *thumbnails) error {
+func editInlinePostImage(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, cacheChat string, link *url.URL, theme string, previews *thumbnails, r *inlineRetry) error {
 	zone, err := loadUserTimezone(db, chosen.From.ID)
 	if err != nil {
 		return err
@@ -641,19 +651,21 @@ func editInlinePostImage(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.Chos
 		return err
 	}
 
-	media, err := postImageMedia(db, link, theme, zone, translation, previews)
+	media, err := retryInline(r, func() (any, error) {
+		return postImageMedia(db, link, theme, zone, translation, previews)
+	})
 	if err != nil {
 		return err
 	}
 	base := mediaBase(media)
 	file, cached := base.Media.(tgbotapi.FileID)
 	if !cached {
-		_, id, err := cacheInlineMedia(bot, cacheChat, media)
+		_, id, err := cacheInlineMediaWithVideoRetry(bot, cacheChat, media, true, r)
 		if err != nil {
 			return err
 		}
 		if err := savePostImage(db, link, theme, zone, translation, base.Type, id, base.Caption); err != nil {
-			return err
+			log.Printf("saving inline post image: %v", err)
 		}
 		file = tgbotapi.FileID(id)
 	}
@@ -663,15 +675,15 @@ func editInlinePostImage(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.Chos
 	if err != nil {
 		return err
 	}
-	_, err = retryTelegram(func() (*tgbotapi.APIResponse, error) {
-		params := tgbotapi.Params{
-			"inline_message_id": chosen.InlineMessageID, "media": string(payload),
-			"reply_markup": `{"inline_keyboard":[]}`,
-		}
-		return bot.MakeRequest("editMessageMedia", params)
-	})
-	if err != nil {
+	params := tgbotapi.Params{
+		"inline_message_id": chosen.InlineMessageID, "media": string(payload),
+		"reply_markup": `{"inline_keyboard":[]}`,
+	}
+	if err := editInlineMessage(bot, r, "editMessageMedia", params); err != nil {
 		return err
 	}
-	return selectArtwork(db, chosen.From.ID, artworkID(xPostLink(link)))
+	if err := selectArtwork(db, chosen.From.ID, artworkID(xPostLink(link))); err != nil {
+		log.Printf("recording inline post image selection: %v", err)
+	}
+	return nil
 }

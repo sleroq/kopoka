@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"io"
 	"net/http"
 	"path"
@@ -24,7 +23,7 @@ func downloadArtFile(client *http.Client, file tgbotapi.FileURL) (tgbotapi.FileB
 	}
 	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusOK {
-		return tgbotapi.FileBytes{}, fmt.Errorf("downloading art: HTTP %s", res.Status)
+		return tgbotapi.FileBytes{}, upstreamHTTPError{operation: "downloading art", status: res.StatusCode}
 	}
 	data, err := io.ReadAll(res.Body)
 	if err != nil {

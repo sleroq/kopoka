@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -346,6 +347,23 @@ func inlineMergedResult(link *url.URL, previews *thumbnails, instant bool, bars 
 }
 
 func inlineArtworkResults(db *sql.DB, user int64, link *url.URL, previews *thumbnails, explicit bool) []any {
+	results := make(chan []any, 1)
+	go func() { results <- previewArtworkResults(db, user, link, previews, explicit) }()
+	timer := time.NewTimer(inlinePreviewBudget)
+	defer timer.Stop()
+	select {
+	case ready := <-results:
+		return ready
+	case <-timer.C:
+		return inlineArtworkFallback(db, link, previews)
+	}
+}
+
+func inlineArtworkFallback(db *sql.DB, link *url.URL, previews *thumbnails) []any {
+	return []any{inlineArtworkResult(db, link, previews, true)}
+}
+
+func previewArtworkResults(db *sql.DB, user int64, link *url.URL, previews *thumbnails, explicit bool) []any {
 	settings, err := loadInstantInlineSettings(db, user)
 	instant := settings.X
 
@@ -357,8 +375,12 @@ func inlineArtworkResults(db *sql.DB, user int64, link *url.URL, previews *thumb
 		return inlinePreferenceFailure()
 	}
 	if !instant {
-		if failure := inlineSourceFailure(db, link, previews); failure != nil {
-			return []any{failure}
+		if err := inlinePreviewSource(db, link, previews); err != nil {
+			if errors.Is(err, errXPostNotFound) {
+				title, detail := "Post not found (404)", "Check the link and try again."
+				return []any{inlineFeedback("source", title, detail, title+". "+detail+"\n\n"+link.String())}
+			}
+			return inlineArtworkFallback(db, link, previews)
 		}
 	}
 	if explicit {
@@ -399,7 +421,7 @@ func inlineArtworkResults(db *sql.DB, user int64, link *url.URL, previews *thumb
 	return results
 }
 
-func inlineSourceFailure(db *sql.DB, link *url.URL, previews *thumbnails) map[string]any {
+func inlinePreviewSource(db *sql.DB, link *url.URL, previews *thumbnails) error {
 	cached, err := findArtwork(db, artworkID(link))
 	if err != nil {
 		log.Printf("loading cached artwork: %v", err)
@@ -408,20 +430,15 @@ func inlineSourceFailure(db *sql.DB, link *url.URL, previews *thumbnails) map[st
 		return nil
 	}
 	work := previews.warmup(link, 0)
-	title, description := "Could not load post", "Please try again."
 	select {
 	case <-work.sourceDone:
-		if work.sourceErr == nil || errors.Is(work.sourceErr, errNoXMedia) {
+		if errors.Is(work.sourceErr, errNoXMedia) {
 			return nil
 		}
-		if errors.Is(work.sourceErr, errXPostNotFound) {
-			title, description = "Post not found (404)", "Check the link and try again."
-		}
-	case <-time.After(8 * time.Second):
-		title = "Post is taking too long"
+		return work.sourceErr
+	case <-time.After(inlinePreviewBudget):
+		return context.DeadlineExceeded
 	}
-	message := title + ". " + description + "\n\n" + link.String()
-	return inlineFeedback("source", title, description, message)
 }
 
 func inlineQueryResults(db *sql.DB, query *tgbotapi.InlineQuery, previews *thumbnails) ([]any, string) {
@@ -457,6 +474,7 @@ func inlineQueryResults(db *sql.DB, query *tgbotapi.InlineQuery, previews *thumb
 }
 
 func handleInlineQuery(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.InlineQuery, previews *thumbnails) {
+	until := time.Now().Add(inlineAnswerBudget)
 	results, nextOffset := inlineQueryResults(db, query, previews)
 	encoded, err := json.Marshal(results)
 	if err != nil {
@@ -467,7 +485,12 @@ func handleInlineQuery(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.InlineQ
 		"inline_query_id": query.ID, "results": string(encoded), "cache_time": "0",
 		"is_personal": "true", "next_offset": nextOffset,
 	}
-	if _, err := bot.MakeRequest("answerInlineQuery", params); err != nil {
+	ctx, cancel := context.WithDeadline(context.Background(), until)
+	defer cancel()
+	bot = telegramWithContext(bot, ctx)
+	if _, err := retryInline(&inlineRetry{until: until}, func() (*tgbotapi.APIResponse, error) {
+		return bot.MakeRequest("answerInlineQuery", params)
+	}); err != nil {
 		log.Printf("answering inline query: %v", err)
 	}
 }
@@ -512,19 +535,23 @@ func handleChosenInlineResult(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *
 		return
 	}
 	result, err := queue.submit(chosen.From.ID, func() error {
-		if cachedPreview {
-			return editCachedInlineArtwork(bot, db, chosen, cachedID)
-		}
-		if theme != "" {
-			return editInlinePostImage(bot, db, chosen, cacheChat, link, theme, previews)
-		}
-		if chosen.ResultID == inlinePostTextID {
+		retry := newInlineDelivery(bot, chosen.InlineMessageID)
+		ctx, cancel := context.WithDeadline(context.Background(), retry.until)
+		defer cancel()
+		bot := telegramWithContext(bot, ctx)
+		switch {
+		case cachedPreview:
+			return editCachedInlineArtwork(bot, db, chosen, cachedID, retry)
+		case theme != "":
+			return editInlinePostImage(bot, db, chosen, cacheChat, link, theme, previews, retry)
+		case chosen.ResultID == inlinePostTextID:
 			if link == nil || !xLinkHosts[strings.ToLower(link.Host)] {
 				return fmt.Errorf("invalid X post URL")
 			}
-			return editInlinePostText(bot, db, chosen, cacheChat, link)
+			return editInlinePostText(bot, db, chosen, cacheChat, link, retry)
+		default:
+			return editInlineArtwork(bot, app, db, chosen, cacheChat, previews, retry)
 		}
-		return editInlineArtwork(bot, app, db, chosen, cacheChat, previews)
 	})
 	label := "artwork"
 	if chosen.ResultID == inlinePostTextID {
@@ -551,15 +578,16 @@ func handleChosenInlineResult(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *
 			"inline_message_id": chosen.InlineMessageID, "text": failure,
 			"reply_markup": `{"inline_keyboard":[]}`,
 		}
-		if _, editErr := retryTelegram(func() (*tgbotapi.APIResponse, error) {
-			return bot.MakeRequest("editMessageText", params)
-		}); editErr != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		until, _ := ctx.Deadline()
+		if editErr := editInlineMessage(telegramWithContext(bot, ctx), &inlineRetry{until: until}, "editMessageText", params); editErr != nil {
 			log.Printf("editing inline failure message: %v", editErr)
 		}
 	}
 }
 
-func editCachedInlineArtwork(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, id string) error {
+func editCachedInlineArtwork(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, id string, retry *inlineRetry) error {
 	a, err := findArtwork(db, id)
 	if err != nil {
 		return err
@@ -577,16 +605,16 @@ func editCachedInlineArtwork(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.
 		"inline_message_id": chosen.InlineMessageID, "media": string(payload),
 		"reply_markup": `{"inline_keyboard":[]}`,
 	}
-	_, err = retryTelegram(func() (*tgbotapi.APIResponse, error) {
-		return bot.MakeRequest("editMessageMedia", params)
-	})
-	if err != nil {
+	if err := editInlineMessage(bot, retry, "editMessageMedia", params); err != nil {
 		return err
 	}
-	return selectArtwork(db, chosen.From.ID, id)
+	if err := selectArtwork(db, chosen.From.ID, id); err != nil {
+		log.Printf("recording inline selection: %v", err)
+	}
+	return nil
 }
 
-func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, cacheChat string, previews *thumbnails) error {
+func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, cacheChat string, previews *thumbnails, retry *inlineRetry) error {
 	link := inlineQueryLink(chosen.Query)
 	if link == nil {
 		return fmt.Errorf("invalid artwork URL")
@@ -607,7 +635,14 @@ func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB,
 		a.ID += ":merged:bars"
 	}
 	downloading := inlineMediaProgress(bot, chosen.InlineMessageID, "Downloading")
-	photos, err := fetchArtPhotos(app, link, &a, merge, downloading)
+	photos, err := retryInline(retry, func() ([]any, error) {
+		address := *link
+		photos, err := fetchArtPhotos(app, &address, &a, merge, downloading)
+		if err == nil {
+			link = &address
+		}
+		return photos, err
+	})
 	if err != nil {
 		return err
 	}
@@ -617,7 +652,7 @@ func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB,
 			if err != nil {
 				return err
 			}
-			return editInlinePostImage(bot, db, chosen, cacheChat, link, themes.Dark, previews)
+			return editInlinePostImage(bot, db, chosen, cacheChat, link, themes.Dark, previews, retry)
 		}
 		return fmt.Errorf("artwork has no photos")
 	}
@@ -626,7 +661,7 @@ func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB,
 	}
 
 	uploading := inlineMediaProgress(bot, chosen.InlineMessageID, "Uploading")
-	if err := cacheInlineArtworkMedia(bot, cacheChat, photos, &a, uploading); err != nil {
+	if err := cacheInlineArtworkMedia(bot, cacheChat, photos, &a, uploading, retry); err != nil {
 		return err
 	}
 
@@ -649,7 +684,7 @@ func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB,
 	} else {
 		params["rich_message"] = string(encoded)
 	}
-	if _, err := retryTelegram(func() (*tgbotapi.APIResponse, error) { return bot.MakeRequest(method, params) }); err != nil {
+	if err := editInlineMessage(bot, retry, method, params); err != nil {
 		return fmt.Errorf("editing inline artwork: %w", err)
 	}
 
@@ -670,17 +705,13 @@ func inlineMediaProgress(bot *tgbotapi.BotAPI, messageID, phase string) func(don
 		last = time.Now()
 		filled := done * 8 / total
 		label := fmt.Sprintf("%s %s%s %d/%d", phase, strings.Repeat("█", filled), strings.Repeat("░", 8-filled), done, total)
-		params := tgbotapi.Params{
-			"inline_message_id": messageID,
-			"reply_markup":      fmt.Sprintf(`{"inline_keyboard":[[{"text":%q,"disabled":{}}]]}`, label),
-		}
-		if _, err := bot.MakeRequest("editMessageReplyMarkup", params); err != nil {
+		if err := editInlineButton(bot, messageID, label); err != nil {
 			log.Printf("updating inline media progress: %v", err)
 		}
 	}
 }
 
-func cacheInlineArtworkMedia(bot *tgbotapi.BotAPI, chat string, media []any, a *artwork, progress func(done, total int)) error {
+func cacheInlineArtworkMedia(bot *tgbotapi.BotAPI, chat string, media []any, a *artwork, progress func(done, total int), retry *inlineRetry) error {
 	progress(0, len(media))
 	for start := 0; start < len(media); {
 		end := start + 1
@@ -690,14 +721,14 @@ func cacheInlineArtworkMedia(bot *tgbotapi.BotAPI, chat string, media []any, a *
 			}
 		}
 		if end-start == 1 {
-			kind, id, err := cacheInlineMedia(bot, chat, media[start])
+			kind, id, err := cacheInlineMediaWithVideoRetry(bot, chat, media[start], true, retry)
 			if err != nil {
 				return err
 			}
 			a.Photos = append(a.Photos, id)
 			a.Types = append(a.Types, kind)
 		} else {
-			ids, err := cacheInlinePhotoAlbum(bot, chat, media[start:end])
+			ids, err := cacheInlinePhotoAlbum(bot, chat, media[start:end], retry)
 			if err != nil {
 				return err
 			}
@@ -712,14 +743,14 @@ func cacheInlineArtworkMedia(bot *tgbotapi.BotAPI, chat string, media []any, a *
 	return nil
 }
 
-func cacheInlinePhotoAlbum(bot *tgbotapi.BotAPI, chat string, photos []any) ([]string, error) {
+func cacheInlinePhotoAlbum(bot *tgbotapi.BotAPI, chat string, photos []any, retry *inlineRetry) ([]string, error) {
 	chatID, channel, err := inlineCacheTarget(chat)
 	if err != nil {
 		return nil, err
 	}
 	group := tgbotapi.NewMediaGroup(chatID, photos)
 	group.ChannelUsername = channel
-	messages, err := retryTelegram(func() ([]tgbotapi.Message, error) { return bot.SendMediaGroup(group) })
+	messages, err := retryInlineTelegram(retry, func() ([]tgbotapi.Message, error) { return bot.SendMediaGroup(group) })
 	if err != nil {
 		return nil, fmt.Errorf("uploading inline photo album: %w", err)
 	}
@@ -731,7 +762,7 @@ func cacheInlinePhotoAlbum(bot *tgbotapi.BotAPI, chat string, photos []any) ([]s
 	if len(messageIDs) > 0 {
 		encoded, _ := json.Marshal(messageIDs)
 		params := tgbotapi.Params{"chat_id": chat, "message_ids": string(encoded)}
-		if _, err := retryTelegram(func() (*tgbotapi.APIResponse, error) { return bot.MakeRequest("deleteMessages", params) }); err != nil {
+		if _, err := bot.MakeRequest("deleteMessages", params); err != nil {
 			log.Printf("deleting inline cache album: %v", err)
 		}
 	}
@@ -761,10 +792,10 @@ func inlineCacheTarget(chat string) (int64, string, error) {
 }
 
 func cacheInlineMedia(bot *tgbotapi.BotAPI, chat string, item any) (string, string, error) {
-	return cacheInlineMediaWithVideoRetry(bot, chat, item, true)
+	return cacheInlineMediaWithVideoRetry(bot, chat, item, true, nil)
 }
 
-func cacheInlineMediaWithVideoRetry(bot *tgbotapi.BotAPI, chat string, item any, retryVideo bool) (string, string, error) {
+func cacheInlineMediaWithVideoRetry(bot *tgbotapi.BotAPI, chat string, item any, retryVideo bool, retry *inlineRetry) (string, string, error) {
 	chatID, channel, err := inlineCacheTarget(chat)
 	if err != nil {
 		return "", "", err
@@ -788,22 +819,22 @@ func cacheInlineMediaWithVideoRetry(bot *tgbotapi.BotAPI, chat string, item any,
 		config.ChannelUsername = channel
 		return bot.Send(config)
 	}
-	message, err := retryTelegram(send)
+	message, err := retryInlineTelegram(retry, send)
 	if address, ok := base.Media.(tgbotapi.FileURL); retryVideo && ok && base.Type == "video" && telegramURLFailure(err) {
-		file, downloadErr := downloadVideo(string(address))
+		file, downloadErr := retryInline(retry, func() (tgbotapi.FilePath, error) { return downloadVideo(string(address)) })
 		if downloadErr != nil {
 			return "", "", fmt.Errorf("uploading inline media: %w", downloadErr)
 		}
 		defer func() { _ = os.Remove(string(file)) }()
 		base.Media = file
-		message, err = retryTelegram(send)
+		message, err = retryInlineTelegram(retry, send)
 	}
 	if err != nil {
 		return "", "", fmt.Errorf("uploading inline media: %w", err)
 	}
 
 	deletion := tgbotapi.DeleteMessageConfig{ChatID: chatID, ChannelUsername: channel, MessageID: message.MessageID}
-	if _, err := retryTelegram(func() (*tgbotapi.APIResponse, error) { return bot.Request(deletion) }); err != nil {
+	if _, err := bot.Request(deletion); err != nil {
 		log.Printf("deleting inline cache message: %v", err)
 	}
 

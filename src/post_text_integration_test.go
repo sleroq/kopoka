@@ -404,7 +404,7 @@ func TestXPostInlineFormats(t *testing.T) {
 	chosen := &tgbotapi.ChosenInlineResult{
 		From: &tgbotapi.User{ID: 1}, InlineMessageID: "inline",
 	}
-	err = editInlinePostText(bot, db, chosen, "@cache", capLink)
+	err = editInlinePostText(bot, db, chosen, "@cache", capLink, nil)
 	if err == nil || api.paths[len(api.paths)-1] != "/i/status/14" || len(api.uploads) != before {
 		t.Fatalf("attachment cap: error %v, uploads %v, paths %v", err, api.uploads[before:], api.paths)
 	}
@@ -532,7 +532,7 @@ func TestLocalPostTextUploadsOriginalVideo(t *testing.T) {
 				t.Fatal(err)
 			}
 			item := xMedia{Type: "video", URL: source.URL + "/original.mp4", FallbackURLs: []string{source.URL + "/low.mp4"}}
-			id, err := cachePostMediaItem(bot, "42", item, inputPostMedia(item))
+			id, err := cachePostMediaItem(bot, "42", item, inputPostMedia(item), nil)
 			if (err != nil) != uploadFail || (!uploadFail && id != "original-id") || !slices.Equal(sends, []string{item.URL, "upload"}) {
 				t.Fatalf("id=%s error=%v sends=%v", id, err, sends)
 			}

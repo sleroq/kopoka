@@ -241,7 +241,7 @@ func TestPostImageThemeAutomaticFallback(t *testing.T) {
 		From: message.From, ResultID: inlineResultID, InlineMessageID: "inline",
 		Query: "https://x.com/user/status/2",
 	}
-	if err := editInlineArtwork(bot, nil, db, chosen, "@cache", nil); err != nil {
+	if err := editInlineArtwork(bot, nil, db, chosen, "@cache", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if reused != 1 || edits != 1 || uploads != 0 {

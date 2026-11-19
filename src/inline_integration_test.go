@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -82,6 +83,7 @@ func TestInlineTelegramFlow(t *testing.T) {
 			}
 			var calls, progress []string
 			var uploaded int
+			var answerFailed, albumFailed, editFailed bool
 			var answer []map[string]any
 			var edit url.Values
 			var server *httptest.Server
@@ -124,6 +126,11 @@ func TestInlineTelegramFlow(t *testing.T) {
 						t.Errorf("album payload: %v (%v)", media, err)
 					}
 					calls = append(calls, fmt.Sprintf("album%d", len(media)))
+					if count == 12 && uploaded == 10 && !albumFailed {
+						albumFailed = true
+						http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+						return
+					}
 					var messages []map[string]any
 					for range media {
 						uploaded++
@@ -159,10 +166,20 @@ func TestInlineTelegramFlow(t *testing.T) {
 					_ = r.ParseForm()
 					edit = r.Form
 					calls = append(calls, strings.TrimPrefix(r.URL.Path, "/bottoken/"))
+					if count == 12 && !editFailed {
+						editFailed = true
+						http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+						return
+					}
 					_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
 				case strings.HasSuffix(r.URL.Path, "/answerInlineQuery"):
 					_ = r.ParseForm()
 					calls = append(calls, "answer")
+					if count == 12 && !answerFailed {
+						answerFailed = true
+						http.Error(w, "temporarily unavailable", http.StatusBadGateway)
+						return
+					}
 					if r.FormValue("cache_time") != "0" || r.FormValue("inline_query_id") != "query" {
 						t.Error("incorrect answer parameters")
 					}
@@ -198,7 +215,11 @@ func TestInlineTelegramFlow(t *testing.T) {
 			previews.client = &http.Client{Transport: redirectTransport{sourceURL, original}}
 			handleInlineQuery(bot, db, query, previews)
 			awaitCachedThumbnail(t, previewDB, "x:1", 0)
-			if strings.Join(calls, ",") != "answer" || len(answer) != 6 || answer[1]["id"] != "post-image:light:1" || answer[2]["id"] != "post-image:dark:1" || answer[3]["id"] != "post-image:light-bars:1" || answer[4]["id"] != "post-image:dark-bars:1" || answer[5]["id"] != "post:text" {
+			answerCalls := "answer"
+			if count == 12 {
+				answerCalls = "answer,answer"
+			}
+			if strings.Join(calls, ",") != answerCalls || len(answer) != 6 || answer[1]["id"] != "post-image:light:1" || answer[2]["id"] != "post-image:dark:1" || answer[3]["id"] != "post-image:light-bars:1" || answer[4]["id"] != "post-image:dark-bars:1" || answer[5]["id"] != "post:text" {
 				t.Fatalf("calls: %v, answer: %#v", calls, answer)
 			}
 			checkInlineAnswer(t, answer[0])
@@ -211,10 +232,13 @@ func TestInlineTelegramFlow(t *testing.T) {
 			case 2:
 				expected = "answer,fetch,album2,delete,editMessageText"
 			case 12:
-				expected = "answer,fetch,album10,delete,album2,delete,editMessageText"
+				expected = "answer,answer,fetch,album10,delete,album2,album2,delete,editMessageText,editMessageText"
 			}
-			if count <= 5 && len(progress) != 0 || count == 12 && (len(progress) < 2 || progress[0] != "Uploading ░░░░░░░░ 0/12" || progress[len(progress)-1] != "Uploading ████████ 12/12") {
-				t.Fatalf("progress: %v", progress)
+			if count <= 5 && len(progress) != 0 {
+				t.Fatalf("unexpected progress: %v", progress)
+			}
+			if count == 12 && (!slices.Contains(progress, "Still working…") || !slices.Contains(progress, "Uploading ████████ 12/12")) {
+				t.Fatalf("missing progress: %v", progress)
 			}
 			if strings.Join(calls, ",") != expected {
 				t.Fatalf("calls: %v", calls)
@@ -547,7 +571,7 @@ func TestInlineChosenFailures(t *testing.T) {
 				case strings.HasSuffix(r.URL.Path, "/getMe"):
 					_, _ = w.Write([]byte(`{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`))
 				case r.URL.Path == "/user/status/1":
-					http.Error(w, "unavailable", http.StatusBadGateway)
+					http.NotFound(w, r)
 				case strings.HasSuffix(r.URL.Path, "/editMessageText"):
 					_ = r.ParseForm()
 					edits++
@@ -566,7 +590,14 @@ func TestInlineChosenFailures(t *testing.T) {
 
 			target, _ := url.Parse(server.URL)
 			original := http.DefaultTransport
-			http.DefaultTransport = redirectTransport{target, original}
+			http.DefaultTransport = xPostTransport(func(req *http.Request) (*http.Response, error) {
+				if req.URL.Host == "api.vxtwitter.com" {
+					copy := req.Clone(req.Context())
+					copy.URL.Host = "api.fxtwitter.com"
+					req = copy
+				}
+				return (redirectTransport{target, original}).RoundTrip(req)
+			})
 			defer func() { http.DefaultTransport = original }()
 			bot, err := tgbotapi.NewBotAPIWithAPIEndpoint("token", server.URL+"/bot%s/%s")
 			if err != nil {
@@ -620,7 +651,7 @@ func TestInlineRetryTelegram(t *testing.T) {
 					default:
 						_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":1,"photo":[{"file_id":"photo"}]}}`))
 					}
-				case strings.HasSuffix(r.URL.Path, "/deleteMessage"), strings.HasSuffix(r.URL.Path, "/answerInlineQuery"):
+				case strings.HasSuffix(r.URL.Path, "/deleteMessage"), strings.HasSuffix(r.URL.Path, "/answerInlineQuery"), strings.HasSuffix(r.URL.Path, "/editMessageReplyMarkup"):
 					_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
 				case strings.HasSuffix(r.URL.Path, "/editMessageMedia"):
 					edits++
@@ -1291,7 +1322,7 @@ func TestInlineVideoURLRetryAnimation(t *testing.T) {
 		ResultID: inlineResultID, From: &tgbotapi.User{ID: 1},
 		InlineMessageID: "inline", Query: "https://x.com/u/status/1",
 	}
-	if err := editInlineArtwork(bot, nil, db, chosen, "@cache", nil); err != nil {
+	if err := editInlineArtwork(bot, nil, db, chosen, "@cache", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 

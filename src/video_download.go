@@ -20,7 +20,7 @@ func downloadVideo(address string) (tgbotapi.FilePath, error) {
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("download: HTTP %s", response.Status)
+		return "", upstreamHTTPError{operation: "downloading video", status: response.StatusCode}
 	}
 	if response.ContentLength > limit {
 		return "", fmt.Errorf("video exceeds %d MiB", limit/(1024*1024))

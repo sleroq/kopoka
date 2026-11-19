@@ -326,7 +326,9 @@ func TestPreviewInlineTimeoutCompletesInBackground(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("inline answer did not time out")
 	}
-	checkInlineFeedback(t, result, "source", "Post is taking too long", "Please try again.", "https://x.com/user/status/7")
+	if result["id"] != inlineResultID || !strings.Contains(fmt.Sprint(result["input_message_content"]), "https://x.com/user/status/7") {
+		t.Fatalf("expected selectable artwork fallback: %#v", result)
+	}
 	f.sourceOnce.Do(func() { close(f.sourceRelease) })
 	f.release()
 	awaitCachedThumbnail(t, previews.db, "x:7", 0)

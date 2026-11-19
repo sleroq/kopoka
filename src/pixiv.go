@@ -166,7 +166,15 @@ func newPixivTransport(base *http.Transport) *pixivTransport {
 
 func (t *pixivTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	switch req.URL.Hostname() {
-	case "oauth.secure.pixiv.net", "app-api.pixiv.net":
+	case "app-api.pixiv.net":
+		res, err := t.pixiv.RoundTrip(req)
+		// The Pixiv SDK does not return non-success response statuses to callers.
+		if err == nil && transientHTTPStatus(res.StatusCode) {
+			_ = res.Body.Close()
+			return nil, upstreamHTTPError{operation: "Pixiv API", status: res.StatusCode}
+		}
+		return res, err
+	case "oauth.secure.pixiv.net":
 		return t.pixiv.RoundTrip(req)
 	default:
 		return t.base.RoundTrip(req)

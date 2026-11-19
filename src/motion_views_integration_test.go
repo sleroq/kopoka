@@ -67,7 +67,7 @@ func TestMotionViewsIntegration(t *testing.T) {
 			link, _ = url.Parse("https://x.com/user/status/42")
 			chosen := &tgbotapi.ChosenInlineResult{From: &tgbotapi.User{ID: 1}, InlineMessageID: "inline"}
 			for range 2 {
-				if err := editInlinePostImage(bot, db, chosen, "@cache", link, "light", nil); err != nil {
+				if err := editInlinePostImage(bot, db, chosen, "@cache", link, "light", nil, nil); err != nil {
 					t.Fatal(err)
 				}
 			}

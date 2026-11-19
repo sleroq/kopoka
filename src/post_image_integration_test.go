@@ -603,7 +603,7 @@ func TestPostImageCacheSharedByTimezone(t *testing.T) {
 	choose := func(user int64) {
 		t.Helper()
 		chosen := &tgbotapi.ChosenInlineResult{From: &tgbotapi.User{ID: user}, InlineMessageID: "inline"}
-		if err := editInlinePostImage(bot, db, chosen, "@cache", link, "light", nil); err != nil {
+		if err := editInlinePostImage(bot, db, chosen, "@cache", link, "light", nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}

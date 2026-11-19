@@ -135,7 +135,7 @@ func TestPhotoLinkFlow(t *testing.T) {
 	if err != nil || parent == nil || len(parent.Photos) != 2 || strings.Contains(parent.Caption, "/photo/") {
 		t.Fatalf("parent: %+v %v", parent, err)
 	}
-	if err := editInlineArtwork(bot, nil, db, chosen, "11", nil); err != nil {
+	if err := editInlineArtwork(bot, nil, db, chosen, "11", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := saveThumbnail(db, "x:123", 2, 2, "thumb"); err != nil {
@@ -241,7 +241,7 @@ func saveSelectedPhoto(t *testing.T, db *sql.DB, bot *tgbotapi.BotAPI, message *
 
 	chosen := &tgbotapi.ChosenInlineResult{From: &tgbotapi.User{ID: 11},
 		Query: "https://x.com/artist/status/123/photo/2/", InlineMessageID: "inline"}
-	if err := editInlineArtwork(bot, nil, db, chosen, "11", nil); err != nil {
+	if err := editInlineArtwork(bot, nil, db, chosen, "11", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	return chosen, previews

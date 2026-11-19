@@ -330,7 +330,7 @@ func TestPixivNumericSelection(t *testing.T) {
 	chosen := &tgbotapi.ChosenInlineResult{
 		From: &tgbotapi.User{ID: 1}, ResultID: inlineResultID, InlineMessageID: "inline", Query: query,
 	}
-	if err := editInlineArtwork(bot, app, db, chosen, "@cache", nil); err != nil {
+	if err := editInlineArtwork(bot, app, db, chosen, "@cache", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(downloads) != 1 || downloads[0] != "/p1" {

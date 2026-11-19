@@ -136,7 +136,7 @@ cat "$PREVIEW_TEST_IMAGE"
 			t.Fatalf("request: %+v", request)
 		}
 		chosen := &tgbotapi.ChosenInlineResult{From: &tgbotapi.User{ID: 1}, InlineMessageID: "inline"}
-		if err := editInlinePostImage(bot, db, chosen, "@cache", link, theme, previews); err != nil {
+		if err := editInlinePostImage(bot, db, chosen, "@cache", link, theme, previews, nil); err != nil {
 			t.Fatal(err)
 		}
 		result := postImageResult(db, link, theme, defaultTimezone, defaultTranslationSettings(), previews, work)

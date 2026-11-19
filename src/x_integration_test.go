@@ -80,7 +80,7 @@ func TestXProvidersBothFail(t *testing.T) {
 		t.Fatalf("requests = %v", hosts)
 	}
 	want := "FxTwitter: FxTwitter response missing photo URL at index 0; " +
-		"VxTwitter: fetching X link: HTTP Service Unavailable"
+		"VxTwitter: fetching X link: HTTP 503 Service Unavailable"
 	if err == nil || err.Error() != want {
 		t.Fatalf("error = %v, want %s", err, want)
 	}
@@ -100,8 +100,8 @@ func TestXPostNotFound(t *testing.T) {
 		wantOK   bool
 	}{
 		{"deleted post", 404, `{"code":404}`, 200, `<html>not found</html>`, true, false},
-		{"fx api 404", 200, `{"code":404}`, 503, `unavailable`, true, false},
-		{"vx 404", 503, `unavailable`, 404, `not found`, true, false},
+		{"fx api 404 with fallback unavailable", 200, `{"code":404}`, 503, `unavailable`, false, false},
+		{"vx 404 with primary unavailable", 503, `unavailable`, 404, `not found`, false, false},
 		{"fallback succeeds", 404, `not found`, 200, `{"user_name":"Author"}`, false, true},
 		{"provider failures", 503, `unavailable`, 200, `<html>error</html>`, false, false},
 	}
