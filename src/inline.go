@@ -606,7 +606,8 @@ func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB,
 		merge = "bars"
 		a.ID += ":merged:bars"
 	}
-	photos, err := fetchArtPhotos(app, link, &a, merge)
+	downloading := inlineMediaProgress(bot, chosen.InlineMessageID, "Downloading")
+	photos, err := fetchArtPhotos(app, link, &a, merge, downloading)
 	if err != nil {
 		return err
 	}
@@ -624,13 +625,9 @@ func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB,
 		return fmt.Errorf("inline slideshow exceeds 50 photos: %d", len(photos))
 	}
 
-	for _, item := range photos {
-		kind, id, err := cacheInlineMedia(bot, cacheChat, item)
-		if err != nil {
-			return err
-		}
-		a.Photos = append(a.Photos, id)
-		a.Types = append(a.Types, kind)
+	uploading := inlineMediaProgress(bot, chosen.InlineMessageID, "Uploading")
+	if err := cacheInlineArtworkMedia(bot, cacheChat, photos, &a, uploading); err != nil {
+		return err
 	}
 
 	first := mediaBase(photos[0])
@@ -664,21 +661,113 @@ func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB,
 	return nil
 }
 
+func inlineMediaProgress(bot *tgbotapi.BotAPI, messageID, phase string) func(done, total int) {
+	var last time.Time
+	return func(done, total int) {
+		if total <= 5 || done != 0 && done != total && time.Since(last) < time.Second {
+			return
+		}
+		last = time.Now()
+		filled := done * 8 / total
+		label := fmt.Sprintf("%s %s%s %d/%d", phase, strings.Repeat("█", filled), strings.Repeat("░", 8-filled), done, total)
+		params := tgbotapi.Params{
+			"inline_message_id": messageID,
+			"reply_markup":      fmt.Sprintf(`{"inline_keyboard":[[{"text":%q,"disabled":{}}]]}`, label),
+		}
+		if _, err := bot.MakeRequest("editMessageReplyMarkup", params); err != nil {
+			log.Printf("updating inline media progress: %v", err)
+		}
+	}
+}
+
+func cacheInlineArtworkMedia(bot *tgbotapi.BotAPI, chat string, media []any, a *artwork, progress func(done, total int)) error {
+	progress(0, len(media))
+	for start := 0; start < len(media); {
+		end := start + 1
+		if mediaBase(media[start]).Type == "photo" {
+			for end < min(start+10, len(media)) && mediaBase(media[end]).Type == "photo" {
+				end++
+			}
+		}
+		if end-start == 1 {
+			kind, id, err := cacheInlineMedia(bot, chat, media[start])
+			if err != nil {
+				return err
+			}
+			a.Photos = append(a.Photos, id)
+			a.Types = append(a.Types, kind)
+		} else {
+			ids, err := cacheInlinePhotoAlbum(bot, chat, media[start:end])
+			if err != nil {
+				return err
+			}
+			a.Photos = append(a.Photos, ids...)
+			for range ids {
+				a.Types = append(a.Types, "photo")
+			}
+		}
+		progress(end, len(media))
+		start = end
+	}
+	return nil
+}
+
+func cacheInlinePhotoAlbum(bot *tgbotapi.BotAPI, chat string, photos []any) ([]string, error) {
+	chatID, channel, err := inlineCacheTarget(chat)
+	if err != nil {
+		return nil, err
+	}
+	group := tgbotapi.NewMediaGroup(chatID, photos)
+	group.ChannelUsername = channel
+	messages, err := retryTelegram(func() ([]tgbotapi.Message, error) { return bot.SendMediaGroup(group) })
+	if err != nil {
+		return nil, fmt.Errorf("uploading inline photo album: %w", err)
+	}
+
+	messageIDs := make([]int, 0, len(messages))
+	for _, message := range messages {
+		messageIDs = append(messageIDs, message.MessageID)
+	}
+	if len(messageIDs) > 0 {
+		encoded, _ := json.Marshal(messageIDs)
+		params := tgbotapi.Params{"chat_id": chat, "message_ids": string(encoded)}
+		if _, err := retryTelegram(func() (*tgbotapi.APIResponse, error) { return bot.MakeRequest("deleteMessages", params) }); err != nil {
+			log.Printf("deleting inline cache album: %v", err)
+		}
+	}
+	if len(messages) != len(photos) {
+		return nil, fmt.Errorf("inline upload returned %d of %d photos", len(messages), len(photos))
+	}
+	ids := make([]string, 0, len(messages))
+	for _, message := range messages {
+		id, err := inlinePhotoID(message)
+		if err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+func inlineCacheTarget(chat string) (int64, string, error) {
+	if strings.HasPrefix(chat, "@") {
+		return 0, chat, nil
+	}
+	id, err := strconv.ParseInt(chat, 10, 64)
+	if err != nil || id == 0 {
+		return 0, "", fmt.Errorf("invalid INLINE_CACHE_CHAT_ID: %q", chat)
+	}
+	return id, "", nil
+}
+
 func cacheInlineMedia(bot *tgbotapi.BotAPI, chat string, item any) (string, string, error) {
 	return cacheInlineMediaWithVideoRetry(bot, chat, item, true)
 }
 
 func cacheInlineMediaWithVideoRetry(bot *tgbotapi.BotAPI, chat string, item any, retryVideo bool) (string, string, error) {
-	var chatID int64
-	var channel string
-	if strings.HasPrefix(chat, "@") {
-		channel = chat
-	} else {
-		id, err := strconv.ParseInt(chat, 10, 64)
-		if err != nil || id == 0 {
-			return "", "", fmt.Errorf("invalid INLINE_CACHE_CHAT_ID: %q", chat)
-		}
-		chatID = id
+	chatID, channel, err := inlineCacheTarget(chat)
+	if err != nil {
+		return "", "", err
 	}
 
 	base := mediaBase(item)
@@ -733,8 +822,13 @@ func cacheInlineMediaWithVideoRetry(bot *tgbotapi.BotAPI, chat string, item any,
 		}
 		return "video", message.Video.FileID, nil
 	}
-	if len(message.Photo) == 0 {
-		return "", "", fmt.Errorf("inline upload returned no photo")
+	id, err := inlinePhotoID(message)
+	return "photo", id, err
+}
+
+func inlinePhotoID(message tgbotapi.Message) (string, error) {
+	if len(message.Photo) == 0 || message.Photo[len(message.Photo)-1].FileID == "" {
+		return "", fmt.Errorf("inline upload returned no photo")
 	}
-	return "photo", message.Photo[len(message.Photo)-1].FileID, nil
+	return message.Photo[len(message.Photo)-1].FileID, nil
 }

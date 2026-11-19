@@ -860,33 +860,41 @@ func (t *thumbnails) xSource(link *url.URL) (thumbnailSource, error) {
 }
 
 func (t *thumbnails) downloadSource(source thumbnailSource) ([]any, error) {
-	media := make([]any, 0, len(source.media))
-	for i, item := range source.media {
-		if item.moving() {
-			if i > 0 {
-				media = append(media, tgbotapi.NewInputMediaVideo(tgbotapi.FileURL(item.ThumbnailURL)))
-				continue
-			}
-			file, err := downloadArtFile(t.client, tgbotapi.FileURL(item.ThumbnailURL))
-			if err != nil {
-				return nil, err
-			}
-			media = append(media, tgbotapi.NewInputMediaVideo(file))
-			continue
+	media := make([]any, len(source.media))
+	err := downloadGallery(len(source.media), func(i int) error {
+		item, err := t.downloadSourceItem(source, i)
+		media[i] = item
+		return err
+	}, nil)
+	if err != nil {
+		return nil, err
+	}
+	return media, nil
+}
+
+func (t *thumbnails) downloadSourceItem(source thumbnailSource, i int) (any, error) {
+	item := source.media[i]
+	if item.moving() {
+		if i > 0 {
+			return tgbotapi.NewInputMediaVideo(tgbotapi.FileURL(item.ThumbnailURL)), nil
 		}
-		var file tgbotapi.FileBytes
-		var err error
-		if source.pixivPages {
-			file, err = downloadPixivPhoto(t.client, item.ThumbnailURL, item.URL)
-		} else {
-			file, err = downloadArtFile(t.client, tgbotapi.FileURL(xPhotoURL(item.URL)))
-		}
+		file, err := downloadArtFile(t.client, tgbotapi.FileURL(item.ThumbnailURL))
 		if err != nil {
 			return nil, err
 		}
-		media = append(media, tgbotapi.NewInputMediaPhoto(file))
+		return tgbotapi.NewInputMediaVideo(file), nil
 	}
-	return media, nil
+	var file tgbotapi.FileBytes
+	var err error
+	if source.pixivPages {
+		file, err = downloadPixivPhoto(t.client, item.ThumbnailURL, item.URL)
+	} else {
+		file, err = downloadArtFile(t.client, tgbotapi.FileURL(xPhotoURL(item.URL)))
+	}
+	if err != nil {
+		return nil, err
+	}
+	return tgbotapi.NewInputMediaPhoto(file), nil
 }
 
 func (t *thumbnails) mergeSource(media []any, mode string) (image.Image, int, error) {

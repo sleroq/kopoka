@@ -184,7 +184,7 @@ func TestSetupPixivClient(t *testing.T) {
 	}
 	for _, count := range []int{1, 2} {
 		pages, downloads = count, 0
-		photos, err := handlePixivLink(app, link, &artwork{})
+		photos, err := handlePixivLink(app, link, &artwork{}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

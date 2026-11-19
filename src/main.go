@@ -53,7 +53,7 @@ func pixivCaption(illust *pixiv.Illust) string {
 // The Pixiv client refreshes package-level credentials without synchronization.
 var pixivRequestMu sync.Mutex
 
-func handlePixivLink(app *pixiv.AppPixivAPI, link *url.URL, metadata *artwork) ([]any, error) {
+func handlePixivLink(app *pixiv.AppPixivAPI, link *url.URL, metadata *artwork, progress func(done, total int)) ([]any, error) {
 	idStr, ok := strings.CutPrefix(link.Path, "/artworks/")
 	if !ok {
 		return nil, fmt.Errorf("invalid Pixiv artwork path: %s", link.Path)
@@ -93,37 +93,42 @@ func handlePixivLink(app *pixiv.AppPixivAPI, link *url.URL, metadata *artwork) (
 		animation.ParseMode = "HTML"
 		return []any{animation}, nil
 	}
-	var photos []any
-	for i, page := range illust.MetaPages {
-		if selected > 0 && i != selected-1 {
-			continue
-		}
-		file, err := downloadPixivPhoto(client, page.Images.Large, page.Images.Original)
-		if err != nil {
-			return nil, err
-		}
-		photo := tgbotapi.NewInputMediaPhoto(file)
-
-		if len(photos)%10 == 0 {
-			photo.Caption = pixivCaption(illust)
-			photo.ParseMode = "HTML"
-		}
-
-		photos = append(photos, photo)
+	count := len(illust.MetaPages)
+	if count == 0 || selected > 0 {
+		count = 1
 	}
-
-	if len(photos) == 0 {
-		file, err := downloadPixivPhoto(client, illust.Images.Large, illust.MetaSinglePage.OriginalImageURL)
-		if err != nil {
-			return nil, err
-		}
-		photo := tgbotapi.NewInputMediaPhoto(file)
-		photo.Caption = pixivCaption(illust)
-		photo.ParseMode = "HTML"
-		photos = append(photos, photo)
+	photos := make([]any, count)
+	firstPage := max(selected-1, 0)
+	err = downloadGallery(count, func(i int) error {
+		photo, err := downloadPixivPage(client, illust, firstPage+i, i%10 == 0)
+		photos[i] = photo
+		return err
+	}, progress)
+	if err != nil {
+		return nil, err
 	}
 
 	return photos, nil
+}
+
+func downloadPixivPage(client *http.Client, illust *pixiv.Illust, pageIndex int, caption bool) (tgbotapi.InputMediaPhoto, error) {
+	var large, original string
+	if len(illust.MetaPages) > 0 {
+		page := illust.MetaPages[pageIndex]
+		large, original = page.Images.Large, page.Images.Original
+	} else {
+		large, original = illust.Images.Large, illust.MetaSinglePage.OriginalImageURL
+	}
+	file, err := downloadPixivPhoto(client, large, original)
+	if err != nil {
+		return tgbotapi.InputMediaPhoto{}, err
+	}
+	photo := tgbotapi.NewInputMediaPhoto(file)
+	if caption {
+		photo.Caption = pixivCaption(illust)
+		photo.ParseMode = "HTML"
+	}
+	return photo, nil
 }
 
 func handleXLink(link *url.URL, metadata *artwork, merge string) ([]any, error) {
@@ -226,12 +231,12 @@ func supportedLink(link *url.URL) bool {
 	return xLinkHosts[strings.ToLower(link.Host)]
 }
 
-func fetchArtPhotos(app *pixiv.AppPixivAPI, link *url.URL, metadata *artwork, merge string) ([]any, error) {
+func fetchArtPhotos(app *pixiv.AppPixivAPI, link *url.URL, metadata *artwork, merge string, progress func(done, total int)) ([]any, error) {
 	var photos []any
 	var err error
 	switch link.Host {
 	case "www.pixiv.net", "pixiv.net":
-		photos, err = handlePixivLink(app, link, metadata)
+		photos, err = handlePixivLink(app, link, metadata, progress)
 	default:
 		photos, err = handleXLink(link, metadata, merge)
 	}
@@ -268,7 +273,7 @@ func processLink(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, messa
 		a.ID, a.URL = artworkID(valid), valid.String()
 	}
 	stop := showProcessing(bot, message.Chat.ID, tgbotapi.ChatTyping)
-	photos, err := fetchArtPhotos(app, link, &a, "")
+	photos, err := fetchArtPhotos(app, link, &a, "", nil)
 	stop()
 	if err != nil {
 		return err

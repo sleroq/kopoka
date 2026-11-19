@@ -118,7 +118,25 @@ func (f *messagePreviewFixture) serve(w http.ResponseWriter, r *http.Request) {
 		n := f.uploads
 		f.mu.Unlock()
 		_, _ = fmt.Fprintf(w, `{"ok":true,"result":{"message_id":%d,"photo":[{"file_id":"original-%d"}]}}`, n, n)
-	case strings.HasSuffix(r.URL.Path, "/deleteMessage"):
+	case strings.HasSuffix(r.URL.Path, "/sendMediaGroup"):
+		_ = r.ParseForm()
+		var media []struct{ Media string }
+		if err := json.Unmarshal([]byte(r.FormValue("media")), &media); err != nil {
+			f.t.Errorf("decoding original album: %v", err)
+		}
+		var messages []map[string]any
+		f.mu.Lock()
+		for _, item := range media {
+			if item.Media != f.server.URL+"/image" {
+				f.t.Errorf("unexpected original media: %q", item.Media)
+			}
+			f.uploads++
+			photo := []map[string]string{{"file_id": fmt.Sprintf("original-%d", f.uploads)}}
+			messages = append(messages, map[string]any{"message_id": f.uploads, "photo": photo})
+		}
+		f.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": messages})
+	case strings.HasSuffix(r.URL.Path, "/deleteMessage"), strings.HasSuffix(r.URL.Path, "/deleteMessages"):
 		_, _ = fmt.Fprint(w, `{"ok":true,"result":true}`)
 	case strings.HasSuffix(r.URL.Path, "/editMessageMedia"), strings.HasSuffix(r.URL.Path, "/editMessageText"):
 		_ = r.ParseForm()

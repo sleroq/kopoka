@@ -49,7 +49,7 @@ func testArtworkDB(t *testing.T) *sql.DB {
 func TestInlineTelegramFlow(t *testing.T) {
 	queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})
 
-	for _, count := range []int{1, 2} {
+	for _, count := range []int{1, 2, 12} {
 		t.Run(fmt.Sprint(count), func(t *testing.T) {
 			db := testArtworkDB(t)
 			fixture := thumbnailFixture(t, 480, 300)
@@ -80,7 +80,8 @@ func TestInlineTelegramFlow(t *testing.T) {
 			if count == 2 {
 				cacheChat = "-100123"
 			}
-			var calls []string
+			var calls, progress []string
+			var uploaded int
 			var answer []map[string]any
 			var edit url.Values
 			var server *httptest.Server
@@ -113,13 +114,47 @@ func TestInlineTelegramFlow(t *testing.T) {
 					photo := []map[string]string{{"file_id": "small"}, {"file_id": fmt.Sprintf("large%d", (len(calls)-1)/2)}}
 					result := map[string]any{"message_id": len(calls), "photo": photo}
 					_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": result})
-				case strings.HasSuffix(r.URL.Path, "/deleteMessage"):
+				case strings.HasSuffix(r.URL.Path, "/sendMediaGroup"):
 					_ = r.ParseForm()
+					if r.FormValue("chat_id") != cacheChat {
+						t.Errorf("chat id = %q", r.FormValue("chat_id"))
+					}
+					var media []map[string]any
+					if err := json.Unmarshal([]byte(r.FormValue("media")), &media); err != nil || len(media) != min(10, count-uploaded) {
+						t.Errorf("album payload: %v (%v)", media, err)
+					}
+					calls = append(calls, fmt.Sprintf("album%d", len(media)))
+					var messages []map[string]any
+					for range media {
+						uploaded++
+						photo := []map[string]string{{"file_id": fmt.Sprintf("large%d", uploaded)}}
+						messages = append(messages, map[string]any{"message_id": uploaded, "photo": photo})
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": messages})
+				case strings.HasSuffix(r.URL.Path, "/deleteMessage"), strings.HasSuffix(r.URL.Path, "/deleteMessages"):
+					_ = r.ParseForm()
+					if count == 2 && r.FormValue("message_ids") != `[1,2]` {
+						t.Errorf("deleted album: %v", r.Form)
+					}
 					calls = append(calls, "delete")
 					if r.FormValue("chat_id") != cacheChat {
 						t.Errorf("delete chat id = %q", r.FormValue("chat_id"))
 					}
 					_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+				case strings.HasSuffix(r.URL.Path, "/editMessageReplyMarkup"):
+					_ = r.ParseForm()
+					var markup struct {
+						Keyboard [][]struct {
+							Text     string    `json:"text"`
+							Disabled *struct{} `json:"disabled"`
+						} `json:"inline_keyboard"`
+					}
+					if err := json.Unmarshal([]byte(r.FormValue("reply_markup")), &markup); err != nil || len(markup.Keyboard) != 1 || len(markup.Keyboard[0]) != 1 || markup.Keyboard[0][0].Disabled == nil || r.FormValue("inline_message_id") != "inline" {
+						t.Errorf("invalid progress markup: %v (%v)", r.Form, err)
+					} else {
+						progress = append(progress, markup.Keyboard[0][0].Text)
+					}
+					_, _ = fmt.Fprint(w, `{"ok":true,"result":true}`)
 				case strings.HasSuffix(r.URL.Path, "/editMessageMedia"), strings.HasSuffix(r.URL.Path, "/editMessageText"):
 					_ = r.ParseForm()
 					edit = r.Form
@@ -171,11 +206,16 @@ func TestInlineTelegramFlow(t *testing.T) {
 				From: &tgbotapi.User{ID: 1}, ResultID: inlineResultID, InlineMessageID: "inline", Query: query.Query,
 			}
 			handleChosenInlineResult(bot, nil, db, chosen, cacheChat, queue, nil)
-			method := "editMessageMedia"
-			if count == 2 {
-				method = "editMessageText"
+			expected := "answer,fetch,send,delete,editMessageMedia"
+			switch count {
+			case 2:
+				expected = "answer,fetch,album2,delete,editMessageText"
+			case 12:
+				expected = "answer,fetch,album10,delete,album2,delete,editMessageText"
 			}
-			expected := "answer,fetch," + strings.Repeat("send,delete,", count) + method
+			if count <= 5 && len(progress) != 0 || count == 12 && (len(progress) < 2 || progress[0] != "Uploading ░░░░░░░░ 0/12" || progress[len(progress)-1] != "Uploading ████████ 12/12") {
+				t.Fatalf("progress: %v", progress)
+			}
 			if strings.Join(calls, ",") != expected {
 				t.Fatalf("calls: %v", calls)
 			}
@@ -208,7 +248,7 @@ func checkCachedInlineFlow(t *testing.T, bot *tgbotapi.BotAPI, db *sql.DB, query
 	if len(media) != count || media[0].(map[string]any)["media"].(map[string]any)["media"] != "large1" {
 		t.Fatalf("cached artwork: %#v", rich)
 	}
-	if count == 2 {
+	if count > 1 {
 		var edited map[string]any
 		if err := json.Unmarshal([]byte(edit.Get("rich_message")), &edited); err != nil {
 			t.Fatal(err)
@@ -290,7 +330,7 @@ func checkInlineEdit(t *testing.T, count int, edit url.Values) {
 	t.Helper()
 	var payload map[string]any
 	field := "media"
-	if count == 2 {
+	if count > 1 {
 		field = "rich_message"
 	}
 	if err := json.Unmarshal([]byte(edit.Get(field)), &payload); err != nil {
@@ -303,8 +343,13 @@ func checkInlineEdit(t *testing.T, count int, edit url.Values) {
 	} else {
 		markup := payload["html"].(string)
 		media := payload["media"].([]any)
-		if !strings.Contains(markup, `<tg-slideshow>`) || !strings.Contains(markup, `tg://photo?id=1`) || !strings.Contains(markup, "Artist") || len(media) != 2 || media[1].(map[string]any)["media"].(map[string]any)["media"] != "large2" {
+		if !strings.Contains(markup, `<tg-slideshow>`) || !strings.Contains(markup, "Artist") || len(media) != count {
 			t.Fatalf("payload: %#v", payload)
+		}
+		for i, item := range media {
+			if !strings.Contains(markup, fmt.Sprintf(`tg://photo?id=%d`, i)) || item.(map[string]any)["media"].(map[string]any)["media"] != fmt.Sprintf("large%d", i+1) {
+				t.Fatalf("slideshow item %d: %#v", i, item)
+			}
 		}
 	}
 }

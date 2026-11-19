@@ -16,8 +16,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/everpcpc/pixiv"
@@ -127,7 +129,7 @@ func TestPixivUgoiraIntegration(t *testing.T) {
 		t.Fatalf("localized link not normalized: %v", link)
 	}
 	art := &artwork{}
-	media, err := handlePixivLink(app, link, art)
+	media, err := handlePixivLink(app, link, art, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,11 +146,11 @@ func TestPixivUgoiraIntegration(t *testing.T) {
 	}
 	checkUgoiraVideo(t, file.Bytes)
 	selected := inlineQueryLink("https://www.pixiv.net/artworks/152026329 1")
-	if media, err := handlePixivLink(app, selected, &artwork{}); err != nil || len(media) != 1 {
+	if media, err := handlePixivLink(app, selected, &artwork{}, nil); err != nil || len(media) != 1 {
 		t.Fatalf("selected ugoira: %v %v", media, err)
 	}
 	var unavailable unavailablePhotoError
-	if _, err := handlePixivLink(app, inlineQueryLink("https://www.pixiv.net/artworks/152026329 2"), &artwork{}); !errors.As(err, &unavailable) || unavailable.index != 2 {
+	if _, err := handlePixivLink(app, inlineQueryLink("https://www.pixiv.net/artworks/152026329 2"), &artwork{}, nil); !errors.As(err, &unavailable) || unavailable.index != 2 {
 		t.Fatalf("ugoira out of range: %v", err)
 	}
 	checkPixivInlineFlow(t, server, app, &answer, &edit, &uploads)
@@ -252,6 +254,7 @@ func checkUgoiraVideo(t *testing.T, video []byte) {
 
 func pixivSelectionServer(t *testing.T, downloads *[]string) *httptest.Server {
 	t.Helper()
+	var mu sync.Mutex
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/auth/token":
@@ -268,7 +271,9 @@ func pixivSelectionServer(t *testing.T, downloads *[]string) *httptest.Server {
 			_, _ = fmt.Fprint(w, `{"illust":{"id":123,"type":"illust","title":"title","user":{"name":"artist"},"page_count":2,`+
 				`"meta_pages":[{"image_urls":{"large":"https://i.pximg.net/p0"}},{"image_urls":{"large":"https://i.pximg.net/p1"}}]}}`)
 		case "/p0", "/p1":
+			mu.Lock()
 			*downloads = append(*downloads, r.URL.Path)
+			mu.Unlock()
 			_, _ = fmt.Fprint(w, "image")
 		case "/bottoken/getMe":
 			_, _ = fmt.Fprint(w, `{"ok":true,"result":{"id":1,"is_bot":true,"first_name":"bot"}}`)
@@ -346,21 +351,27 @@ func TestPixivNumericSelection(t *testing.T) {
 		t.Fatal(downloads)
 	}
 
-	_, err = handlePixivLink(app, inlineQueryLink("https://www.pixiv.net/artworks/123 3"), &artwork{})
+	_, err = handlePixivLink(app, inlineQueryLink("https://www.pixiv.net/artworks/123 3"), &artwork{}, nil)
 	var unavailable unavailablePhotoError
 	if !errors.As(err, &unavailable) || unavailable.index != 3 || len(downloads) != 1 {
 		t.Fatalf("out of range: %v %v", err, downloads)
 	}
-	_, err = handlePixivLink(app, inlineQueryLink("https://www.pixiv.net/artworks/123"), &artwork{})
+	var progress [][2]int
+	_, err = handlePixivLink(app, inlineQueryLink("https://www.pixiv.net/artworks/123"), &artwork{}, func(done, total int) {
+		progress = append(progress, [2]int{done, total})
+	})
 	if err != nil || len(downloads) != 3 {
 		t.Fatalf("full post: %v %v", err, downloads)
 	}
+	if !reflect.DeepEqual(progress, [][2]int{{0, 2}, {1, 2}, {2, 2}}) {
+		t.Fatalf("download progress: %v", progress)
+	}
 
 	single := inlineQueryLink("https://pixiv.net/artworks/124 1")
-	if media, err := handlePixivLink(app, single, &artwork{}); err != nil || len(media) != 1 {
+	if media, err := handlePixivLink(app, single, &artwork{}, nil); err != nil || len(media) != 1 {
 		t.Fatalf("single page: %v %v", media, err)
 	}
-	if _, err := handlePixivLink(app, inlineQueryLink("https://pixiv.net/artworks/124 2"), &artwork{}); !errors.As(err, &unavailable) || unavailable.index != 2 {
+	if _, err := handlePixivLink(app, inlineQueryLink("https://pixiv.net/artworks/124 2"), &artwork{}, nil); !errors.As(err, &unavailable) || unavailable.index != 2 {
 		t.Fatalf("single page out of range: %v", err)
 	}
 
