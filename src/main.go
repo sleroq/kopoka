@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/everpcpc/pixiv"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 func setupTelegramBot() (*tgbotapi.BotAPI, *tgbotapi.UpdateConfig, error) {
@@ -231,7 +233,8 @@ func supportedLink(link *url.URL) bool {
 	return xLinkHosts[strings.ToLower(link.Host)]
 }
 
-func fetchArtPhotos(app *pixiv.AppPixivAPI, link *url.URL, metadata *artwork, merge string, progress func(done, total int)) ([]any, error) {
+func fetchArtPhotos(ctx context.Context, app *pixiv.AppPixivAPI, link *url.URL, metadata *artwork, merge string, progress func(done, total int)) ([]any, error) {
+	_, fetch := startInlineSpan(ctx, "artwork.fetch_media")
 	var photos []any
 	var err error
 	switch link.Host {
@@ -240,14 +243,22 @@ func fetchArtPhotos(app *pixiv.AppPixivAPI, link *url.URL, metadata *artwork, me
 	default:
 		photos, err = handleXLink(link, metadata, merge)
 	}
+	inlineSpanError(fetch, err)
+	fetch.End()
 	if err != nil {
 		return nil, err
 	}
-	if merge != "" {
-		return forceMergePanels(photos, merge == "bars")
+	if merge == "" {
+		if _, index := xMediaSelection(link); index > 0 || pixivPhotoIndex(link) > 0 {
+			return photos, nil
+		}
 	}
-	if _, index := xMediaSelection(link); index > 0 || pixivPhotoIndex(link) > 0 {
-		return photos, nil
+	_, merging := startInlineSpan(ctx, "artwork.merge_panels", attribute.String("artwork.merge_mode", merge))
+	defer merging.End()
+	if merge != "" {
+		merged, err := forceMergePanels(photos, merge == "bars")
+		inlineSpanError(merging, err)
+		return merged, err
 	}
 	return mergeArtPhotos(photos), nil
 }
@@ -273,7 +284,7 @@ func processLink(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, messa
 		a.ID, a.URL = artworkID(valid), valid.String()
 	}
 	stop := showProcessing(bot, message.Chat.ID, tgbotapi.ChatTyping)
-	photos, err := fetchArtPhotos(app, link, &a, "", nil)
+	photos, err := fetchArtPhotos(context.Background(), app, link, &a, "", nil)
 	stop()
 	if err != nil {
 		return err
@@ -314,7 +325,7 @@ func processLink(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, messa
 		if err := saveArtwork(db, message.From.ID, a, false); err != nil {
 			log.Printf("saving chat artwork: %v", err)
 		} else if previews != nil {
-			previews.warmArtwork(inlineLink(a.URL), len(a.Photos))
+			previews.warmArtwork(context.Background(), inlineLink(a.URL), len(a.Photos))
 		}
 	}
 	return nil
@@ -514,6 +525,19 @@ func main() {
 		log.Panic(err)
 	}
 
+	stopTelemetry, err := startInlineTelemetry(context.Background())
+	if err != nil {
+		log.Print("could not initialize inline telemetry")
+	} else if stopTelemetry != nil {
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := stopTelemetry(ctx); err != nil {
+				log.Print("could not flush inline telemetry")
+			}
+		}()
+	}
+
 	previews, err := startThumbnails(pApp, bot, db, os.Getenv("INLINE_CACHE_CHAT_ID"))
 	if err != nil {
 		log.Panicf("starting thumbnails: %v", err)
@@ -523,11 +547,11 @@ func main() {
 
 	for update := range updates {
 		if update.InlineQuery != nil {
-			go handleInlineQuery(bot, db, update.InlineQuery, previews)
+			go handleInlineQuery(update.received, bot, db, update.InlineQuery, previews)
 		}
 		if update.ChosenInlineResult != nil {
 			cacheChat := os.Getenv("INLINE_CACHE_CHAT_ID")
-			go handleChosenInlineResult(bot, pApp, db, update.ChosenInlineResult, cacheChat, queue, previews)
+			go handleChosenInlineResult(update.received, bot, pApp, db, update.ChosenInlineResult, cacheChat, queue, previews)
 		}
 		if update.CallbackQuery != nil {
 			go handleIncomingCallback(bot, pApp, db, update.CallbackQuery, queue)

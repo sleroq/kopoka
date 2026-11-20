@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/everpcpc/pixiv"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -183,7 +184,7 @@ func (s *instantSettingsScenario) inline(user int64, link string, merged bool) m
 	}
 	previews.client = &http.Client{Transport: s.network}
 	s.previews = previews
-	handleInlineQuery(s.bot, s.db, query, previews)
+	handleInlineQuery(time.Now(), s.bot, s.db, query, previews)
 	results := s.api.snapshot().results
 	want := 8
 	if strings.Contains(link, "pixiv.net") {
@@ -218,7 +219,7 @@ func (s *instantSettingsScenario) expectThumbnail(user int64, link string, withP
 	s.network.previews.Store(withPreview)
 	result := s.inline(user, link, !withPreview)
 	if withPreview {
-		<-s.previews.start(inlineLink(link)).done
+		<-s.previews.start(context.Background(), inlineLink(link)).done
 		if s.api.sources.Load() <= before {
 			s.t.Fatalf("no source fetch for %s", link)
 		}
@@ -323,7 +324,7 @@ func TestInstantInlineSettingsFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	query := &tgbotapi.InlineQuery{ID: "query", From: &tgbotapi.User{ID: 1}, Query: "https://x.com/u/status/999"}
-	handleInlineQuery(bot, db, query, testPreviews(t, db, bot))
+	handleInlineQuery(time.Now(), bot, db, query, testPreviews(t, db, bot))
 	results := api.snapshot().results
 	if len(results) != 1 {
 		t.Fatalf("preference failure: %#v", results)
@@ -390,7 +391,7 @@ func verifyInstantInlineSelection(t *testing.T, s *instantSettingsScenario) {
 		From: &tgbotapi.User{ID: 1}, ResultID: inlineResultID, InlineMessageID: "inline", Query: link,
 	}
 	queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})
-	handleChosenInlineResult(s.bot, nil, s.db, chosen, "@cache", queue, nil)
+	handleChosenInlineResult(time.Now(), s.bot, nil, s.db, chosen, "@cache", queue, nil)
 	if attempts, edits := s.network.attempts.Load(), s.api.snapshot().mediaEdits; attempts != before+1 || edits != 1 {
 		t.Fatalf("selection: upstream requests %d, media edits %d", attempts, edits)
 	}

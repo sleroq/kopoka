@@ -20,6 +20,8 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const postImageVersion = 15
@@ -497,7 +499,7 @@ func findPostImage(db *sql.DB, id, theme, zone string, translation translationSe
 	media.Media, media.ParseMode = tgbotapi.FileID(file), "HTML"
 	return media, err
 }
-func inlinePostImageResults(db *sql.DB, user int64, link *url.URL, previews *thumbnails, instant bool) []any {
+func inlinePostImageResults(ctx context.Context, db *sql.DB, user int64, link *url.URL, previews *thumbnails, instant bool) []any {
 	zone, err := loadUserTimezone(db, user)
 	if err != nil {
 		log.Printf("loading post image timezone: %v", err)
@@ -514,7 +516,10 @@ func inlinePostImageResults(db *sql.DB, user int64, link *url.URL, previews *thu
 		return nil
 	}
 
-	metadata := previews.start(xPostLink(link))
+	ctx, span := startInlineSpan(ctx, "post_image.results")
+	defer span.End()
+	metadata := previews.start(ctx, xPostLink(link))
+	span.AddLink(trace.Link{SpanContext: metadata.spanContext})
 	onlyBarsResult := make(chan bool, 1)
 	go func() {
 		select {
@@ -527,7 +532,7 @@ func inlinePostImageResults(db *sql.DB, user int64, link *url.URL, previews *thu
 	var work *postImagePreviewWork
 	var barsAvailable chan bool
 	if !instant {
-		work = previews.startPostImagePreview(link, zone, translation, themes.Light, themes.Dark)
+		work = previews.startPostImagePreview(ctx, link, zone, translation, themes.Light, themes.Dark)
 		barsAvailable = make(chan bool, 1)
 		go func() { barsAvailable <- work.postImageHasBars() }()
 	}
@@ -536,7 +541,7 @@ func inlinePostImageResults(db *sql.DB, user int64, link *url.URL, previews *thu
 	for _, theme := range imageThemes {
 		result := make(chan map[string]any, 1)
 		postImages = append(postImages, result)
-		go func() { result <- postImageResult(db, link, theme, zone, translation, previews, work) }()
+		go func() { result <- postImageResult(ctx, db, link, theme, zone, translation, previews, work) }()
 	}
 
 	showBars := barsAvailable == nil || <-barsAvailable
@@ -552,12 +557,16 @@ func inlinePostImageResults(db *sql.DB, user int64, link *url.URL, previews *thu
 	return results
 }
 
-func postImageResult(db *sql.DB, link *url.URL, theme, zone string, translation translationSettings, previews *thumbnails, work *postImagePreviewWork) map[string]any {
+func postImageResult(ctx context.Context, db *sql.DB, link *url.URL, theme, zone string, translation translationSettings, previews *thumbnails, work *postImagePreviewWork) map[string]any {
+	_, span := startInlineSpan(ctx, "post_image.cache_lookup")
 	media, err := findPostImage(db, artworkID(xPostLink(link)), theme, zone, translation)
+	inlineSpanError(span, err)
+	span.SetAttributes(attribute.Bool("cache.hit", media.Type != ""))
+	span.End()
 	if err != nil {
 		log.Printf("loading cached post image: %v", err)
 	}
-	result := inlinePhoto(previews.postImagePreview(link, theme, zone, translation, work))
+	result := inlinePhoto(previews.postImagePreview(ctx, link, theme, zone, translation, work))
 	result["id"] = postImageID(link, theme)
 	baseTheme := strings.TrimSuffix(theme, "-bars")
 	result["title"] = "Post image · " + strings.ToUpper(baseTheme[:1]) + baseTheme[1:]
@@ -575,8 +584,15 @@ func postImageResult(db *sql.DB, link *url.URL, theme, zone string, translation 
 	result["reply_markup"] = map[string]any{"inline_keyboard": []any{[]any{wait}}}
 	return result
 }
-func postImageMedia(db *sql.DB, link *url.URL, theme, zone string, translation translationSettings, previews *thumbnails) (any, error) {
+func postImageMedia(ctx context.Context, db *sql.DB, link *url.URL, theme, zone string, translation translationSettings, previews *thumbnails) (any, error) {
+	ctx, span := startInlineSpan(ctx, "post_image.materialize")
+	defer span.End()
+
+	_, lookup := startInlineSpan(ctx, "post_image.cache_lookup")
 	cached, err := findPostImage(db, artworkID(xPostLink(link)), theme, zone, translation)
+	inlineSpanError(lookup, err)
+	lookup.SetAttributes(attribute.Bool("cache.hit", cached.Type != ""))
+	lookup.End()
 	if err != nil {
 		return nil, err
 	}
@@ -585,9 +601,16 @@ func postImageMedia(db *sql.DB, link *url.URL, theme, zone string, translation t
 	}
 	if previews != nil {
 		if variant := previews.existingPostImagePreview(link, theme, zone, translation); variant != nil {
+			_, wait := startInlineSpan(ctx, "post_image.preview_wait")
+			wait.AddLink(trace.Link{SpanContext: variant.spanContext})
 			<-variant.done
+			wait.End()
 			if variant.request.hasMotion() {
-				return renderPostMedia(link, variant.request)
+				_, render := startInlineSpan(ctx, "post_image.render_media")
+				media, err := renderPostMedia(link, variant.request)
+				inlineSpanError(render, err)
+				render.End()
+				return media, err
 			}
 			photo, err := variant.photo()
 			if err == nil {
@@ -596,11 +619,18 @@ func postImageMedia(db *sql.DB, link *url.URL, theme, zone string, translation t
 			log.Printf("reusing post image preview for %s (%s): %v", link, theme, err)
 		}
 	}
+	_, prepare := startInlineSpan(ctx, "post_image.fetch_prepare")
 	request, err := preparePostImage(link, theme, zone, translation)
+	inlineSpanError(prepare, err)
+	prepare.End()
 	if err != nil {
 		return nil, err
 	}
-	return renderPostMedia(link, request)
+	_, render := startInlineSpan(ctx, "post_image.render_media")
+	media, err := renderPostMedia(link, request)
+	inlineSpanError(render, err)
+	render.End()
+	return media, err
 }
 
 func postImageCaption(link *url.URL, request renderRequest) string {
@@ -624,7 +654,7 @@ func sendPostImage(bot *tgbotapi.BotAPI, db *sql.DB, message *tgbotapi.Message, 
 	if err != nil {
 		return err
 	}
-	media, err := postImageMedia(db, link, theme, zone, translation, nil)
+	media, err := postImageMedia(context.Background(), db, link, theme, zone, translation, nil)
 	if err != nil {
 		return err
 	}
@@ -641,7 +671,7 @@ func sendPostImage(bot *tgbotapi.BotAPI, db *sql.DB, message *tgbotapi.Message, 
 	return nil
 }
 
-func editInlinePostImage(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, cacheChat string, link *url.URL, theme string, previews *thumbnails, r *inlineRetry) error {
+func editInlinePostImage(ctx context.Context, bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, cacheChat string, link *url.URL, theme string, previews *thumbnails, r *inlineRetry) error {
 	zone, err := loadUserTimezone(db, chosen.From.ID)
 	if err != nil {
 		return err
@@ -652,7 +682,7 @@ func editInlinePostImage(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.Chos
 	}
 
 	media, err := retryInline(r, func() (any, error) {
-		return postImageMedia(db, link, theme, zone, translation, previews)
+		return postImageMedia(ctx, db, link, theme, zone, translation, previews)
 	})
 	if err != nil {
 		return err
@@ -660,7 +690,10 @@ func editInlinePostImage(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.Chos
 	base := mediaBase(media)
 	file, cached := base.Media.(tgbotapi.FileID)
 	if !cached {
-		_, id, err := cacheInlineMediaWithVideoRetry(bot, cacheChat, media, true, r)
+		uploadCtx, upload := startInlineSpan(ctx, "post_image.cache_upload")
+		_, id, err := cacheInlineMediaWithVideoRetry(telegramWithContext(bot, uploadCtx), cacheChat, media, true, r)
+		inlineSpanError(upload, err)
+		upload.End()
 		if err != nil {
 			return err
 		}
@@ -682,7 +715,7 @@ func editInlinePostImage(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.Chos
 	if err := editInlineMessage(bot, r, "editMessageMedia", params); err != nil {
 		return err
 	}
-	if err := selectArtwork(db, chosen.From.ID, artworkID(xPostLink(link))); err != nil {
+	if err := recordInlineSelection(ctx, db, chosen.From.ID, artworkID(xPostLink(link))); err != nil {
 		log.Printf("recording inline post image selection: %v", err)
 	}
 	return nil

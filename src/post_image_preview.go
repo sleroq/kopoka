@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"net/url"
@@ -9,22 +10,26 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type postImagePreviewWork struct {
-	variants   map[string]*postImagePreviewVariant
-	prepared   chan struct{}
-	request    renderRequest
-	bars       renderRequest
-	prepareErr error
-	barsKnown  bool
-	hasBars    bool
-	active     int
-	failed     bool
-	finished   time.Time
+	spanContext trace.SpanContext
+	variants    map[string]*postImagePreviewVariant
+	prepared    chan struct{}
+	request     renderRequest
+	bars        renderRequest
+	prepareErr  error
+	barsKnown   bool
+	hasBars     bool
+	active      int
+	failed      bool
+	finished    time.Time
 }
 type postImagePreviewVariant struct {
 	request                  renderRequest
+	spanContext              trace.SpanContext
 	done                     chan struct{}
 	data, preview, thumbnail []byte
 	width, height            int
@@ -38,7 +43,7 @@ func postImagePreviewLink(link *url.URL) *url.URL {
 	return post
 }
 
-func (t *thumbnails) startPostImagePreview(link *url.URL, zone string, translation translationSettings, themes ...string) *postImagePreviewWork {
+func (t *thumbnails) startPostImagePreview(ctx context.Context, link *url.URL, zone string, translation translationSettings, themes ...string) *postImagePreviewWork {
 	link = postImagePreviewLink(link)
 	key := artworkID(xPostLink(link)) + ":" + zone + ":" + translation.key()
 
@@ -53,9 +58,15 @@ func (t *thumbnails) startPostImagePreview(link *url.URL, zone string, translati
 	if work == nil {
 		work = &postImagePreviewWork{prepared: make(chan struct{}), variants: make(map[string]*postImagePreviewVariant)}
 		t.postImageWork[key] = work
+		workCtx, span := startInlineBackground(ctx, "post_image.prepare")
+		work.spanContext = span.SpanContext()
 		go func() {
+			defer span.End()
+			_, queue := startInlineSpan(workCtx, "preview.worker_wait")
 			t.workers <- struct{}{}
+			queue.End()
 			work.request, work.bars, work.prepareErr = preparePostImageVariants(t.client, link, zone, translation, true)
+			inlineSpanError(span, work.prepareErr)
 			work.barsKnown = work.prepareErr == nil
 			work.hasBars = work.bars.Post.Media.hasBars()
 			close(work.prepared)
@@ -64,13 +75,13 @@ func (t *thumbnails) startPostImagePreview(link *url.URL, zone string, translati
 	}
 	for _, base := range themes {
 		for _, theme := range []string{base, base + "-bars"} {
-			t.startPostImageVariant(work, link, key, theme)
+			t.startPostImageVariant(ctx, work, link, key, theme)
 		}
 	}
 	return work
 }
 
-func (t *thumbnails) startPostImageVariant(work *postImagePreviewWork, link *url.URL, key, theme string) {
+func (t *thumbnails) startPostImageVariant(ctx context.Context, work *postImagePreviewWork, link *url.URL, key, theme string) {
 	if work.variants[theme] != nil {
 		return
 	}
@@ -79,9 +90,16 @@ func (t *thumbnails) startPostImageVariant(work *postImagePreviewWork, link *url
 	work.active++
 	work.finished = time.Time{}
 
+	bars := strings.HasSuffix(theme, "-bars")
+	ctx, span := startInlineBackground(ctx, "post_image.variant", attribute.Bool("preview.bars", bars))
+	variant.spanContext = span.SpanContext()
+	span.AddLink(trace.Link{SpanContext: work.spanContext})
 	go func() {
+		defer span.End()
+		_, wait := startInlineSpan(ctx, "preview.prepare_wait")
 		<-work.prepared
-		if strings.HasSuffix(theme, "-bars") && work.duplicateBars() {
+		wait.End()
+		if bars && work.duplicateBars() {
 			t.mu.Lock()
 			normal := work.variants[strings.TrimSuffix(theme, "-bars")]
 			t.mu.Unlock()
@@ -92,15 +110,18 @@ func (t *thumbnails) startPostImageVariant(work *postImagePreviewWork, link *url
 			variant.caption, variant.err = normal.caption, normal.err
 			close(variant.done)
 		} else {
+			_, queue := startInlineSpan(ctx, "preview.worker_wait")
 			t.workers <- struct{}{}
+			queue.End()
 			request := work.request
-			if strings.HasSuffix(theme, "-bars") {
+			if bars {
 				request = work.bars
 			}
-			variant.render(t, link, request, theme, work.prepareErr)
+			variant.render(ctx, t, link, request, theme, work.prepareErr)
 			<-t.workers
 		}
 		t.mu.Lock()
+		inlineSpanError(span, variant.err)
 		work.failed = work.failed || variant.err != nil
 		work.active--
 		if work.active == 0 {
@@ -113,7 +134,7 @@ func (t *thumbnails) startPostImageVariant(work *postImagePreviewWork, link *url
 	}()
 }
 
-func (variant *postImagePreviewVariant) render(t *thumbnails, link *url.URL, request renderRequest, theme string, prepareErr error) {
+func (variant *postImagePreviewVariant) render(ctx context.Context, t *thumbnails, link *url.URL, request renderRequest, theme string, prepareErr error) {
 	defer close(variant.done)
 	variant.err = prepareErr
 	if prepareErr != nil {
@@ -122,7 +143,10 @@ func (variant *postImagePreviewVariant) render(t *thumbnails, link *url.URL, req
 	request.Theme = strings.TrimSuffix(theme, "-bars")
 	variant.request = request
 	variant.caption = postImageCaption(link, request)
+	_, render := startInlineSpan(ctx, "post_image.render")
 	variant.data, variant.err = renderPostImage(request)
+	inlineSpanError(render, variant.err)
+	render.End()
 	if variant.err != nil {
 		return
 	}
@@ -130,7 +154,7 @@ func (variant *postImagePreviewVariant) render(t *thumbnails, link *url.URL, req
 		{Kind: "media", Image: variant.data, Video: request.hasMotion(), Count: 1},
 		{Kind: "caption", Text: request.Post.AuthorName},
 	}
-	variant.thumbnail, variant.preview, variant.width, variant.height, variant.err = t.renderMessagePreview(blocks)
+	variant.thumbnail, variant.preview, variant.width, variant.height, variant.err = t.renderMessagePreview(ctx, blocks)
 }
 
 func (work *postImagePreviewWork) duplicateBars() bool {
@@ -163,14 +187,17 @@ func (work *postImagePreviewWork) postImageHasBars() bool {
 	}
 }
 
-func (t *thumbnails) postImagePreview(link *url.URL, theme, zone string, translation translationSettings, work *postImagePreviewWork) previewPhoto {
+func (t *thumbnails) postImagePreview(ctx context.Context, link *url.URL, theme, zone string, translation translationSettings, work *postImagePreviewWork) previewPhoto {
 	if work == nil {
 		return t.postImagePlaceholder(strings.TrimSuffix(theme, "-bars"))
 	}
+	_, span := startInlineSpan(ctx, "post_image.preview_wait")
+	defer span.End()
 	link = postImagePreviewLink(link)
 	t.mu.Lock()
 	variant := work.variants[theme]
 	t.mu.Unlock()
+	span.AddLink(trace.Link{SpanContext: variant.spanContext})
 	select {
 	case <-variant.done:
 		if variant.err == nil {
@@ -183,8 +210,10 @@ func (t *thumbnails) postImagePreview(link *url.URL, theme, zone string, transla
 			u := address.String()
 			return previewPhoto{photoURL: u + "&size=large", thumbnailURL: u, width: variant.width, height: variant.height}
 		}
+		inlineSpanError(span, variant.err)
 		log.Printf("generating post image preview for %s (%s): %v", link, theme, variant.err)
 	case <-time.After(8 * time.Second):
+		inlineSpanError(span, context.DeadlineExceeded)
 	}
 	return t.postImagePlaceholder(strings.TrimSuffix(theme, "-bars"))
 }
@@ -209,6 +238,8 @@ func (variant *postImagePreviewVariant) photo() (tgbotapi.InputMediaPhoto, error
 }
 
 func (t *thumbnails) servePostImagePreview(w http.ResponseWriter, r *http.Request) {
+	ctx, span := startInlineRoot(r.Context(), "preview.post_image.http", time.Now())
+	defer span.End()
 	for _, size := range r.URL.Query()["size"] {
 		if size != "large" {
 			http.Error(w, "invalid size", http.StatusBadRequest)
@@ -237,15 +268,17 @@ func (t *thumbnails) servePostImagePreview(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "invalid translation settings", http.StatusBadRequest)
 		return
 	}
-	work := t.startPostImagePreview(link, zone, translation, strings.TrimSuffix(theme, "-bars"))
+	work := t.startPostImagePreview(ctx, link, zone, translation, strings.TrimSuffix(theme, "-bars"))
 	t.mu.Lock()
 	variant := work.variants[theme]
 	t.mu.Unlock()
+	span.AddLink(trace.Link{SpanContext: variant.spanContext})
 	select {
 	case <-r.Context().Done():
 		return
 	case <-variant.done:
 		if variant.err != nil {
+			inlineSpanError(span, variant.err)
 			log.Printf("generating post image preview for %s (%s): %v", link, theme, variant.err)
 			http.Error(w, "post image preview generation failed", http.StatusBadGateway)
 			return

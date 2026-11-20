@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -133,13 +134,13 @@ func TestPostImageTranslationPreviewIntegration(t *testing.T) {
 	t.Setenv("KOPOKA_RENDERER", renderer)
 	previews := testPreviews(t, db, nil)
 	previews.client = client
-	first := previews.startPostImagePreview(link, "UTC", defaults, "light")
-	if first != previews.startPostImagePreview(link, "UTC", defaults, "light") {
+	first := previews.startPostImagePreview(context.Background(), link, "UTC", defaults, "light")
+	if first != previews.startPostImagePreview(context.Background(), link, "UTC", defaults, "light") {
 		t.Fatal("identical policy did not share work")
 	}
-	second := previews.startPostImagePreview(link, "UTC", all, "light")
+	second := previews.startPostImagePreview(context.Background(), link, "UTC", all, "light")
 	french := translationSettings{Target: "fr", Ignored: []string{"ru"}}
-	third := previews.startPostImagePreview(link, "UTC", french, "light")
+	third := previews.startPostImagePreview(context.Background(), link, "UTC", french, "light")
 	defer func() {
 		for _, work := range []*postImagePreviewWork{first, second, third} {
 			for _, variant := range work.variants {
@@ -150,7 +151,7 @@ func TestPostImageTranslationPreviewIntegration(t *testing.T) {
 	if first == second || first == third || second == third {
 		t.Fatal("different policies shared work")
 	}
-	photo := previews.postImagePreview(link, "light", "UTC", all, second)
+	photo := previews.postImagePreview(context.Background(), link, "light", "UTC", all, second)
 	u, err := url.Parse(photo.photoURL)
 	if err != nil {
 		t.Fatal(err)
@@ -158,8 +159,8 @@ func TestPostImageTranslationPreviewIntegration(t *testing.T) {
 	if u.Query().Get("target") != "en" || !u.Query().Has("ignored") || u.Query().Get("ignored") != "" {
 		t.Fatalf("preview URL %s", u)
 	}
-	defaultPhoto := previews.postImagePreview(link, "light", "UTC", defaults, first)
-	frenchPhoto := previews.postImagePreview(link, "light", "UTC", french, third)
+	defaultPhoto := previews.postImagePreview(context.Background(), link, "light", "UTC", defaults, first)
+	frenchPhoto := previews.postImagePreview(context.Background(), link, "light", "UTC", french, third)
 	if photo.photoURL == defaultPhoto.photoURL || photo.photoURL == frenchPhoto.photoURL {
 		t.Fatal("different policies shared URL")
 	}

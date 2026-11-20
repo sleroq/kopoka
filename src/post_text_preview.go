@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"go.opentelemetry.io/otel/trace"
 	"image/jpeg"
 	"log"
 	"net/http"
@@ -15,6 +17,7 @@ import (
 const postTextPreviewVersion = 11
 
 type postTextPreviewWork struct {
+	spanContext   trace.SpanContext
 	done          chan struct{}
 	thumbnail     []byte
 	large         []byte
@@ -23,7 +26,7 @@ type postTextPreviewWork struct {
 	finished      time.Time
 }
 
-func (t *thumbnails) startPostTextPreview(link *url.URL) *postTextPreviewWork {
+func (t *thumbnails) startPostTextPreview(ctx context.Context, link *url.URL) *postTextPreviewWork {
 	link = xPostLink(link)
 	key := artworkID(link)
 	t.mu.Lock()
@@ -38,14 +41,20 @@ func (t *thumbnails) startPostTextPreview(link *url.URL) *postTextPreviewWork {
 	}
 	work := &postTextPreviewWork{done: make(chan struct{})}
 	t.postTextWork[key] = work
+	ctx, span := startInlineBackground(ctx, "post_text.preview_work")
+	work.spanContext = span.SpanContext()
 	go func() {
+		defer span.End()
+		_, queue := startInlineSpan(ctx, "preview.worker_wait")
 		t.workers <- struct{}{}
-		blocks, err := t.postTextPreviewBlocks(link)
+		queue.End()
+		blocks, err := t.postTextPreviewBlocks(ctx, link)
 		if err == nil {
-			work.thumbnail, work.large, work.width, work.height, err = t.renderMessagePreview(blocks)
+			work.thumbnail, work.large, work.width, work.height, err = t.renderMessagePreview(ctx, blocks)
 		}
 		<-t.workers
 		t.mu.Lock()
+		inlineSpanError(span, err)
 		work.err, work.finished = err, time.Now()
 		if err != nil {
 			delete(t.postTextWork, key)
@@ -56,11 +65,14 @@ func (t *thumbnails) startPostTextPreview(link *url.URL) *postTextPreviewWork {
 	return work
 }
 
-func (t *thumbnails) postTextPreview(link *url.URL, instant bool) previewPhoto {
+func (t *thumbnails) postTextPreview(ctx context.Context, link *url.URL, instant bool) previewPhoto {
 	if instant {
 		return t.postTextPhoto()
 	}
-	work := t.startPostTextPreview(link)
+	work := t.startPostTextPreview(ctx, link)
+	_, span := startInlineSpan(ctx, "post_text.preview_wait")
+	defer span.End()
+	span.AddLink(trace.Link{SpanContext: work.spanContext})
 	select {
 	case <-work.done:
 		if work.err == nil {
@@ -73,25 +85,31 @@ func (t *thumbnails) postTextPreview(link *url.URL, instant bool) previewPhoto {
 			u := address.String()
 			return previewPhoto{photoURL: u + "&size=large", thumbnailURL: u, width: work.width, height: work.height}
 		}
+		inlineSpanError(span, work.err)
 		log.Printf("generating post text preview for %s: %v", link, work.err)
 	case <-time.After(8 * time.Second):
+		inlineSpanError(span, context.DeadlineExceeded)
 	}
 	return t.postTextPhoto()
 }
 
 func (t *thumbnails) servePostTextPreview(w http.ResponseWriter, r *http.Request) {
+	ctx, span := startInlineRoot(r.Context(), "preview.post_text.http", time.Now())
+	defer span.End()
 	link := inlineLink(r.URL.Query().Get("url"))
 	size := r.URL.Query().Get("size")
 	if link == nil || !xLinkHosts[strings.ToLower(link.Host)] || size != "" && size != "large" {
 		http.Error(w, "invalid preview request", http.StatusBadRequest)
 		return
 	}
-	work := t.startPostTextPreview(link)
+	work := t.startPostTextPreview(ctx, link)
+	span.AddLink(trace.Link{SpanContext: work.spanContext})
 	select {
 	case <-r.Context().Done():
 		return
 	case <-work.done:
 		if work.err != nil {
+			inlineSpanError(span, work.err)
 			log.Printf("generating post text preview for %s: %v", link, work.err)
 			http.Error(w, "post text preview generation failed", http.StatusBadGateway)
 			return
@@ -164,8 +182,11 @@ func (t *thumbnails) postTextMediaBlock(items []thumbnailMedia, carousel bool) (
 	return previewBlock{Kind: "media", Image: encoded.Bytes(), Video: video, Count: count}, nil
 }
 
-func (t *thumbnails) postTextPreviewBlocks(link *url.URL) ([]previewBlock, error) {
+func (t *thumbnails) postTextPreviewBlocks(ctx context.Context, link *url.URL) ([]previewBlock, error) {
+	_, span := startInlineSpan(ctx, "post_text.fetch")
 	post, parents, more, err := loadXPostThread(t.client, link)
+	inlineSpanError(span, err)
+	span.End()
 	if err != nil {
 		return nil, err
 	}

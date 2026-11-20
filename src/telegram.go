@@ -31,6 +31,7 @@ type telegramUpdate struct {
 	tgbotapi.Update
 	Message     *telegramMessage `json:"message"`
 	ChannelPost *telegramMessage `json:"channel_post"`
+	received    time.Time
 }
 
 func getTelegramUpdates(bot *tgbotapi.BotAPI, config tgbotapi.UpdateConfig) ([]telegramUpdate, error) {
@@ -38,8 +39,12 @@ func getTelegramUpdates(bot *tgbotapi.BotAPI, config tgbotapi.UpdateConfig) ([]t
 	if err != nil {
 		return nil, err
 	}
+	received := time.Now()
 	var updates []telegramUpdate
 	err = json.Unmarshal(response.Result, &updates)
+	for i := range updates {
+		updates[i].received = received
+	}
 	return updates, err
 }
 

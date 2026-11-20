@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -17,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -278,7 +280,7 @@ func TestXPostInlineVideoURLRetry(t *testing.T) {
 				t.Fatal(err)
 			}
 			queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})
-			handleChosenInlineResult(bot, nil, db, &tgbotapi.ChosenInlineResult{
+			handleChosenInlineResult(time.Now(), bot, nil, db, &tgbotapi.ChosenInlineResult{
 				From: &tgbotapi.User{ID: 1}, ResultID: inlinePostTextID, InlineMessageID: "inline",
 				Query: "https://x.com/user/status/12",
 			}, "@cache", queue, nil)
@@ -349,7 +351,7 @@ func TestXPostInlineFormats(t *testing.T) {
 	link := "https://x.com/user/status/5"
 	query := &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 1}, Query: link}
 	previews := testPreviews(t, db, bot)
-	handleInlineQuery(bot, db, query, previews)
+	handleInlineQuery(time.Now(), bot, db, query, previews)
 	for _, result := range api.results {
 		if result["type"] != "photo" {
 			t.Fatalf("non-photo result breaks gallery: %#v", result)
@@ -371,7 +373,7 @@ func TestXPostInlineFormats(t *testing.T) {
 	}
 	previews.client = &http.Client{}
 	previewLink, _ := url.Parse(link)
-	blocks, err := previews.postTextPreviewBlocks(previewLink)
+	blocks, err := previews.postTextPreviewBlocks(context.Background(), previewLink)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,7 +391,7 @@ func TestXPostInlineFormats(t *testing.T) {
 	choose := func(id int64, link string) url.Values {
 		t.Helper()
 		before := len(api.edits)
-		handleChosenInlineResult(bot, nil, db, &tgbotapi.ChosenInlineResult{
+		handleChosenInlineResult(time.Now(), bot, nil, db, &tgbotapi.ChosenInlineResult{
 			From: &tgbotapi.User{ID: id}, ResultID: inlinePostTextID, InlineMessageID: "inline", Query: link,
 		}, "@cache", queue, nil)
 		if len(api.edits) != before+1 {
@@ -404,7 +406,7 @@ func TestXPostInlineFormats(t *testing.T) {
 	chosen := &tgbotapi.ChosenInlineResult{
 		From: &tgbotapi.User{ID: 1}, InlineMessageID: "inline",
 	}
-	err = editInlinePostText(bot, db, chosen, "@cache", capLink, nil)
+	err = editInlinePostText(context.Background(), bot, db, chosen, "@cache", capLink, nil)
 	if err == nil || api.paths[len(api.paths)-1] != "/i/status/14" || len(api.uploads) != before {
 		t.Fatalf("attachment cap: error %v, uploads %v, paths %v", err, api.uploads[before:], api.paths)
 	}

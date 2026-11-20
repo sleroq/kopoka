@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/everpcpc/pixiv"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -183,7 +184,7 @@ func checkPixivInlineFlow(t *testing.T, server *httptest.Server, app *pixiv.AppP
 		ID: "query", From: &tgbotapi.User{ID: 1},
 		Query: "https://www.pixiv.net/en/artworks/152026329",
 	}
-	handleInlineQuery(bot, db, query, testPreviews(t, db, bot))
+	handleInlineQuery(time.Now(), bot, db, query, testPreviews(t, db, bot))
 	if len(*answer) == 0 || (*answer)[0]["id"] != inlineResultID {
 		t.Fatalf("inline answer: %v", *answer)
 	}
@@ -192,11 +193,11 @@ func checkPixivInlineFlow(t *testing.T, server *httptest.Server, app *pixiv.AppP
 		InlineMessageID: "inline", Query: query.Query,
 	}
 	queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})
-	handleChosenInlineResult(bot, app, db, chosen, "@cache", queue, nil)
+	handleChosenInlineResult(time.Now(), bot, app, db, chosen, "@cache", queue, nil)
 	if (*edit)["type"] != "animation" || (*edit)["media"] != "animation-id" {
 		t.Fatalf("inline edit: %v", *edit)
 	}
-	handleInlineQuery(bot, db, query, testPreviews(t, db, bot))
+	handleInlineQuery(time.Now(), bot, db, query, testPreviews(t, db, bot))
 	if len(*answer) == 0 || (*answer)[0]["type"] != "photo" || (*answer)[0]["photo_url"] != "https://preview.example.com/thumbnail-placeholder-pixiv.jpg" {
 		t.Fatalf("cached inline answer: %v", *answer)
 	}
@@ -322,7 +323,7 @@ func TestPixivNumericSelection(t *testing.T) {
 		t.Fatal(link)
 	}
 	previews := testPreviews(t, db, bot)
-	results := inlineArtworkResults(db, 1, link, previews, true)
+	results := inlineArtworkResults(context.Background(), db, 1, link, previews, true).results
 	if len(results) != 1 {
 		t.Fatalf("selected results: %v", results)
 	}
@@ -330,7 +331,7 @@ func TestPixivNumericSelection(t *testing.T) {
 	chosen := &tgbotapi.ChosenInlineResult{
 		From: &tgbotapi.User{ID: 1}, ResultID: inlineResultID, InlineMessageID: "inline", Query: query,
 	}
-	if err := editInlineArtwork(bot, app, db, chosen, "@cache", nil, nil); err != nil {
+	if err := editInlineArtwork(context.Background(), bot, app, db, chosen, "@cache", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(downloads) != 1 || downloads[0] != "/p1" {
@@ -340,13 +341,13 @@ func TestPixivNumericSelection(t *testing.T) {
 	if err != nil || a == nil || len(a.Photos) != 1 || strings.Contains(a.Caption, "?photo=") {
 		t.Fatalf("artwork: %+v %v", a, err)
 	}
-	results = inlineArtworkResults(db, 1, link, previews, true)
+	results = inlineArtworkResults(context.Background(), db, 1, link, previews, true).results
 	if len(results) != 1 || results[0].(map[string]any)["id"] != a.ID {
 		t.Fatal(results)
 	}
 	chosen.ResultID = a.ID
 	queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})
-	handleChosenInlineResult(bot, app, db, chosen, "@cache", queue, nil)
+	handleChosenInlineResult(time.Now(), bot, app, db, chosen, "@cache", queue, nil)
 	if len(downloads) != 1 {
 		t.Fatal(downloads)
 	}

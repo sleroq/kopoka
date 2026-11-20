@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -81,7 +82,7 @@ func TestPostImageBarsInlineResults(t *testing.T) {
 			}
 		}
 		link := inlineLink("https://x.com/user/status/" + tc.id + "/photo/2")
-		results := inlineArtworkResults(db, user, link, previews, false)
+		results := inlineArtworkResults(context.Background(), db, user, link, previews, false).results
 		found := 0
 		for _, item := range results {
 			result := item.(map[string]any)
@@ -102,7 +103,7 @@ func TestPostImageBarsInlineResults(t *testing.T) {
 		{"3", 1, 0}, {"1", 1, 1}, {"2", 1, 1}, {"3", 2, 2},
 	} {
 		link := inlineLink("https://x.com/user/status/" + tc.id)
-		results := inlineArtworkResults(db, tc.user, link, previews, false)
+		results := inlineArtworkResults(context.Background(), db, tc.user, link, previews, false).results
 		if len(results) == 0 || results[len(results)-1].(map[string]any)["id"] != "post:text" {
 			t.Fatalf("id=%s user=%d results=%v", tc.id, tc.user, results)
 		}
@@ -180,16 +181,16 @@ cat "$TEST_IMAGE"
 		return strings.Join(names, ",")
 	}
 
-	if got := ids(inlinePostImageResults(db, 1, link, previews, true)); got != "light,dark,light-bars,dark-bars" {
+	if got := ids(inlinePostImageResults(context.Background(), db, 1, link, previews, true)); got != "light,dark,light-bars,dark-bars" {
 		t.Fatalf("instant without preparation: %s", got)
 	}
 	if fetches.Load() == 0 {
 		t.Fatal("instant mode did not fetch post media")
 	}
-	if got := ids(inlinePostImageResults(db, 1, link, previews, false)); got != "light,dark" {
+	if got := ids(inlinePostImageResults(context.Background(), db, 1, link, previews, false)); got != "light,dark" {
 		t.Fatalf("carousel: %s", got)
 	}
-	if got := ids(inlinePostImageResults(db, 1, link, previews, true)); got != "light,dark" {
+	if got := ids(inlinePostImageResults(context.Background(), db, 1, link, previews, true)); got != "light,dark" {
 		t.Fatalf("instant with preparation: %s", got)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "bars")); !os.IsNotExist(err) {
@@ -202,10 +203,10 @@ cat "$TEST_IMAGE"
 	if err := savePostImageTheme(db, 1, "dim"); err != nil {
 		t.Fatal(err)
 	}
-	if got := ids(inlinePostImageResults(db, 1, link, previews, false)); got != "warm,dim" {
+	if got := ids(inlinePostImageResults(context.Background(), db, 1, link, previews, false)); got != "warm,dim" {
 		t.Fatalf("warm and dim carousel: %s", got)
 	}
-	if got := ids(inlinePostImageResults(db, 1, link, previews, true)); got != "warm,dim" {
+	if got := ids(inlinePostImageResults(context.Background(), db, 1, link, previews, true)); got != "warm,dim" {
 		t.Fatalf("instant warm and dim carousel: %s", got)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "bars")); !os.IsNotExist(err) {

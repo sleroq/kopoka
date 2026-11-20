@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"image/jpeg"
@@ -51,12 +52,12 @@ func TestAutomaticPostImages(t *testing.T) {
 	chosen := &tgbotapi.ChosenInlineResult{
 		From: message.From, ResultID: inlineResultID, InlineMessageID: "inline", Query: "https://x.com/user/status/2",
 	}
-	if err := editInlineArtwork(bot, nil, db, chosen, "@cache", nil, nil); err != nil {
+	if err := editInlineArtwork(context.Background(), bot, nil, db, chosen, "@cache", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("KOPOKA_RENDERER", filepath.Join(t.TempDir(), "missing"))
 	chosen.ResultID = inlineMergedResultID
-	if err := editInlineArtwork(bot, nil, db, chosen, "@cache", nil, nil); err != nil {
+	if err := editInlineArtwork(context.Background(), bot, nil, db, chosen, "@cache", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 

@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf16"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -207,7 +208,7 @@ func TestChatHistorySettingsFlow(t *testing.T) {
 	}
 	check := func(ids ...string) {
 		t.Helper()
-		handleInlineQuery(bot, db, &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 1}}, testPreviews(t, db, bot))
+		handleInlineQuery(time.Now(), bot, db, &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 1}}, testPreviews(t, db, bot))
 		if len(answers) != len(ids) {
 			t.Fatalf("history: %v want %v", answers, ids)
 		}
@@ -248,7 +249,7 @@ func TestChatHistorySettingsFlow(t *testing.T) {
 	chat("https://x.com/u/status/2")
 	check("x:99")
 	chosen := &tgbotapi.ChosenInlineResult{From: &tgbotapi.User{ID: 1}, ResultID: "x:1"}
-	handleChosenInlineResult(bot, nil, db, chosen, "", queue, nil)
+	handleChosenInlineResult(time.Now(), bot, nil, db, chosen, "", queue, nil)
 	chat("https://x.com/u/status/1")
 	check("x:1", "x:99")
 	command("/historyoff")

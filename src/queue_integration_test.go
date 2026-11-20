@@ -185,7 +185,7 @@ func TestMediaQueueChatAndInline(t *testing.T) {
 		t.Fatalf("finished before releasing work: %s", got)
 	}
 	launch("rejected inline", func() {
-		handleChosenInlineResult(bot, nil, db, &tgbotapi.ChosenInlineResult{
+		handleChosenInlineResult(time.Now(), bot, nil, db, &tgbotapi.ChosenInlineResult{
 			From: &tgbotapi.User{ID: 1}, ResultID: inlineResultID, InlineMessageID: "rejected", Query: "https://x.com/u/status/10",
 		}, "@cache", queue, nil)
 	})
@@ -200,7 +200,7 @@ func TestMediaQueueChatAndInline(t *testing.T) {
 	launch("other chat", func() { handleMessage(bot, nil, db, queuedChat(2, 44, 7), queue, nil) })
 	waitForQueued(t, queue, 2, 1)
 	launch("other inline", func() {
-		handleChosenInlineResult(bot, nil, db, &tgbotapi.ChosenInlineResult{
+		handleChosenInlineResult(time.Now(), bot, nil, db, &tgbotapi.ChosenInlineResult{
 			From: &tgbotapi.User{ID: 2}, ResultID: inlineResultID, InlineMessageID: "accepted", Query: "https://x.com/u/status/8",
 		}, "@cache", queue, nil)
 	})
@@ -275,7 +275,7 @@ func TestMediaQueueRollingLimits(t *testing.T) {
 		t.Fatalf("upstream failure: %s", message)
 	}
 	handleMessage(bot, nil, db, queuedChat(1, 2, 2), queue, nil)
-	handleChosenInlineResult(bot, nil, db, &tgbotapi.ChosenInlineResult{
+	handleChosenInlineResult(time.Now(), bot, nil, db, &tgbotapi.ChosenInlineResult{
 		From: &tgbotapi.User{ID: 1}, ResultID: inlineResultID, InlineMessageID: "limited", Query: "https://x.com/u/status/3",
 	}, "@cache", queue, nil)
 	if message := strings.ToLower(queueEvent(t, api.edits)); !strings.Contains(message, "hour") || !strings.Contains(message, "retry later") {
@@ -300,7 +300,7 @@ func TestMediaQueueRollingLimits(t *testing.T) {
 	handleMessage(bot, nil, db, queuedChat(1, 7, 7), queue, nil)
 
 	// Cached selections do not fetch media and remain available at the limit.
-	handleChosenInlineResult(bot, nil, db, &tgbotapi.ChosenInlineResult{
+	handleChosenInlineResult(time.Now(), bot, nil, db, &tgbotapi.ChosenInlineResult{
 		From: &tgbotapi.User{ID: 1}, ResultID: "x:2",
 	}, "@cache", queue, nil)
 	var inlineOrigin int

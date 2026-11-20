@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -169,7 +170,7 @@ func TestPostImageLoadingActions(t *testing.T) {
 		t.Fatal(err)
 	}
 	link := inlineLink("https://x.com/artist/status/123/photo/2")
-	result := postImageResult(db, link, "light", "UTC", defaultTranslationSettings(), testPreviews(t, db, bot), nil)
+	result := postImageResult(context.Background(), db, link, "light", "UTC", defaultTranslationSettings(), testPreviews(t, db, bot), nil)
 	content := result["input_message_content"].(map[string]any)
 	encoded, err := json.Marshal(content["entities"])
 	if err != nil {
@@ -201,7 +202,7 @@ func TestInlineArtworkLoadingAndCaption(t *testing.T) {
 	db := testArtworkDB(t)
 	bot := &tgbotapi.BotAPI{}
 	link := inlineLink("https://www.pixiv.net/artworks/123")
-	result := inlineArtworkResult(db, link, testPreviews(t, db, bot), false)
+	result := inlineArtworkResult(context.Background(), db, link, testPreviews(t, db, bot), false).result
 	content := result["input_message_content"].(map[string]any)
 	encoded, err := json.Marshal(content["entities"])
 	if err != nil {

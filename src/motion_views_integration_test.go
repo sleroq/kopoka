@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"image/color"
@@ -67,7 +68,7 @@ func TestMotionViewsIntegration(t *testing.T) {
 			link, _ = url.Parse("https://x.com/user/status/42")
 			chosen := &tgbotapi.ChosenInlineResult{From: &tgbotapi.User{ID: 1}, InlineMessageID: "inline"}
 			for range 2 {
-				if err := editInlinePostImage(bot, db, chosen, "@cache", link, "light", nil, nil); err != nil {
+				if err := editInlinePostImage(context.Background(), bot, db, chosen, "@cache", link, "light", nil, nil); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -81,16 +82,16 @@ func TestMotionViewsIntegration(t *testing.T) {
 			previews := testPreviews(t, db, bot)
 			previews.client = &http.Client{Transport: redirectTransport{target, original}}
 			for _, instant := range []bool{true, false} {
-				if result := inlineMergedResult(link, previews, instant, false); result != nil {
+				if result := inlineMergedResult(context.Background(), link, previews, instant, false); result != nil {
 					t.Fatalf("instant=%v: unexpected merged result %v", instant, result)
 				}
-				if result := inlineMergedResult(link, previews, instant, true); result == nil {
+				if result := inlineMergedResult(context.Background(), link, previews, instant, true); result == nil {
 					t.Fatalf("instant=%v: missing merged with bars result", instant)
 				}
 			}
 			selected, _ := url.Parse("https://fxtwitter.com/user/status/42/video/1")
 			for _, instant := range []bool{true, false} {
-				results := inlinePostImageResults(db, 1, selected, previews, instant)
+				results := inlinePostImageResults(context.Background(), db, 1, selected, previews, instant)
 				if len(results) != 2 {
 					t.Fatalf("instant=%v: post image results %v", instant, results)
 				}
@@ -100,7 +101,7 @@ func TestMotionViewsIntegration(t *testing.T) {
 					}
 				}
 			}
-			result := postImageResult(db, link, "light", defaultTimezone, defaultTranslationSettings(), previews, nil)
+			result := postImageResult(context.Background(), db, link, "light", defaultTimezone, defaultTranslationSettings(), previews, nil)
 			if result["type"] != "photo" || result["id"] != postImageID(link, "light")+":cached" || result["input_message_content"].(map[string]any)["message_text"] != "Loading post image…" {
 				t.Fatalf("inline result %v", result)
 			}

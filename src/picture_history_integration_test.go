@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -72,7 +73,7 @@ func (s *pictureHistoryScenario) save(a artwork, inline bool) {
 func (s *pictureHistoryScenario) query(text, cursor string) {
 	s.t.Helper()
 	q := &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 1}, Query: text, Offset: cursor}
-	handleInlineQuery(s.bot, s.db, q, testPreviews(s.t, s.db, s.bot))
+	handleInlineQuery(time.Now(), s.bot, s.db, q, testPreviews(s.t, s.db, s.bot))
 }
 
 func (s *pictureHistoryScenario) toggle(user int64) {
@@ -239,20 +240,20 @@ func checkPictureHistorySelection(t *testing.T, s *pictureHistoryScenario, capti
 	}
 
 	chosen := &tgbotapi.ChosenInlineResult{From: &tgbotapi.User{ID: 1}, ResultID: "x:3:item:0"}
-	handleChosenInlineResult(s.bot, nil, s.db, chosen, "", nil, nil)
+	handleChosenInlineResult(time.Now(), s.bot, nil, s.db, chosen, "", nil, nil)
 	s.query(".", "")
 	if len(s.answer) != 6 || s.answer[0]["id"] != "x:3:item:0" {
 		t.Fatalf("selection: %v", s.answer)
 	}
 
 	chosen.ResultID = "x:2:photo:3:item:0"
-	handleChosenInlineResult(s.bot, nil, s.db, chosen, "", nil, nil)
+	handleChosenInlineResult(time.Now(), s.bot, nil, s.db, chosen, "", nil, nil)
 	s.query(".", "")
 	if s.answer[0]["id"] != "x:2:photo:3:item:0" {
 		t.Fatalf("selected-photo order: %v", s.answer)
 	}
 	chosen.ResultID = "x:1:item:1"
-	handleChosenInlineResult(s.bot, nil, s.db, chosen, "", nil, nil)
+	handleChosenInlineResult(time.Now(), s.bot, nil, s.db, chosen, "", nil, nil)
 	s.query(".", "")
 	if s.answer[0]["id"] != "x:1:item:0" {
 		t.Fatalf("recent order: %v", s.answer)

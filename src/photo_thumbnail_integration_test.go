@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -77,7 +78,7 @@ func TestSelectedPhotoThumbnailHTTP(t *testing.T) {
 	}
 	parent := "https://x.com/user/status/30"
 	whole := readThumbnail(t, get(parent))
-	work := previews.start(inlineLink(parent))
+	work := previews.start(context.Background(), inlineLink(parent))
 	<-work.done
 	if work.actual != 2 {
 		t.Fatalf("whole post merge count: %d", work.actual)

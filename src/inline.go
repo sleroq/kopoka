@@ -15,6 +15,8 @@ import (
 
 	"github.com/everpcpc/pixiv"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const inlineResultID = "artwork"
@@ -113,12 +115,16 @@ func inlineQuerySelection(query string) (*url.URL, bool) {
 	return nil, false
 }
 
-func preferredInlineLink(db *sql.DB, user int64, query string) (*url.URL, error) {
+func preferredInlineLink(ctx context.Context, db *sql.DB, user int64, query string) (*url.URL, error) {
 	link, explicit := inlineQuerySelection(query)
 	if link == nil || explicit {
 		return link, nil
 	}
-	return preferredPhotoLink(db, user, link)
+	_, span := startInlineSpan(ctx, "sqlite.photo_preference")
+	defer span.End()
+	link, err := preferredPhotoLink(db, user, link)
+	inlineSpanError(span, err)
+	return link, err
 }
 
 func inlinePhoto(photo previewPhoto) map[string]any {
@@ -132,8 +138,8 @@ func inlinePhoto(photo previewPhoto) map[string]any {
 	return result
 }
 
-func cachedInlineResult(a artwork, previews *thumbnails) map[string]any {
-	result := inlinePhoto(previews.savedPhoto(a))
+func cachedInlineResult(ctx context.Context, a artwork, previews *thumbnails) map[string]any {
+	result := inlinePhoto(previews.savedPhoto(ctx, a))
 	result["id"], result["title"], result["description"] = a.ID, a.Author, a.Text
 	if len(a.Photos) == 1 && (strings.HasSuffix(a.ID, ":merged") || strings.HasSuffix(a.ID, ":merged:bars")) {
 		result["id"] = a.ID + ":preview"
@@ -198,12 +204,12 @@ func slideshow(a artwork) map[string]any {
 	return map[string]any{"html": markup.String(), "media": media}
 }
 
-func inlineHistory(db *sql.DB, query *tgbotapi.InlineQuery, source string, previews *thumbnails) ([]any, string) {
+func inlineHistory(ctx context.Context, db *sql.DB, query *tgbotapi.InlineQuery, source string, previews *thumbnails) ([]any, string) {
 	offset, err := strconv.Atoi(query.Offset)
 	if err != nil || offset < 0 {
 		offset = 0
 	}
-	history, err := artworkHistory(db, query.From.ID, offset, source)
+	history, err := loadInlineHistory(ctx, db, query.From.ID, offset, source)
 	if err != nil {
 		log.Printf("loading inline history: %v", err)
 	}
@@ -214,7 +220,7 @@ func inlineHistory(db *sql.DB, query *tgbotapi.InlineQuery, source string, previ
 	}
 	results := []any{}
 	for _, a := range history {
-		results = append(results, cachedInlineResult(a, previews))
+		results = append(results, cachedInlineResult(ctx, a, previews))
 	}
 	return results, nextOffset
 }
@@ -235,8 +241,11 @@ func historyFilters(query string) (source string, invert, ok bool) {
 	return source, invert, true
 }
 
-func inlineHistoryView(db *sql.DB, query *tgbotapi.InlineQuery, source string, invert bool, previews *thumbnails) ([]any, string) {
+func inlineHistoryView(ctx context.Context, db *sql.DB, query *tgbotapi.InlineQuery, source string, invert bool, previews *thumbnails) ([]any, string) {
+	_, span := startInlineSpan(ctx, "sqlite.history_view_preference")
 	pictures, err := pictureHistoryEnabled(db, query.From.ID)
+	inlineSpanError(span, err)
+	span.End()
 	if err != nil {
 		log.Printf("loading history view: %v", err)
 		return inlinePreferenceFailure(), ""
@@ -245,12 +254,20 @@ func inlineHistoryView(db *sql.DB, query *tgbotapi.InlineQuery, source string, i
 		pictures = !pictures
 	}
 	if pictures {
-		return inlinePictureHistory(db, query, source)
+		return inlinePictureHistory(ctx, db, query, source)
 	}
-	return inlineHistory(db, query, source, previews)
+	return inlineHistory(ctx, db, query, source, previews)
 }
 
-func inlinePictureHistory(db *sql.DB, query *tgbotapi.InlineQuery, source string) ([]any, string) {
+func loadInlineHistory(ctx context.Context, db *sql.DB, user int64, offset int, source string) ([]artwork, error) {
+	_, span := startInlineSpan(ctx, "sqlite.artwork_history")
+	defer span.End()
+	history, err := artworkHistory(db, user, offset, source)
+	inlineSpanError(span, err)
+	return history, err
+}
+
+func inlinePictureHistory(ctx context.Context, db *sql.DB, query *tgbotapi.InlineQuery, source string) ([]any, string) {
 	postOffset, mediaIndex := 0, 0
 	if post, media, ok := strings.Cut(query.Offset, ":"); ok {
 		p, pErr := strconv.Atoi(post)
@@ -260,7 +277,7 @@ func inlinePictureHistory(db *sql.DB, query *tgbotapi.InlineQuery, source string
 		}
 	}
 
-	history, err := artworkHistory(db, query.From.ID, postOffset, source)
+	history, err := loadInlineHistory(ctx, db, query.From.ID, postOffset, source)
 	if err != nil {
 		log.Printf("loading inline history: %v", err)
 	}
@@ -303,18 +320,27 @@ func cachedPictureResult(a artwork, i int) map[string]any {
 	return result
 }
 
-func inlineArtworkResult(db *sql.DB, link *url.URL, previews *thumbnails, instant bool) map[string]any {
-	a, err := findArtwork(db, artworkID(link))
+type artworkQueryResult struct {
+	result map[string]any
+	cache  string
+}
+
+func inlineArtworkResult(ctx context.Context, db *sql.DB, link *url.URL, previews *thumbnails, instant bool) artworkQueryResult {
+	ctx, span := startInlineSpan(ctx, "inline.variant.artwork")
+	defer span.End()
+	a, err := findInlineArtwork(ctx, db, artworkID(link))
+	cache := "miss"
 	if err != nil {
 		log.Printf("loading cached artwork: %v", err)
+		cache = "error"
 	}
 	if a != nil {
-		return cachedInlineResult(*a, previews)
+		return artworkQueryResult{cachedInlineResult(ctx, *a, previews), "hit"}
 	}
 
-	photo, ok := previews.newPhoto(link, instant)
+	photo, ok := previews.newPhoto(ctx, link, instant)
 	if !ok {
-		return nil
+		return artworkQueryResult{cache: cache}
 	}
 	result := inlinePhoto(photo)
 	result["id"], result["title"] = inlineResultID, "Artwork"
@@ -324,11 +350,13 @@ func inlineArtworkResult(db *sql.DB, link *url.URL, previews *thumbnails, instan
 	}
 	wait := map[string]any{"text": "Please wait…", "disabled": map[string]any{}}
 	result["reply_markup"] = map[string]any{"inline_keyboard": []any{[]any{wait}}}
-	return result
+	return artworkQueryResult{result, cache}
 }
 
-func inlineMergedResult(link *url.URL, previews *thumbnails, instant bool, bars bool) map[string]any {
-	photo, ok := previews.mergedPhotoVariant(link, instant, bars)
+func inlineMergedResult(ctx context.Context, link *url.URL, previews *thumbnails, instant bool, bars bool) map[string]any {
+	ctx, span := startInlineSpan(ctx, "inline.variant.merged", attribute.Bool("preview.bars", bars))
+	defer span.End()
+	photo, ok := previews.mergedPhotoVariant(ctx, link, instant, bars)
 	if !ok {
 		return nil
 	}
@@ -346,25 +374,40 @@ func inlineMergedResult(link *url.URL, previews *thumbnails, instant bool, bars 
 	return result
 }
 
-func inlineArtworkResults(db *sql.DB, user int64, link *url.URL, previews *thumbnails, explicit bool) []any {
-	results := make(chan []any, 1)
-	go func() { results <- previewArtworkResults(db, user, link, previews, explicit) }()
+type artworkQueryAnswer struct {
+	results []any
+	cache   string
+	outcome string
+}
+
+func inlineArtworkResults(ctx context.Context, db *sql.DB, user int64, link *url.URL, previews *thumbnails, explicit bool) artworkQueryAnswer {
+	ctx, span := startInlineSpan(ctx, "inline.preview_wait")
+	defer span.End()
+	results := make(chan artworkQueryAnswer, 1)
+	go func() { results <- previewArtworkResults(ctx, db, user, link, previews, explicit) }()
 	timer := time.NewTimer(inlinePreviewBudget)
 	defer timer.Stop()
 	select {
 	case ready := <-results:
 		return ready
 	case <-timer.C:
-		return inlineArtworkFallback(db, link, previews)
+		span.AddEvent("preview_budget_exceeded")
+		return inlineArtworkFallback(ctx, db, link, previews)
 	}
 }
 
-func inlineArtworkFallback(db *sql.DB, link *url.URL, previews *thumbnails) []any {
-	return []any{inlineArtworkResult(db, link, previews, true)}
+func inlineArtworkFallback(ctx context.Context, db *sql.DB, link *url.URL, previews *thumbnails) artworkQueryAnswer {
+	result := inlineArtworkResult(ctx, db, link, previews, true)
+	return artworkQueryAnswer{[]any{result.result}, result.cache, "fallback"}
 }
 
-func previewArtworkResults(db *sql.DB, user int64, link *url.URL, previews *thumbnails, explicit bool) []any {
+func previewArtworkResults(ctx context.Context, db *sql.DB, user int64, link *url.URL, previews *thumbnails, explicit bool) artworkQueryAnswer {
+	ctx, span := startInlineSpan(ctx, "inline.build_artwork_results")
+	defer span.End()
+	_, preferences := startInlineSpan(ctx, "sqlite.instant_inline_settings")
 	settings, err := loadInstantInlineSettings(db, user)
+	inlineSpanError(preferences, err)
+	preferences.End()
 	instant := settings.X
 
 	if link.Host == "pixiv.net" || link.Host == "www.pixiv.net" {
@@ -372,41 +415,45 @@ func previewArtworkResults(db *sql.DB, user int64, link *url.URL, previews *thum
 	}
 	if err != nil {
 		log.Printf("loading instant inline settings: %v", err)
-		return inlinePreferenceFailure()
+		return artworkQueryAnswer{results: inlinePreferenceFailure(), outcome: "preference_error"}
 	}
+	span.SetAttributes(attribute.Bool("inline.instant", instant), attribute.Bool("inline.explicit_media", explicit))
 	if !instant {
-		if err := inlinePreviewSource(db, link, previews); err != nil {
+		if err := inlinePreviewSource(ctx, db, link, previews); err != nil {
 			if errors.Is(err, errXPostNotFound) {
 				title, detail := "Post not found (404)", "Check the link and try again."
-				return []any{inlineFeedback("source", title, detail, title+". "+detail+"\n\n"+link.String())}
+				feedback := inlineFeedback("source", title, detail, title+". "+detail+"\n\n"+link.String())
+				return artworkQueryAnswer{[]any{feedback}, "miss", "not_found"}
 			}
-			return inlineArtworkFallback(db, link, previews)
+			return inlineArtworkFallback(ctx, db, link, previews)
 		}
 	}
 	if explicit {
-		if result := inlineArtworkResult(db, link, previews, instant); result != nil {
-			return []any{result}
+		result := inlineArtworkResult(ctx, db, link, previews, instant)
+		if result.result != nil {
+			return artworkQueryAnswer{[]any{result.result}, result.cache, "ok"}
 		}
-		return nil
+		return artworkQueryAnswer{cache: result.cache, outcome: "empty"}
 	}
-	normal := make(chan map[string]any, 1)
+	normal := make(chan artworkQueryResult, 1)
 	merged := make(chan map[string]any, 1)
 	bars := make(chan map[string]any, 1)
-	go func() { normal <- inlineArtworkResult(db, link, previews, instant) }()
-	go func() { merged <- inlineMergedResult(link, previews, instant, false) }()
-	go func() { bars <- inlineMergedResult(link, previews, instant, true) }()
+	go func() { normal <- inlineArtworkResult(ctx, db, link, previews, instant) }()
+	go func() { merged <- inlineMergedResult(ctx, link, previews, instant, false) }()
+	go func() { bars <- inlineMergedResult(ctx, link, previews, instant, true) }()
 
 	var postImages []any
 	var postText chan map[string]any
 	if xLinkHosts[strings.ToLower(link.Host)] {
 		postText = make(chan map[string]any, 1)
-		go func() { postText <- inlinePostTextResult(link, previews, instant) }()
-		postImages = inlinePostImageResults(db, user, link, previews, instant)
+		go func() { postText <- inlinePostTextResult(ctx, link, previews, instant) }()
+		postImages = inlinePostImageResults(ctx, db, user, link, previews, instant)
 	}
 
 	var results []any
-	if result := <-normal; result != nil {
-		results = append(results, result)
+	art := <-normal
+	if art.result != nil {
+		results = append(results, art.result)
 	}
 	if result := <-merged; result != nil {
 		results = append(results, result)
@@ -418,51 +465,87 @@ func previewArtworkResults(db *sql.DB, user int64, link *url.URL, previews *thum
 	if postText != nil {
 		results = append(results, <-postText)
 	}
-	return results
+	return artworkQueryAnswer{results, art.cache, "ok"}
 }
 
-func inlinePreviewSource(db *sql.DB, link *url.URL, previews *thumbnails) error {
-	cached, err := findArtwork(db, artworkID(link))
+func findInlineArtwork(ctx context.Context, db *sql.DB, id string) (*artwork, error) {
+	_, span := startInlineSpan(ctx, "sqlite.artwork_lookup")
+	defer span.End()
+	a, err := findArtwork(db, id)
+	span.SetAttributes(attribute.Bool("cache.hit", a != nil))
+	inlineSpanError(span, err)
+	return a, err
+}
+
+func inlinePreviewSource(ctx context.Context, db *sql.DB, link *url.URL, previews *thumbnails) error {
+	cached, err := findInlineArtwork(ctx, db, artworkID(link))
 	if err != nil {
 		log.Printf("loading cached artwork: %v", err)
 	}
 	if cached != nil {
 		return nil
 	}
-	work := previews.warmup(link, 0)
+	ctx, span := startInlineSpan(ctx, "preview.wait_source")
+	defer span.End()
+	work := previews.warmup(ctx, link, 0)
+	span.AddLink(trace.Link{SpanContext: work.spanContext})
 	select {
 	case <-work.sourceDone:
 		if errors.Is(work.sourceErr, errNoXMedia) {
 			return nil
 		}
+		inlineSpanError(span, work.sourceErr)
 		return work.sourceErr
 	case <-time.After(inlinePreviewBudget):
+		inlineSpanError(span, context.DeadlineExceeded)
 		return context.DeadlineExceeded
 	}
 }
 
-func inlineQueryResults(db *sql.DB, query *tgbotapi.InlineQuery, previews *thumbnails) ([]any, string) {
+type inlineQueryReport struct {
+	route, cache, outcome string
+}
+
+func inlineQueryResults(ctx context.Context, db *sql.DB, query *tgbotapi.InlineQuery, previews *thumbnails, report *inlineQueryReport) ([]any, string) {
+	ctx, span := startInlineSpan(ctx, "inline.build_results")
+	defer span.End()
+
 	if family, filter, ok := themeQuery(query.Query); ok {
+		report.route = "theme"
 		return themeResults(db, query.From.ID, family, filter, previews), ""
 	}
 	if mode, filter, ok := translationQuery(query.Query); ok {
+		report.route = "translation"
 		return translationResults(db, query, mode, filter)
 	}
 	if _, ok := timezoneQuery(query.Query); ok {
+		report.route = "timezone"
 		return timezoneResults(query)
 	}
 	if source, invert, ok := historyFilters(query.Query); ok {
-		return inlineHistoryView(db, query, source, invert, previews)
+		report.route = "history"
+		return inlineHistoryView(ctx, db, query, source, invert, previews)
 	}
 	if link := inlineQueryLink(query.Query); link != nil {
-		link, err := preferredInlineLink(db, query.From.ID, query.Query)
+		report.route = "pixiv"
+		if xLinkHosts[strings.ToLower(link.Host)] {
+			report.route = "x"
+		}
+		link, err := preferredInlineLink(ctx, db, query.From.ID, query.Query)
 		if err != nil {
 			log.Printf("loading photo preference: %v", err)
+			report.outcome = "preference_error"
 			return inlinePreferenceFailure(), ""
 		}
 		_, explicit := inlineQuerySelection(query.Query)
-		return inlineArtworkResults(db, query.From.ID, link, previews, explicit), ""
+		answer := inlineArtworkResults(ctx, db, query.From.ID, link, previews, explicit)
+		if answer.cache != "" {
+			report.cache = answer.cache
+		}
+		report.outcome = answer.outcome
+		return answer.results, ""
 	}
+	report.route = "guide"
 	guide := "Search guide\n\n" +
 		"• Paste an X or Pixiv post link to choose a view.\n" +
 		"• Add a number after the link to select a media item or page.\n" +
@@ -473,11 +556,34 @@ func inlineQueryResults(db *sql.DB, query *tgbotapi.InlineQuery, previews *thumb
 	return []any{inlineFeedback("guide", "Query not understood", "Select for a usage guide.", guide)}, ""
 }
 
-func handleInlineQuery(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.InlineQuery, previews *thumbnails) {
+func handleInlineQuery(received time.Time, bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.InlineQuery, previews *thumbnails) {
 	until := time.Now().Add(inlineAnswerBudget)
-	results, nextOffset := inlineQueryResults(db, query, previews)
+	ctx, span := startInlineRoot(context.Background(), "inline.query", received)
+	inlineDispatch(ctx, received)
+
+	report := inlineQueryReport{cache: "n/a", outcome: "ok"}
+	defer func() {
+		span.SetAttributes(
+			attribute.String("inline.route", report.route),
+			attribute.String("inline.cache", report.cache),
+			attribute.String("inline.outcome", report.outcome),
+		)
+		span.End()
+		recordInlineLatency(ctx, received, "query", report.route, report.cache, report.outcome)
+	}()
+
+	results, nextOffset := inlineQueryResults(ctx, db, query, previews, &report)
+	span.SetAttributes(
+		attribute.Int("inline.result_count", len(results)),
+		attribute.Bool("inline.has_next_page", nextOffset != ""),
+	)
+	_, encoding := startInlineSpan(ctx, "inline.encode_results")
 	encoded, err := json.Marshal(results)
+	inlineSpanError(encoding, err)
+	encoding.End()
 	if err != nil {
+		report.outcome = "encode_error"
+		inlineSpanError(span, err)
 		log.Printf("encoding inline results: %v", err)
 		return
 	}
@@ -485,30 +591,46 @@ func handleInlineQuery(bot *tgbotapi.BotAPI, db *sql.DB, query *tgbotapi.InlineQ
 		"inline_query_id": query.ID, "results": string(encoded), "cache_time": "0",
 		"is_personal": "true", "next_offset": nextOffset,
 	}
-	ctx, cancel := context.WithDeadline(context.Background(), until)
+	ctx, cancel := context.WithDeadline(ctx, until)
 	defer cancel()
+	ctx, answer := startInlineSpan(ctx, "inline.answer")
+	defer answer.End()
 	bot = telegramWithContext(bot, ctx)
-	if _, err := retryInline(&inlineRetry{until: until}, func() (*tgbotapi.APIResponse, error) {
+	if _, err := retryInline(&inlineRetry{until: until, span: answer}, func() (*tgbotapi.APIResponse, error) {
 		return bot.MakeRequest("answerInlineQuery", params)
 	}); err != nil {
+		report.outcome = "answer_error"
+		inlineSpanError(answer, err)
+		inlineSpanError(span, err)
 		log.Printf("answering inline query: %v", err)
 	}
 }
 
-func handleChosenInlineResult(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, cacheChat string, queue *mediaQueue, previews *thumbnails) {
+func handleChosenInlineResult(received time.Time, bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, cacheChat string, queue *mediaQueue, previews *thumbnails) {
 	if strings.HasPrefix(chosen.ResultID, inlineFeedbackID) {
 		return
 	}
+	ctx, span := startInlineRoot(context.Background(), "inline.chosen", received)
+	inlineDispatch(ctx, received)
+	route, outcome := "history", "ok"
+	defer func() {
+		span.SetAttributes(attribute.String("inline.route", route), attribute.String("inline.outcome", outcome))
+		span.End()
+		recordInlineLatency(ctx, received, "chosen", route, "n/a", outcome)
+	}()
 	if strings.HasPrefix(chosen.ResultID, "theme:") {
-		handleThemeSelection(bot, db, chosen)
+		route = "theme"
+		handleThemeSelection(telegramWithContext(bot, ctx), db, chosen)
 		return
 	}
 	if strings.HasPrefix(chosen.ResultID, "language:") {
-		handleTranslationSelection(bot, db, chosen)
+		route = "translation"
+		handleTranslationSelection(telegramWithContext(bot, ctx), db, chosen)
 		return
 	}
 	if strings.HasPrefix(chosen.ResultID, "timezone:") {
-		handleTimezoneSelection(bot, db, chosen)
+		route = "timezone"
+		handleTimezoneSelection(telegramWithContext(bot, ctx), db, chosen)
 		return
 	}
 	link := inlineQueryLink(chosen.Query)
@@ -525,33 +647,39 @@ func handleChosenInlineResult(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *
 			}
 		}
 
-		if err := selectArtwork(db, chosen.From.ID, id); err != nil {
+		if err := recordInlineSelection(ctx, db, chosen.From.ID, id); err != nil {
+			outcome = "storage_error"
+			inlineSpanError(span, err)
 			log.Printf("recording inline selection: %v", err)
 		}
 		return
 	}
+	route = "artwork"
+	switch {
+	case cachedPreview:
+		route = "cached_artwork"
+	case theme != "":
+		route = "post_image"
+	case chosen.ResultID == inlinePostTextID:
+		route = "post_text"
+	case chosen.ResultID == inlineMergedResultID:
+		route = "merged"
+	case chosen.ResultID == inlineBarsResultID:
+		route = "merged_bars"
+	}
 	if chosen.InlineMessageID == "" {
+		outcome = "missing_message"
 		log.Print("missing inline message ID")
 		return
 	}
+	_, wait := startInlineSpan(ctx, "inline.delivery_queue")
 	result, err := queue.submit(chosen.From.ID, func() error {
-		retry := newInlineDelivery(bot, chosen.InlineMessageID)
-		ctx, cancel := context.WithDeadline(context.Background(), retry.until)
-		defer cancel()
-		bot := telegramWithContext(bot, ctx)
-		switch {
-		case cachedPreview:
-			return editCachedInlineArtwork(bot, db, chosen, cachedID, retry)
-		case theme != "":
-			return editInlinePostImage(bot, db, chosen, cacheChat, link, theme, previews, retry)
-		case chosen.ResultID == inlinePostTextID:
-			if link == nil || !xLinkHosts[strings.ToLower(link.Host)] {
-				return fmt.Errorf("invalid X post URL")
-			}
-			return editInlinePostText(bot, db, chosen, cacheChat, link, retry)
-		default:
-			return editInlineArtwork(bot, app, db, chosen, cacheChat, previews, retry)
-		}
+		wait.End()
+		deliveryCtx, delivery := startInlineSpan(ctx, "inline.deliver")
+		defer delivery.End()
+		err := deliverChosenInlineResult(deliveryCtx, bot, app, db, chosen, cacheChat, link, route, cachedID, theme, previews)
+		inlineSpanError(delivery, err)
+		return err
 	})
 	label := "artwork"
 	if chosen.ResultID == inlinePostTextID {
@@ -559,8 +687,14 @@ func handleChosenInlineResult(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *
 	}
 	failure := ""
 	if err != nil {
+		outcome = "queue_rejected"
+		inlineSpanError(wait, err)
+		wait.End()
+		inlineSpanError(span, err)
 		failure = fmt.Sprintf("Could not load %s: %s. Please retry later.", label, err)
 	} else if err := <-result; err != nil {
+		outcome = "delivery_error"
+		inlineSpanError(span, err)
 		log.Printf("processing chosen inline result: %v", err)
 		failure = fmt.Sprintf("Could not load %s. Please try again.", label)
 		if _, ok := errors.AsType[unavailablePhotoError](err); ok || errors.Is(err, errXPostNotFound) {
@@ -568,27 +702,63 @@ func handleChosenInlineResult(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *
 		}
 	}
 	if failure != "" {
-		for word := range strings.FieldsSeq(chosen.Query) {
-			if inlineLink(word) != nil {
-				failure += "\n\n" + word
-				break
-			}
-		}
-		params := tgbotapi.Params{
-			"inline_message_id": chosen.InlineMessageID, "text": failure,
-			"reply_markup": `{"inline_keyboard":[]}`,
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		until, _ := ctx.Deadline()
-		if editErr := editInlineMessage(telegramWithContext(bot, ctx), &inlineRetry{until: until}, "editMessageText", params); editErr != nil {
-			log.Printf("editing inline failure message: %v", editErr)
-		}
+		showInlineDeliveryFailure(ctx, bot, chosen, failure)
 	}
 }
 
-func editCachedInlineArtwork(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, id string, retry *inlineRetry) error {
-	a, err := findArtwork(db, id)
+func showInlineDeliveryFailure(ctx context.Context, bot *tgbotapi.BotAPI, chosen *tgbotapi.ChosenInlineResult, failure string) {
+	for word := range strings.FieldsSeq(chosen.Query) {
+		if inlineLink(word) != nil {
+			failure += "\n\n" + word
+			break
+		}
+	}
+	params := tgbotapi.Params{
+		"inline_message_id": chosen.InlineMessageID, "text": failure,
+		"reply_markup": `{"inline_keyboard":[]}`,
+	}
+	ctx, repair := startInlineSpan(ctx, "inline.delivery_failure_message")
+	defer repair.End()
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	until, _ := ctx.Deadline()
+	retry := &inlineRetry{until: until, span: repair}
+	if err := editInlineMessage(telegramWithContext(bot, ctx), retry, "editMessageText", params); err != nil {
+		inlineSpanError(repair, err)
+		log.Printf("editing inline failure message: %v", err)
+	}
+}
+
+func deliverChosenInlineResult(ctx context.Context, bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, cacheChat string, link *url.URL, route, cachedID, theme string, previews *thumbnails) error {
+	retry := newInlineDelivery(ctx, bot, chosen.InlineMessageID)
+	ctx, cancel := context.WithDeadline(ctx, retry.until)
+	defer cancel()
+	bot = telegramWithContext(bot, ctx)
+	switch route {
+	case "cached_artwork":
+		return editCachedInlineArtwork(ctx, bot, db, chosen, cachedID, retry)
+	case "post_image":
+		return editInlinePostImage(ctx, bot, db, chosen, cacheChat, link, theme, previews, retry)
+	case "post_text":
+		if link == nil || !xLinkHosts[strings.ToLower(link.Host)] {
+			return fmt.Errorf("invalid X post URL")
+		}
+		return editInlinePostText(ctx, bot, db, chosen, cacheChat, link, retry)
+	default:
+		return editInlineArtwork(ctx, bot, app, db, chosen, cacheChat, previews, retry)
+	}
+}
+
+func recordInlineSelection(ctx context.Context, db *sql.DB, user int64, id string) error {
+	_, span := startInlineSpan(ctx, "sqlite.record_selection")
+	defer span.End()
+	err := selectArtwork(db, user, id)
+	inlineSpanError(span, err)
+	return err
+}
+
+func editCachedInlineArtwork(ctx context.Context, bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, id string, retry *inlineRetry) error {
+	a, err := findInlineArtwork(ctx, db, id)
 	if err != nil {
 		return err
 	}
@@ -608,19 +778,19 @@ func editCachedInlineArtwork(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.
 	if err := editInlineMessage(bot, retry, "editMessageMedia", params); err != nil {
 		return err
 	}
-	if err := selectArtwork(db, chosen.From.ID, id); err != nil {
+	if err := recordInlineSelection(ctx, db, chosen.From.ID, id); err != nil {
 		log.Printf("recording inline selection: %v", err)
 	}
 	return nil
 }
 
-func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, cacheChat string, previews *thumbnails, retry *inlineRetry) error {
+func editInlineArtwork(ctx context.Context, bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, cacheChat string, previews *thumbnails, retry *inlineRetry) error {
 	link := inlineQueryLink(chosen.Query)
 	if link == nil {
 		return fmt.Errorf("invalid artwork URL")
 	}
 
-	link, err := preferredInlineLink(db, chosen.From.ID, chosen.Query)
+	link, err := preferredInlineLink(ctx, db, chosen.From.ID, chosen.Query)
 	if err != nil {
 		return err
 	}
@@ -637,7 +807,7 @@ func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB,
 	downloading := inlineMediaProgress(bot, chosen.InlineMessageID, "Downloading")
 	photos, err := retryInline(retry, func() ([]any, error) {
 		address := *link
-		photos, err := fetchArtPhotos(app, &address, &a, merge, downloading)
+		photos, err := fetchArtPhotos(ctx, app, &address, &a, merge, downloading)
 		if err == nil {
 			link = &address
 		}
@@ -652,7 +822,7 @@ func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB,
 			if err != nil {
 				return err
 			}
-			return editInlinePostImage(bot, db, chosen, cacheChat, link, themes.Dark, previews, retry)
+			return editInlinePostImage(ctx, bot, db, chosen, cacheChat, link, themes.Dark, previews, retry)
 		}
 		return fmt.Errorf("artwork has no photos")
 	}
@@ -661,7 +831,11 @@ func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB,
 	}
 
 	uploading := inlineMediaProgress(bot, chosen.InlineMessageID, "Uploading")
-	if err := cacheInlineArtworkMedia(bot, cacheChat, photos, &a, uploading, retry); err != nil {
+	cacheCtx, upload := startInlineSpan(ctx, "inline.upload_artwork", attribute.Int("media.count", len(photos)))
+	err = cacheInlineArtworkMedia(telegramWithContext(bot, cacheCtx), cacheChat, photos, &a, uploading, retry)
+	inlineSpanError(upload, err)
+	upload.End()
+	if err != nil {
 		return err
 	}
 
@@ -688,10 +862,14 @@ func editInlineArtwork(bot *tgbotapi.BotAPI, app *pixiv.AppPixivAPI, db *sql.DB,
 		return fmt.Errorf("editing inline artwork: %w", err)
 	}
 
-	if err := saveSelection(db, chosen.From.ID, a); err != nil {
+	_, storing := startInlineSpan(ctx, "sqlite.save_artwork_selection")
+	err = saveSelection(db, chosen.From.ID, a)
+	inlineSpanError(storing, err)
+	storing.End()
+	if err != nil {
 		log.Printf("saving inline artwork: %v", err)
 	} else if previews != nil && merge == "" {
-		previews.warmArtwork(inlineLink(a.URL), len(a.Photos))
+		previews.warmArtwork(ctx, inlineLink(a.URL), len(a.Photos))
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -149,7 +150,7 @@ func (f *previewFlowServer) setup(t *testing.T) (*thumbnails, *tgbotapi.BotAPI) 
 func (f *previewFlowServer) answer(t *testing.T, bot *tgbotapi.BotAPI, previews *thumbnails, id string) map[string]any {
 	t.Helper()
 	query := &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 1}, Query: "https://x.com/user/status/" + id}
-	handleInlineQuery(bot, previews.db, query, previews)
+	handleInlineQuery(time.Now(), bot, previews.db, query, previews)
 	return (<-f.answers)[0]
 }
 
@@ -197,7 +198,7 @@ func TestHistoryPreviewDoesNotWait(t *testing.T) {
 	done := make(chan map[string]any, 1)
 	go func() {
 		query := &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 1}}
-		handleInlineQuery(bot, previews.db, query, previews)
+		handleInlineQuery(time.Now(), bot, previews.db, query, previews)
 		done <- (<-f.answers)[0]
 	}()
 	select {
@@ -236,7 +237,7 @@ func TestPreviewWarmupAfterSave(t *testing.T) {
 					chosen := &tgbotapi.ChosenInlineResult{
 						From: &tgbotapi.User{ID: 1}, ResultID: inlineResultID, InlineMessageID: "inline", Query: link,
 					}
-					handleChosenInlineResult(bot, nil, previews.db, chosen, "@cache", queue, previews)
+					handleChosenInlineResult(time.Now(), bot, nil, previews.db, chosen, "@cache", queue, previews)
 				}
 				close(done)
 			}()
@@ -250,7 +251,7 @@ func TestPreviewWarmupAfterSave(t *testing.T) {
 			case <-time.After(5 * time.Second):
 				t.Fatal("preview upload did not start")
 			}
-			work := previews.start(inlineLink(link))
+			work := previews.start(context.Background(), inlineLink(link))
 			<-work.done
 			if work.err != nil {
 				t.Fatal(work.err)
@@ -288,7 +289,7 @@ func TestPreviewUploadRetry(t *testing.T) {
 	f.release()
 	link := inlineLink("https://x.com/user/status/8")
 	f.failUpload.Store(true)
-	previews.warmup(link, 1)
+	previews.warmup(context.Background(), link, 1)
 	select {
 	case <-f.uploadFailed:
 	case <-time.After(5 * time.Second):
@@ -297,7 +298,7 @@ func TestPreviewUploadRetry(t *testing.T) {
 	f.failUpload.Store(false)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		previews.warmup(link, 1)
+		previews.warmup(context.Background(), link, 1)
 		id, err := findThumbnail(previews.db, "x:8", 1)
 		if err != nil {
 			t.Fatal(err)
@@ -345,7 +346,7 @@ func TestMergedInlinePreview(t *testing.T) {
 			previews, bot := f.setup(t)
 
 			query := &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 1}, Query: "https://x.com/user/status/" + tc.id}
-			handleInlineQuery(bot, previews.db, query, previews)
+			handleInlineQuery(time.Now(), bot, previews.db, query, previews)
 			results := <-f.answers
 			if len(results) != 8 || results[7]["id"] != "post:text" || results[1]["id"] != inlineMergedResultID {
 				t.Fatalf("results: %#v", results)
@@ -376,7 +377,7 @@ func TestMergedInlinePreview(t *testing.T) {
 				t.Fatalf("merged dimensions: %v, result: %#v", img.Bounds().Size(), results[1])
 			}
 
-			work := previews.start(inlineLink(query.Query))
+			work := previews.start(context.Background(), inlineLink(query.Query))
 			<-work.done
 			if f.sourceCalls.Load() != 3 || f.imageCalls.Load() != 3 {
 				t.Fatalf("requests: source=%d images=%d", f.sourceCalls.Load(), f.imageCalls.Load())
@@ -402,7 +403,7 @@ func TestMergedInlinePhotoDimensionsFilter(t *testing.T) {
 			f := newPreviewFlowServer(t)
 			previews, bot := f.setup(t)
 			query := &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 1}, Query: "https://x.com/user/status/" + tc.id}
-			handleInlineQuery(bot, previews.db, query, previews)
+			handleInlineQuery(time.Now(), bot, previews.db, query, previews)
 			results := <-f.answers
 			found := map[string]bool{}
 			for _, result := range results {
@@ -412,7 +413,7 @@ func TestMergedInlinePhotoDimensionsFilter(t *testing.T) {
 				t.Fatalf("inline results: %#v", results)
 			}
 			for _, bars := range []bool{false, true} {
-				photo, ok := previews.mergedPhotoVariant(inlineLink(query.Query), true, bars)
+				photo, ok := previews.mergedPhotoVariant(context.Background(), inlineLink(query.Query), true, bars)
 				if !ok || !strings.Contains(photo.photoURL, "/thumbnail-placeholder-merged") {
 					t.Fatalf("instant merged preview (bars=%v): %#v %v", bars, photo, ok)
 				}
@@ -444,7 +445,7 @@ func TestMergedInlineSingletonAndInstant(t *testing.T) {
 		t.Fatal(err)
 	}
 	query := &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 1}, Query: link.String()}
-	handleInlineQuery(bot, previews.db, query, previews)
+	handleInlineQuery(time.Now(), bot, previews.db, query, previews)
 	if results := <-f.answers; len(results) != 6 || results[5]["id"] != "post:text" {
 		t.Fatalf("cached singleton: %#v", results)
 	}

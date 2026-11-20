@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"image"
@@ -12,6 +13,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -76,7 +78,7 @@ func TestInlineForceMerge(t *testing.T) {
 	query := &tgbotapi.InlineQuery{ID: "query", From: &tgbotapi.User{ID: 1}, Query: "https://x.com/user/status/42"}
 	previews := testPreviews(t, db, bot)
 	previews.client = &http.Client{Transport: redirectTransport{target, original}}
-	handleInlineQuery(bot, db, query, previews)
+	handleInlineQuery(time.Now(), bot, db, query, previews)
 	if len(answer) != 8 || answer[7]["id"] != "post:text" || answer[0]["id"] != inlineResultID || answer[1]["id"] != inlineMergedResultID || answer[2]["id"] != inlineBarsResultID {
 		t.Fatalf("uncached: %#v", answer)
 	}
@@ -85,7 +87,7 @@ func TestInlineForceMerge(t *testing.T) {
 	if err := saveSelection(db, 1, normal); err != nil {
 		t.Fatal(err)
 	}
-	handleInlineQuery(bot, db, query, previews)
+	handleInlineQuery(time.Now(), bot, db, query, previews)
 	if len(answer) != 8 || answer[7]["id"] != "post:text" || answer[0]["id"] != "x:42" || answer[1]["id"] != inlineMergedResultID || answer[2]["id"] != inlineBarsResultID {
 		t.Fatalf("cached: %#v", answer)
 	}
@@ -94,7 +96,7 @@ func TestInlineForceMerge(t *testing.T) {
 	chosen := &tgbotapi.ChosenInlineResult{
 		From: query.From, ResultID: inlineMergedResultID, InlineMessageID: "inline", Query: query.Query,
 	}
-	handleChosenInlineResult(bot, nil, db, chosen, "@cache", queue, nil)
+	handleChosenInlineResult(time.Now(), bot, nil, db, chosen, "@cache", queue, nil)
 	if merged == nil || merged.Bounds().Size() != image.Pt(500, 300) {
 		t.Fatalf("merged image: %v", merged)
 	}
@@ -110,7 +112,7 @@ func TestInlineForceMerge(t *testing.T) {
 	previews.client = &http.Client{Transport: redirectTransport{target, original}}
 	query.Query = ""
 	answer = nil
-	handleInlineQuery(bot, db, query, previews)
+	handleInlineQuery(time.Now(), bot, db, query, previews)
 	checkMergedHistory(t, answer)
 	unchanged, err := findArtwork(db, "x:42")
 	if err != nil || unchanged == nil || strings.Join(unchanged.Photos, ",") != "normal-1,normal-2" {
@@ -142,7 +144,7 @@ func checkMergedHistory(t *testing.T, answer []map[string]any) {
 func checkBarsSelection(t *testing.T, bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, queue *mediaQueue, previews *thumbnails, merged *image.Image) {
 	t.Helper()
 	chosen.ResultID = inlineBarsResultID
-	handleChosenInlineResult(bot, nil, db, chosen, "@cache", queue, previews)
+	handleChosenInlineResult(time.Now(), bot, nil, db, chosen, "@cache", queue, previews)
 	if *merged == nil || (*merged).Bounds().Size() != image.Pt(502, 300) {
 		t.Fatalf("bars image: %v", merged)
 	}
@@ -160,7 +162,7 @@ func checkBarsSelection(t *testing.T, bot *tgbotapi.BotAPI, db *sql.DB, chosen *
 	if err != nil || bars == nil || len(bars.Photos) != 1 || bars.Photos[0] != "merged-file" {
 		t.Fatalf("bars saved: %#v, %v", bars, err)
 	}
-	if photo := previews.savedPhoto(*bars); photo.photoURL != "https://preview.example.com/thumbnail-placeholder-merged-bars.jpg" {
+	if photo := previews.savedPhoto(context.Background(), *bars); photo.photoURL != "https://preview.example.com/thumbnail-placeholder-merged-bars.jpg" {
 		t.Fatalf("bars history preview: %#v", photo)
 	}
 }

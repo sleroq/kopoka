@@ -158,7 +158,7 @@ func (f *messagePreviewFixture) serve(w http.ResponseWriter, r *http.Request) {
 
 func (f *messagePreviewFixture) query(t *testing.T, p *thumbnails, bot *tgbotapi.BotAPI, query string) []map[string]any {
 	t.Helper()
-	handleInlineQuery(bot, p.db, &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 1}, Query: query}, p)
+	handleInlineQuery(time.Now(), bot, p.db, &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 1}, Query: query}, p)
 	select {
 	case answer := <-f.answers:
 		return answer
@@ -231,7 +231,7 @@ func TestMessagePreviewInlineMedia(t *testing.T) {
 	chosen := &tgbotapi.ChosenInlineResult{
 		From: &tgbotapi.User{ID: 1}, ResultID: inlineResultID, InlineMessageID: "inline", Query: link,
 	}
-	handleChosenInlineResult(bot, nil, p.db, chosen, "@cache", queue, p)
+	handleChosenInlineResult(time.Now(), bot, nil, p.db, chosen, "@cache", queue, p)
 	select {
 	case edit := <-f.edits:
 		media := fmt.Sprint(edit["media"])
@@ -341,7 +341,7 @@ func TestMessagePreviewCachedPostImage(t *testing.T) {
 		From: &tgbotapi.User{ID: 1}, ResultID: result["id"].(string), InlineMessageID: "inline", Query: link.String(),
 	}
 	queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})
-	handleChosenInlineResult(bot, nil, p.db, chosen, "@cache", queue, p)
+	handleChosenInlineResult(time.Now(), bot, nil, p.db, chosen, "@cache", queue, p)
 	assertCachedPreviewEdit(t, f)
 	if f.calls.Load() != 1 {
 		t.Fatalf("cached post image metadata requests = %d, want 1", f.calls.Load())
@@ -366,7 +366,7 @@ func TestMessagePreviewCachedMerged(t *testing.T) {
 	chosen := &tgbotapi.ChosenInlineResult{
 		From: &tgbotapi.User{ID: 1}, ResultID: result["id"].(string), InlineMessageID: "inline",
 	}
-	handleChosenInlineResult(bot, nil, p.db, chosen, "@cache", queue, p)
+	handleChosenInlineResult(time.Now(), bot, nil, p.db, chosen, "@cache", queue, p)
 	assertCachedPreviewEdit(t, f)
 }
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	_ "embed"
 	"encoding/json"
@@ -24,6 +25,8 @@ import (
 
 	"github.com/everpcpc/pixiv"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/image/draw"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/gofont/gobold"
@@ -39,6 +42,7 @@ var xLogo []byte
 var pixivLogo []byte
 
 type thumbnailWork struct {
+	spanContext   trace.SpanContext
 	done          chan struct{}
 	sourceDone    chan struct{}
 	forcedDone    chan struct{}
@@ -207,18 +211,20 @@ func (t *thumbnails) cached(link *url.URL, count int) string {
 	return id
 }
 
-func (t *thumbnails) savedPhoto(a artwork) previewPhoto {
+func (t *thumbnails) savedPhoto(ctx context.Context, a artwork) previewPhoto {
+	ctx, span := startInlineSpan(ctx, "thumbnail.savedPhoto")
+	defer span.End()
 	if link := inlineLink(a.URL); link != nil {
 		bars := strings.HasSuffix(a.ID, ":merged:bars")
 		if bars || strings.HasSuffix(a.ID, ":merged") {
-			work := t.warmup(link, 0)
+			work := t.warmup(ctx, link, 0)
 			done := work.forcedDone
 			if bars {
 				done = work.barsDone
 			}
 			select {
 			case <-done:
-				if photo, ok := t.mergedPhotoVariant(link, false, bars); ok {
+				if photo, ok := t.mergedPhotoVariant(ctx, link, false, bars); ok {
 					return photo
 				}
 			default:
@@ -229,7 +235,7 @@ func (t *thumbnails) savedPhoto(a artwork) previewPhoto {
 		if id := t.cached(link, count); id != "" {
 			return previewPhoto{fileID: id}
 		}
-		t.warmArtwork(link, count)
+		t.warmArtwork(ctx, link, count)
 	}
 	return t.placeholder(strings.HasPrefix(a.ID, "pixiv:"))
 }
@@ -237,19 +243,22 @@ func (t *thumbnails) savedPhoto(a artwork) previewPhoto {
 var errNoXMedia = errors.New("FxTwitter post has no media")
 var errMergedPhotoDimensions = errors.New("merged photo dimensions exceed Telegram limits")
 
-func (t *thumbnails) newPhoto(link *url.URL, instant bool) (previewPhoto, bool) {
+func (t *thumbnails) newPhoto(ctx context.Context, link *url.URL, instant bool) (previewPhoto, bool) {
+	ctx, span := startInlineSpan(ctx, "thumbnail.newPhoto")
+	defer span.End()
 	if id := t.cached(link, 0); id != "" {
 		return previewPhoto{fileID: id}, true
 	}
 	if !instant {
-		work := t.warmup(link, 0)
+		work := t.warmup(ctx, link, 0)
+		span.AddLink(trace.Link{SpanContext: work.spanContext})
 		select {
 		case <-work.done:
 			if errors.Is(work.err, errNoXMedia) {
 				return previewPhoto{}, false
 			}
 			if work.err == nil {
-				return t.urlPhoto(link, 0, work.width, work.height), true
+				return t.urlPhoto(ctx, link, 0, work.width, work.height), true
 			}
 		case <-time.After(8 * time.Second):
 		}
@@ -257,8 +266,8 @@ func (t *thumbnails) newPhoto(link *url.URL, instant bool) (previewPhoto, bool) 
 	return t.placeholder(link.Host == "pixiv.net" || link.Host == "www.pixiv.net"), true
 }
 
-func (t *thumbnails) urlPhoto(link *url.URL, count, width, height int) previewPhoto {
-	thumbnail := t.url(link, count)
+func (t *thumbnails) urlPhoto(ctx context.Context, link *url.URL, count, width, height int) previewPhoto {
+	thumbnail := t.url(ctx, link, count)
 	return previewPhoto{
 		photoURL: thumbnail + "&size=large", thumbnailURL: thumbnail,
 		width: width, height: height,
@@ -281,17 +290,19 @@ func (t *thumbnails) mergedPlaceholderPhoto(bars bool) previewPhoto {
 }
 
 func (t *thumbnails) mergedPhoto(link *url.URL, instant bool) (previewPhoto, bool) {
-	return t.mergedPhotoVariant(link, instant, false)
+	return t.mergedPhotoVariant(context.Background(), link, instant, false)
 }
 
-func (t *thumbnails) mergedPhotoVariant(link *url.URL, instant, bars bool) (previewPhoto, bool) {
+func (t *thumbnails) mergedPhotoVariant(ctx context.Context, link *url.URL, instant, bars bool) (previewPhoto, bool) {
+	ctx, span := startInlineSpan(ctx, "thumbnail.mergedPhotoVariant")
+	defer span.End()
 	if _, index := xMediaSelection(link); index > 0 || pixivPhotoIndex(link) > 0 {
 		return previewPhoto{}, false
 	}
 
 	var work *thumbnailWork
 	if !bars && xLinkHosts[strings.ToLower(link.Host)] {
-		work = t.warmup(link, 0)
+		work = t.warmup(ctx, link, 0)
 		select {
 		case <-work.sourceDone:
 			if !work.sourceOK || work.moving || work.photoCount < 2 {
@@ -320,7 +331,7 @@ func (t *thumbnails) mergedPhotoVariant(link *url.URL, instant, bars bool) (prev
 		}
 		return t.mergedPlaceholderPhoto(bars), true
 	}
-	work = t.warmup(link, 0)
+	work = t.warmup(ctx, link, 0)
 	done, variant, mode := work.forcedDone, &work.forced, "1"
 	if bars {
 		done, variant, mode = work.barsDone, &work.bars, "bars"
@@ -434,7 +445,7 @@ func (t *thumbnails) placeholderURL(pixiv bool) string {
 	return result.String()
 }
 
-func (t *thumbnails) url(link *url.URL, count int) string {
+func (t *thumbnails) url(ctx context.Context, link *url.URL, count int) string {
 	result := *t.base
 	result.Path += "/thumbnail"
 	q := url.Values{"url": {link.String()}, "v": {strconv.Itoa(thumbnailRenderVersion)}}
@@ -442,12 +453,12 @@ func (t *thumbnails) url(link *url.URL, count int) string {
 		q.Set("count", strconv.Itoa(count))
 	}
 	result.RawQuery = q.Encode()
-	work := t.start(link)
-	t.cacheWork(link, count, work)
+	work := t.start(ctx, link)
+	t.cacheWork(ctx, link, count, work)
 	return result.String()
 }
 
-func (t *thumbnails) start(link *url.URL) *thumbnailWork {
+func (t *thumbnails) start(ctx context.Context, link *url.URL) *thumbnailWork {
 	key := link.String()
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -493,63 +504,90 @@ func (t *thumbnails) start(link *url.URL) *thumbnailWork {
 		caching: make(map[int]bool),
 	}
 	t.work[key] = w
-	go func() {
-		t.workers <- struct{}{}
-		source, err := t.source(link)
-		w.sourceOK = err == nil
-		w.sourceErr = err
-		w.photoCount = len(source.media)
-		for _, item := range source.media {
-			w.moving = w.moving || item.moving()
-		}
-		close(w.sourceDone)
-		var media []any
-		if err == nil {
-			media, err = t.downloadSource(source)
-		}
-		sourceErr := err
-		for _, item := range []struct {
-			done    chan struct{}
-			variant *thumbnailVariant
-			mode    string
-		}{
-			{w.forcedDone, &w.forced, "1"}, {w.barsDone, &w.bars, "bars"},
-		} {
-			go func() {
-				defer close(item.done)
-				item.variant.err = sourceErr
-				if sourceErr == nil {
-					item.variant.data, item.variant.large, _, item.variant.err = t.render(source, media, item.mode)
-					if item.variant.err == nil {
-						var config image.Config
-						config, item.variant.err = jpeg.DecodeConfig(bytes.NewReader(item.variant.large))
-						item.variant.width, item.variant.height = config.Width, config.Height
-					}
-				}
-			}()
-		}
-		if err == nil {
-			w.data, w.large, w.actual, err = t.render(source, media, "")
-		}
-		if err == nil {
-			var config image.Config
-			config, err = jpeg.DecodeConfig(bytes.NewReader(w.large))
-			w.width, w.height = config.Width, config.Height
-		}
-		t.mu.Lock()
-		w.err, w.finished = err, time.Now()
-		// A text-only post is a valid result. Only failed work needs a retry.
-		if err != nil && !errors.Is(err, errNoXMedia) {
-			delete(t.work, key)
-		}
-		close(w.done)
-		t.mu.Unlock()
-		<-t.workers
-	}()
+	ctx, span := startInlineBackground(ctx, "thumbnail.work")
+	w.spanContext = span.SpanContext()
+	go t.generateWork(ctx, span, link, key, w)
 	return w
 }
 
-func (t *thumbnails) cacheWork(link *url.URL, count int, work *thumbnailWork) {
+func (t *thumbnails) generateWork(ctx context.Context, span trace.Span, link *url.URL, key string, w *thumbnailWork) {
+	defer span.End()
+	_, queue := startInlineSpan(ctx, "thumbnail.worker_wait")
+	t.workers <- struct{}{}
+	queue.End()
+
+	_, fetch := startInlineSpan(ctx, "thumbnail.source")
+	source, err := t.source(link)
+	inlineSpanError(fetch, err)
+	fetch.End()
+	w.sourceOK = err == nil
+	w.sourceErr = err
+	w.photoCount = len(source.media)
+	for _, item := range source.media {
+		w.moving = w.moving || item.moving()
+	}
+	close(w.sourceDone)
+
+	var media []any
+	if err == nil {
+		_, download := startInlineSpan(ctx, "thumbnail.download")
+		media, err = t.downloadSource(source)
+		inlineSpanError(download, err)
+		download.End()
+	}
+
+	sourceErr := err
+	for _, item := range []struct {
+		done    chan struct{}
+		variant *thumbnailVariant
+		mode    string
+	}{
+		{w.forcedDone, &w.forced, "1"}, {w.barsDone, &w.bars, "bars"},
+	} {
+		if sourceErr != nil {
+			item.variant.err = sourceErr
+			close(item.done)
+			continue
+		}
+		renderCtx, render := startInlineSpan(ctx, "thumbnail.render", attribute.String("variant", item.mode))
+		go func() {
+			defer close(item.done)
+			defer render.End()
+			item.variant.data, item.variant.large, _, item.variant.err = t.render(renderCtx, source, media, item.mode)
+			if item.variant.err == nil {
+				var config image.Config
+				config, item.variant.err = jpeg.DecodeConfig(bytes.NewReader(item.variant.large))
+				item.variant.width, item.variant.height = config.Width, config.Height
+			}
+			inlineSpanError(render, item.variant.err)
+		}()
+	}
+
+	if err == nil {
+		renderCtx, render := startInlineSpan(ctx, "thumbnail.render", attribute.String("variant", "default"))
+		w.data, w.large, w.actual, err = t.render(renderCtx, source, media, "")
+		inlineSpanError(render, err)
+		render.End()
+	}
+	if err == nil {
+		var config image.Config
+		config, err = jpeg.DecodeConfig(bytes.NewReader(w.large))
+		w.width, w.height = config.Width, config.Height
+	}
+
+	t.mu.Lock()
+	inlineSpanError(span, err)
+	w.err, w.finished = err, time.Now()
+	// A text-only post is a valid result. Only failed work needs a retry.
+	if err != nil && !errors.Is(err, errNoXMedia) {
+		delete(t.work, key)
+	}
+	close(w.done)
+	t.mu.Unlock()
+	<-t.workers
+}
+
+func (t *thumbnails) cacheWork(ctx context.Context, link *url.URL, count int, work *thumbnailWork) {
 	t.mu.Lock()
 	if work.caching[count] {
 		t.mu.Unlock()
@@ -557,17 +595,28 @@ func (t *thumbnails) cacheWork(link *url.URL, count int, work *thumbnailWork) {
 	}
 	work.caching[count] = true
 	t.mu.Unlock()
+	ctx, span := startInlineBackground(ctx, "thumbnail.cache")
+	span.AddLink(trace.Link{SpanContext: work.spanContext})
 	go func() {
+		defer span.End()
+		_, wait := startInlineSpan(ctx, "thumbnail.preview_wait")
 		<-work.done
+		wait.End()
 		if work.err != nil {
 			if !errors.Is(work.err, errNoXMedia) {
 				log.Printf("generating thumbnail for %s: %v", link, work.err)
 			}
 			return
 		}
+		_, queue := startInlineSpan(ctx, "thumbnail.worker_wait")
 		t.workers <- struct{}{}
+		queue.End()
 		if t.cached(link, count) == "" {
-			if err := t.cachePhoto(link, count, work.actual, work.large); err != nil {
+			_, upload := startInlineSpan(ctx, "thumbnail.cache_upload")
+			err := t.cachePhoto(link, count, work.actual, work.large)
+			inlineSpanError(upload, err)
+			upload.End()
+			if err != nil {
 				log.Printf("caching thumbnail for %s: %v", link, err)
 				t.mu.Lock()
 				work.caching[count] = false
@@ -638,6 +687,8 @@ func (t *thumbnails) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (t *thumbnails) serveThumbnail(w http.ResponseWriter, r *http.Request) {
+	ctx, span := startInlineRoot(r.Context(), "preview.thumbnail.http", time.Now())
+	defer span.End()
 	for _, size := range r.URL.Query()["size"] {
 		if size != "large" {
 			http.Error(w, "invalid size", http.StatusBadRequest)
@@ -657,7 +708,8 @@ func (t *thumbnails) serveThumbnail(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	work := t.start(link)
+	work := t.start(ctx, link)
+	span.AddLink(trace.Link{SpanContext: work.spanContext})
 	done := work.done
 	switch r.URL.Query().Get("merge") {
 	case "1":
@@ -928,10 +980,10 @@ func (t *thumbnails) generate(link *url.URL) ([]byte, []byte, int, error) {
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	return t.render(source, media, "")
+	return t.render(context.Background(), source, media, "")
 }
 
-func (t *thumbnails) render(source thumbnailSource, media []any, mode string) ([]byte, []byte, int, error) {
+func (t *thumbnails) render(ctx context.Context, source thumbnailSource, media []any, mode string) ([]byte, []byte, int, error) {
 	img, actual, err := t.mergeSource(media, mode)
 	if err != nil {
 		return nil, nil, 0, err
@@ -970,7 +1022,7 @@ func (t *thumbnails) render(source thumbnailSource, media []any, mode string) ([
 	if source.author != "" {
 		blocks = append(blocks, previewBlock{Kind: "caption", Text: source.author})
 	}
-	small, large, _, _, err := t.renderMessagePreview(blocks)
+	small, large, _, _, err := t.renderMessagePreview(ctx, blocks)
 	return small, large, actual, err
 }
 
@@ -996,9 +1048,9 @@ func badgeBackground(dst *image.RGBA, left, right int) {
 	rounded(dst, image.Rect(left+1*4, 16*4, right-1*4, 52*4), 11*4, color.NRGBA{20, 22, 27, 235})
 }
 
-func (t *thumbnails) warmup(link *url.URL, count int) *thumbnailWork {
-	work := t.start(link)
-	t.cacheWork(link, count, work)
+func (t *thumbnails) warmup(ctx context.Context, link *url.URL, count int) *thumbnailWork {
+	work := t.start(ctx, link)
+	t.cacheWork(ctx, link, count, work)
 	return work
 }
 
@@ -1010,15 +1062,15 @@ func (t *thumbnails) saveGeneratedDimensions(link *url.URL, work *thumbnailWork)
 	return savePreviewDimensions(t.db, artworkID(link), work.width, work.height)
 }
 
-func (t *thumbnails) warmArtwork(link *url.URL, count int) {
+func (t *thumbnails) warmArtwork(ctx context.Context, link *url.URL, count int) {
 	go func() {
 		t.mu.Lock()
 		work := t.work[link.String()]
 		t.mu.Unlock()
 		if work == nil {
-			work = t.warmup(link, count)
+			work = t.warmup(ctx, link, count)
 		} else {
-			t.cacheWork(link, 0, work)
+			t.cacheWork(ctx, link, 0, work)
 		}
 		if err := t.saveGeneratedDimensions(link, work); err != nil {
 			log.Printf("warming preview for %s: %v", link, err)

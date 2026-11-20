@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -19,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -96,7 +98,7 @@ cat "$KOPOKA_TEST_IMAGE"
 	}
 	previews := testPreviews(t, db, bot)
 	query := &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 1}, Query: "https://x.com/user/status/42/photo/2"}
-	handleInlineQuery(bot, db, query, previews)
+	handleInlineQuery(time.Now(), bot, db, query, previews)
 	if len(results) != 4 || results[3]["id"] != "post:text" || results[1]["id"] != "post-image:light-bars:42" || results[2]["id"] != "post-image:dark-bars:42" || results[1]["photo_file_id"] != nil || strings.Join(calls, ",") != "answer" {
 		t.Fatalf("results %v calls %v", results, calls)
 	}
@@ -106,7 +108,7 @@ cat "$KOPOKA_TEST_IMAGE"
 			From: query.From, ResultID: "post-image:" + theme + ":42",
 			InlineMessageID: "inline", Query: query.Query,
 		}
-		handleChosenInlineResult(bot, nil, db, chosen, "@cache", queue, previews)
+		handleChosenInlineResult(time.Now(), bot, nil, db, chosen, "@cache", queue, previews)
 		var request renderRequest
 		data, err := os.ReadFile(filepath.Join(dir, "request.json"))
 		if err != nil {
@@ -124,7 +126,7 @@ cat "$KOPOKA_TEST_IMAGE"
 		t.Fatalf("cached variants: %d, %v", cached, err)
 	}
 	before := len(calls)
-	handleInlineQuery(bot, db, query, previews)
+	handleInlineQuery(time.Now(), bot, db, query, previews)
 	if len(calls) != before+1 {
 		t.Fatalf("cached results %v calls %v", results, calls)
 	}
@@ -135,7 +137,7 @@ cat "$KOPOKA_TEST_IMAGE"
 		}
 	}
 	before = len(calls)
-	handleChosenInlineResult(bot, nil, db, &tgbotapi.ChosenInlineResult{
+	handleChosenInlineResult(time.Now(), bot, nil, db, &tgbotapi.ChosenInlineResult{
 		From: query.From, ResultID: results[2]["id"].(string), InlineMessageID: "inline", Query: query.Query,
 	}, "@cache", queue, previews)
 	if len(calls) != before+1 || calls[before] != "edit" {
@@ -603,7 +605,7 @@ func TestPostImageCacheSharedByTimezone(t *testing.T) {
 	choose := func(user int64) {
 		t.Helper()
 		chosen := &tgbotapi.ChosenInlineResult{From: &tgbotapi.User{ID: user}, InlineMessageID: "inline"}
-		if err := editInlinePostImage(bot, db, chosen, "@cache", link, "light", nil, nil); err != nil {
+		if err := editInlinePostImage(context.Background(), bot, db, chosen, "@cache", link, "light", nil, nil); err != nil {
 			t.Fatal(err)
 		}
 	}

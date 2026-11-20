@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -76,19 +77,19 @@ func TestTranslationSettingsIntegration(t *testing.T) {
 	}
 
 	query := &tgbotapi.InlineQuery{ID: "query", From: user, Query: "language target "}
-	handleInlineQuery(bot, db, query, nil)
+	handleInlineQuery(time.Now(), bot, db, query, nil)
 	if len(results) != 50 || next == "" {
 		t.Fatalf("page: %d, %q", len(results), next)
 	}
 	firstID := results[0].ID
 	query.Offset = next
-	handleInlineQuery(bot, db, query, nil)
+	handleInlineQuery(time.Now(), bot, db, query, nil)
 	if len(results) == 0 || results[0].ID == firstID {
 		t.Fatal("invalid second page")
 	}
 	query.Offset = ""
 	query.Query = "LaNgUaGe target jApAnEsE"
-	handleInlineQuery(bot, db, query, nil)
+	handleInlineQuery(time.Now(), bot, db, query, nil)
 	if len(results) != 1 || results[0].ID != "language:target:ja" || !strings.Contains(results[0].Description, "English") {
 		t.Fatal(results)
 	}
@@ -96,22 +97,22 @@ func TestTranslationSettingsIntegration(t *testing.T) {
 	chosen := &tgbotapi.ChosenInlineResult{
 		From: user, ResultID: results[0].ID, Query: query.Query, InlineMessageID: "inline",
 	}
-	handleChosenInlineResult(bot, nil, db, chosen, "", nil, nil)
+	handleChosenInlineResult(time.Now(), bot, nil, db, chosen, "", nil, nil)
 	if !strings.Contains(confirmation, "Japanese") {
 		t.Fatal(confirmation)
 	}
 	query.Query = "language ignore russian"
-	handleInlineQuery(bot, db, query, nil)
+	handleInlineQuery(time.Now(), bot, db, query, nil)
 	if len(results) != 1 || results[0].ID != "language:ignore:ru" || !strings.Contains(results[0].Title, "✓") || results[0].Description != "Translate" {
 		t.Fatal(results)
 	}
 	chosen.ResultID = results[0].ID
-	handleChosenInlineResult(bot, nil, db, chosen, "", nil, nil)
+	handleChosenInlineResult(time.Now(), bot, nil, db, chosen, "", nil, nil)
 	if !strings.Contains(confirmation, "None") {
 		t.Fatal(confirmation)
 	}
 	query.Query = "language ignore russian"
-	handleInlineQuery(bot, db, query, nil)
+	handleInlineQuery(time.Now(), bot, db, query, nil)
 	if results[0].Description != "Ignore" {
 		t.Fatal(results)
 	}
@@ -121,7 +122,7 @@ func TestTranslationSettingsIntegration(t *testing.T) {
 	}}
 	handleIncomingMessage(bot, nil, db, incoming, nil, nil)
 	chosen.ResultID = "language:target:invalid"
-	handleChosenInlineResult(bot, nil, db, chosen, "", nil, nil)
+	handleChosenInlineResult(time.Now(), bot, nil, db, chosen, "", nil, nil)
 
 	if err := db.Close(); err != nil {
 		t.Fatal(err)

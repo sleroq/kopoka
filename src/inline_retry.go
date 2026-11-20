@@ -8,10 +8,14 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"path"
 	"strings"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -32,11 +36,12 @@ func (e upstreamHTTPError) Error() string {
 type inlineRetry struct {
 	until   time.Time
 	waiting func()
+	span    trace.Span
 }
 
-func newInlineDelivery(bot *tgbotapi.BotAPI, messageID string) *inlineRetry {
-	return &inlineRetry{until: time.Now().Add(inlineDeliveryBudget), waiting: func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+func newInlineDelivery(ctx context.Context, bot *tgbotapi.BotAPI, messageID string) *inlineRetry {
+	return &inlineRetry{until: time.Now().Add(inlineDeliveryBudget), span: trace.SpanFromContext(ctx), waiting: func() {
+		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
 		if err := editInlineButton(telegramWithContext(bot, ctx), messageID, "Still working…"); err != nil {
 			log.Printf("updating inline retry status: %v", err)
@@ -61,6 +66,9 @@ func retryInline[T any](r *inlineRetry, operation func() (T, error)) (T, error) 
 		}
 		if delay >= time.Until(r.until) {
 			return result, err
+		}
+		if r.span != nil && r.span.IsRecording() {
+			r.span.AddEvent("retry_backoff", trace.WithAttributes(attribute.Int64("retry.wait_ms", delay.Milliseconds())))
 		}
 		time.Sleep(delay)
 	}
@@ -125,13 +133,35 @@ type inlineTelegramClient struct {
 
 func telegramWithContext(bot *tgbotapi.BotAPI, ctx context.Context) *tgbotapi.BotAPI {
 	scoped := *bot
-	scoped.Client = inlineTelegramClient{client: bot.Client, ctx: ctx}
+	client := bot.Client
+	if scopedClient, ok := client.(inlineTelegramClient); ok {
+		client = scopedClient.client
+	}
+	scoped.Client = inlineTelegramClient{client: client, ctx: ctx}
 	return &scoped
 }
 
 func (c inlineTelegramClient) Do(req *http.Request) (*http.Response, error) {
-	res, err := c.client.Do(req.WithContext(c.ctx))
-	if err == nil && res.StatusCode >= 500 && res.StatusCode < 600 {
+	ctx, span := startInlineSpan(c.ctx, "telegram.request")
+	defer span.End()
+	if span.IsRecording() {
+		method := path.Base(req.URL.Path)
+		switch method {
+		case "answerInlineQuery", "editMessageText", "editMessageMedia", "editMessageReplyMarkup",
+			"sendMessage", "sendPhoto", "sendMediaGroup", "sendAnimation", "sendVideo", "deleteMessage", "deleteMessages":
+			span.SetAttributes(attribute.String("telegram.method", method))
+		}
+	}
+	res, err := c.client.Do(req.WithContext(ctx))
+	if err != nil {
+		inlineSpanError(span, err)
+		return nil, err
+	}
+	span.SetAttributes(attribute.Int("http.response.status_code", res.StatusCode))
+	if res.StatusCode >= 400 {
+		span.SetStatus(codes.Error, "telegram_http")
+	}
+	if res.StatusCode >= 500 && res.StatusCode < 600 {
 		_ = res.Body.Close()
 		return nil, upstreamHTTPError{operation: "Telegram", status: res.StatusCode}
 	}

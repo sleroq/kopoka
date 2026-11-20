@@ -2,6 +2,7 @@ package main
 
 import (
 	"cmp"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -24,8 +25,8 @@ import (
 
 const inlinePostTextID = "post:text"
 
-func inlinePostTextResult(link *url.URL, previews *thumbnails, instant bool) map[string]any {
-	result := inlinePhoto(previews.postTextPreview(link, instant))
+func inlinePostTextResult(ctx context.Context, link *url.URL, previews *thumbnails, instant bool) map[string]any {
+	result := inlinePhoto(previews.postTextPreview(ctx, link, instant))
 	result["id"], result["title"] = inlinePostTextID, "Post with text"
 	result["description"] = "Post, quote and reply thread"
 	result["input_message_content"] = map[string]any{
@@ -331,16 +332,21 @@ func richXPost(post *fxRichPost, parents []*fxRichPost, more bool, cached map[*f
 	return result
 }
 
-func editInlinePostText(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, cacheChat string, link *url.URL, r *inlineRetry) error {
+func editInlinePostText(ctx context.Context, bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, cacheChat string, link *url.URL, r *inlineRetry) error {
 	type thread struct {
 		post    *fxRichPost
 		parents []*fxRichPost
 		more    bool
 	}
+	ctx, span := startInlineSpan(ctx, "post_text.materialize")
+	defer span.End()
+	_, fetch := startInlineSpan(ctx, "post_text.fetch")
 	result, err := retryInline(r, func() (thread, error) {
 		post, parents, more, err := loadXPostThread(&http.Client{Timeout: 10 * time.Second}, link)
 		return thread{post, parents, more}, err
 	})
+	inlineSpanError(fetch, err)
+	fetch.End()
 	if err != nil {
 		return err
 	}
@@ -365,7 +371,10 @@ func editInlinePostText(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.Chose
 	if len(attachments) > 50 {
 		return fmt.Errorf("post exceeds Telegram's 50 attachment limit")
 	}
+	_, upload := startInlineSpan(ctx, "post_text.cache_upload")
 	cached, err := cachePostMedia(bot, cacheChat, attachments, r)
+	inlineSpanError(upload, err)
+	upload.End()
 	if err != nil {
 		return err
 	}
@@ -379,7 +388,10 @@ func editInlinePostText(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.Chose
 		byPost[p] = cached[offset : offset+count]
 		offset += count
 	}
+	_, render := startInlineSpan(ctx, "post_text.render_message")
 	payload, err := json.Marshal(richXPost(post, parents, more, byPost, cached))
+	inlineSpanError(render, err)
+	render.End()
 	if err != nil {
 		return err
 	}
@@ -392,7 +404,7 @@ func editInlinePostText(bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.Chose
 	if err := editInlineMessage(bot, r, "editMessageText", params); err != nil {
 		return fmt.Errorf("editing inline post: %w", err)
 	}
-	if err := selectArtwork(db, chosen.From.ID, artworkID(xPostLink(link))); err != nil {
+	if err := recordInlineSelection(ctx, db, chosen.From.ID, artworkID(xPostLink(link))); err != nil {
 		log.Printf("recording inline post text selection: %v", err)
 	}
 	return nil

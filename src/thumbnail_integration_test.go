@@ -198,7 +198,7 @@ func TestInlineThumbnailFlow(t *testing.T) {
 
 	answered := make(chan struct{})
 	go func() {
-		handleInlineQuery(bot, db, query, previews)
+		handleInlineQuery(time.Now(), bot, db, query, previews)
 		close(answered)
 	}()
 	select {
@@ -249,7 +249,7 @@ func TestInlineThumbnailFlow(t *testing.T) {
 
 	checkCachedThumbnails(t, db, bot, previews, s.answers)
 	checkInstantThumbnail(t, db, bot, previews, s.answers, previewServer, &s.upstream)
-	handleInlineQuery(bot, db, query, previews)
+	handleInlineQuery(time.Now(), bot, db, query, previews)
 	if result := (<-s.answers)[0]; result["photo_file_id"] != "thumbnail-2" {
 		t.Fatalf("instant cached thumbnail: %#v", result)
 	}
@@ -273,7 +273,7 @@ func reopenCachedThumbnail(t *testing.T, s *thumbnailTestServer, bot *tgbotapi.B
 		t.Fatal(err)
 	}
 	before := s.upstream.Load()
-	handleInlineQuery(bot, db, query, previews)
+	handleInlineQuery(time.Now(), bot, db, query, previews)
 	if cached := (<-s.answers)[0]; cached["photo_file_id"] != "thumbnail-2" || cached["photo_url"] != nil || cached["thumbnail_url"] != nil {
 		t.Fatalf("cached thumbnail: %#v", cached)
 	}
@@ -288,12 +288,12 @@ func reopenCachedThumbnail(t *testing.T, s *thumbnailTestServer, bot *tgbotapi.B
 		t.Fatal(err)
 	}
 	previews.db = db
-	handleInlineQuery(bot, db, query, previews)
+	handleInlineQuery(time.Now(), bot, db, query, previews)
 	if cached := (<-s.answers)[0]; cached["photo_file_id"] != "thumbnail-2" || cached["photo_url"] != nil || cached["thumbnail_url"] != nil {
 		t.Fatalf("reopened thumbnail: %#v", cached)
 	}
 	query.Query = "https://vxtwitter.com/other/status/1"
-	handleInlineQuery(bot, db, query, previews)
+	handleInlineQuery(time.Now(), bot, db, query, previews)
 	if cached := (<-s.answers)[0]; cached["photo_file_id"] != "thumbnail-2" {
 		t.Fatalf("thumbnail via alternate host: %#v", cached)
 	}
@@ -375,7 +375,7 @@ func checkInstantThumbnail(t *testing.T, db *sql.DB, bot *tgbotapi.BotAPI, previ
 	before := upstream.Load()
 	// Keep the instant query separate from the source that fails on its first request.
 	query := &tgbotapi.InlineQuery{ID: "query", From: &tgbotapi.User{ID: 1}, Query: "https://x.com/user/status/4"}
-	handleInlineQuery(bot, db, query, previews)
+	handleInlineQuery(time.Now(), bot, db, query, previews)
 	if result := (<-answers)[0]; result["photo_url"] != "https://preview.example.com/thumbnail-placeholder-x.jpg" || result["thumbnail_url"] != result["photo_url"] {
 		t.Fatalf("instant inline thumbnail: %#v", result)
 	}
@@ -402,7 +402,7 @@ func checkInvalidArtworkThumbnails(t *testing.T, db *sql.DB, bot *tgbotapi.BotAP
 		if err := saveSelection(db, 1, a); err != nil {
 			t.Fatal(err)
 		}
-		handleInlineQuery(bot, db, &tgbotapi.InlineQuery{ID: "history", From: &tgbotapi.User{ID: 1}}, previews)
+		handleInlineQuery(time.Now(), bot, db, &tgbotapi.InlineQuery{ID: "history", From: &tgbotapi.User{ID: 1}}, previews)
 		result := (<-answers)[0]
 		if result["photo_url"] != "https://preview.example.com/thumbnail-placeholder-x.jpg" ||
 			!strings.Contains(fmt.Sprint(result["input_message_content"]), "art-"+kind) {
@@ -418,7 +418,7 @@ func checkCachedSourceFailure(t *testing.T, db *sql.DB, bot *tgbotapi.BotAPI, pr
 		t.Fatal(err)
 	}
 	query := &tgbotapi.InlineQuery{ID: "query", From: &tgbotapi.User{ID: 1}, Query: a.URL}
-	handleInlineQuery(bot, db, query, previews)
+	handleInlineQuery(time.Now(), bot, db, query, previews)
 	result := (<-answers)[0]
 	rich := result["input_message_content"].(map[string]any)["rich_message"].(map[string]any)
 	media := rich["media"].([]any)[0].(map[string]any)["media"].(map[string]any)
@@ -508,7 +508,7 @@ func checkCachedThumbnails(t *testing.T, db *sql.DB, bot *tgbotapi.BotAPI, previ
 	if err := savePreviewDimensions(db, a.ID, 1280, 800); err != nil {
 		t.Fatal(err)
 	}
-	handleInlineQuery(bot, db, query, previews)
+	handleInlineQuery(time.Now(), bot, db, query, previews)
 	cached := (<-answers)[0]
 	rich := cached["input_message_content"].(map[string]any)["rich_message"].(map[string]any)
 	media := rich["media"].([]any)[0].(map[string]any)["media"].(map[string]any)
@@ -523,7 +523,7 @@ func checkCachedThumbnails(t *testing.T, db *sql.DB, bot *tgbotapi.BotAPI, previ
 	if err := saveSelection(db, 1, a); err != nil {
 		t.Fatal(err)
 	}
-	handleInlineQuery(bot, db, query, previews)
+	handleInlineQuery(time.Now(), bot, db, query, previews)
 	cached = (<-answers)[0]
 	rich = cached["input_message_content"].(map[string]any)["rich_message"].(map[string]any)
 	media = rich["media"].([]any)[0].(map[string]any)["media"].(map[string]any)
@@ -537,7 +537,7 @@ func checkCachedThumbnails(t *testing.T, db *sql.DB, bot *tgbotapi.BotAPI, previ
 		t.Fatal(err)
 	}
 	query.Query = ""
-	handleInlineQuery(bot, db, query, previews)
+	handleInlineQuery(time.Now(), bot, db, query, previews)
 	cached = (<-answers)[0]
 	rich = cached["input_message_content"].(map[string]any)["rich_message"].(map[string]any)
 	if !strings.Contains(rich["html"].(string), "<tg-slideshow>") || len(rich["media"].([]any)) != 2 || cached["photo_file_id"] != "thumbnail-2" || rich["media"].([]any)[0].(map[string]any)["media"].(map[string]any)["media"] != "video-id" || rich["media"].([]any)[1].(map[string]any)["media"].(map[string]any)["media"] != "photo-id" {
@@ -667,7 +667,7 @@ func TestPixivThumbnailFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	link := inlineLink("https://www.pixiv.net/en/artworks/123")
-	thumbnailURL := previews.url(link, 0)
+	thumbnailURL := previews.url(context.Background(), link, 0)
 	photoURL := thumbnailURL + "&size=large"
 	checkPixivPreviews(t, server.Client(), photoURL, thumbnailURL)
 	awaitCachedThumbnail(t, db, "pixiv:123", 0)
@@ -741,7 +741,7 @@ func TestMergedThumbnailSources(t *testing.T) {
 	previews.client = &http.Client{Transport: redirectTransport{target, http.DefaultTransport}}
 
 	link := inlineLink("https://x.com/user/status/10")
-	work := previews.warmup(link, 0)
+	work := previews.warmup(context.Background(), link, 0)
 	<-work.done
 	if work.err != nil {
 		t.Fatal(work.err)
@@ -887,7 +887,7 @@ func TestThumbnailAspectRatios(t *testing.T) {
 			previews.client = &http.Client{Transport: redirectTransport{target, http.DefaultTransport}}
 
 			link := inlineLink("https://x.com/user/status/20")
-			work := previews.warmup(link, 0)
+			work := previews.warmup(context.Background(), link, 0)
 			<-work.done
 			if work.err != nil {
 				t.Fatal(work.err)
@@ -917,7 +917,7 @@ func TestThumbnailAspectRatios(t *testing.T) {
 				t.Fatalf("post-merge cache alias = %q", id)
 			}
 			// A cached artwork can request a preview under its post-merge count before the upload is available.
-			cachedWork := previews.start(link)
+			cachedWork := previews.start(context.Background(), link)
 			<-cachedWork.done
 			if cachedWork.err != nil {
 				t.Fatal(cachedWork.err)
@@ -1119,7 +1119,7 @@ func TestExtremeThumbnailUploads(t *testing.T) {
 	} {
 		t.Run(tc.id, func(t *testing.T) {
 			link, _ := url.Parse("https://x.com/user/status/" + tc.id)
-			photo, ok := previews.newPhoto(link, false)
+			photo, ok := previews.newPhoto(context.Background(), link, false)
 			if !ok {
 				t.Fatalf("photo: %+v, ok=%v", photo, ok)
 			}
@@ -1149,7 +1149,7 @@ func TestExtremeThumbnailUploads(t *testing.T) {
 	}
 
 	link, _ := url.Parse("https://x.com/user/status/3")
-	if photo, ok := previews.newPhoto(link, false); ok {
+	if photo, ok := previews.newPhoto(context.Background(), link, false); ok {
 		t.Fatalf("text-only post returned photo: %+v", photo)
 	}
 }

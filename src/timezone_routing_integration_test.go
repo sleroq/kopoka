@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -48,12 +49,12 @@ func TestTimezoneInlineRouting(t *testing.T) {
 	db := testArtworkDB(t)
 	user := &tgbotapi.User{ID: 7}
 	query := &tgbotapi.InlineQuery{ID: "query", From: user, Query: "tz "}
-	handleInlineQuery(bot, db, query, nil)
+	handleInlineQuery(time.Now(), bot, db, query, nil)
 	if len(results) != 50 || next == "" {
 		t.Fatalf("timezone page: %d results, next %q", len(results), next)
 	}
 	query.Query = "tZ gErMaNy"
-	handleInlineQuery(bot, db, query, nil)
+	handleInlineQuery(time.Now(), bot, db, query, nil)
 	var markup *tgbotapi.InlineKeyboardMarkup
 	for _, result := range results {
 		if result.ID == "timezone:Europe/Berlin" {
@@ -66,7 +67,7 @@ func TestTimezoneInlineRouting(t *testing.T) {
 	chosen := &tgbotapi.ChosenInlineResult{
 		From: user, ResultID: "timezone:Europe/Berlin", Query: query.Query, InlineMessageID: "timezone-inline",
 	}
-	handleChosenInlineResult(bot, nil, db, chosen, "", nil, nil)
+	handleChosenInlineResult(time.Now(), bot, nil, db, chosen, "", nil, nil)
 	zone, err := loadUserTimezone(db, user.ID)
 	if err != nil || zone != "Europe/Berlin" || !strings.Contains(confirmation, "Europe/Berlin") {
 		t.Fatalf("selection: zone %q, confirmation %q, error %v", zone, confirmation, err)

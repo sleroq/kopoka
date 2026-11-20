@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"image"
 	"image/jpeg"
@@ -18,7 +19,9 @@ type previewBlock struct {
 	Count int    `json:"count"`
 }
 
-func (t *thumbnails) renderMessagePreview(blocks []previewBlock) (small, large []byte, width, height int, err error) {
+func (t *thumbnails) renderMessagePreview(ctx context.Context, blocks []previewBlock) (small, large []byte, width, height int, err error) {
+	_, span := startInlineSpan(ctx, "preview.message.render")
+	defer func() { inlineSpanError(span, err); span.End() }()
 	var request struct {
 		Preview struct {
 			Bot    string         `json:"bot"`

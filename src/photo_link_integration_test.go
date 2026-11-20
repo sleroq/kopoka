@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -135,17 +137,17 @@ func TestPhotoLinkFlow(t *testing.T) {
 	if err != nil || parent == nil || len(parent.Photos) != 2 || strings.Contains(parent.Caption, "/photo/") {
 		t.Fatalf("parent: %+v %v", parent, err)
 	}
-	if err := editInlineArtwork(bot, nil, db, chosen, "11", nil, nil); err != nil {
+	if err := editInlineArtwork(context.Background(), bot, nil, db, chosen, "11", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := saveThumbnail(db, "x:123", 2, 2, "thumb"); err != nil {
 		t.Fatal(err)
 	}
-	handleInlineQuery(bot, db, &tgbotapi.InlineQuery{ID: "q", From: message.From, Query: chosen.Query}, previews)
+	handleInlineQuery(time.Now(), bot, db, &tgbotapi.InlineQuery{ID: "q", From: message.From, Query: chosen.Query}, previews)
 	if !strings.Contains(api.inlineResults, `"id":"x:123"`) {
 		t.Fatalf("inline result: %s", api.inlineResults)
 	}
-	handleInlineQuery(bot, db, &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 12}, Query: chosen.Query}, previews)
+	handleInlineQuery(time.Now(), bot, db, &tgbotapi.InlineQuery{ID: "q", From: &tgbotapi.User{ID: 12}, Query: chosen.Query}, previews)
 	if !strings.Contains(api.inlineResults, `"id":"x:123:photo:2"`) {
 		t.Fatalf("other user's selected inline result: %s", api.inlineResults)
 	}
@@ -178,7 +180,7 @@ func TestUnavailablePhotoLinkReply(t *testing.T) {
 	}
 
 	chosen := &tgbotapi.ChosenInlineResult{From: user, ResultID: inlineResultID, InlineMessageID: "inline", Query: link}
-	handleChosenInlineResult(bot, nil, db, chosen, "11", queue, nil)
+	handleChosenInlineResult(time.Now(), bot, nil, db, chosen, "11", queue, nil)
 	if !strings.Contains(api.edit, "photo 9 is unavailable") {
 		t.Fatalf("inline error: %q", api.edit)
 	}
@@ -232,7 +234,7 @@ func saveSelectedPhoto(t *testing.T, db *sql.DB, bot *tgbotapi.BotAPI, message *
 	if err != nil {
 		t.Fatal(err)
 	}
-	handleInlineQuery(bot, db, &tgbotapi.InlineQuery{
+	handleInlineQuery(time.Now(), bot, db, &tgbotapi.InlineQuery{
 		ID: "q", From: message.From, Query: "https://x.com/artist/status/123/photo/2",
 	}, previews)
 	if !strings.Contains(api.inlineResults, `"id":"x:123:photo:2"`) || !strings.Contains(api.inlineResults, `"photo_file_id":"selected-thumb"`) {
@@ -241,7 +243,7 @@ func saveSelectedPhoto(t *testing.T, db *sql.DB, bot *tgbotapi.BotAPI, message *
 
 	chosen := &tgbotapi.ChosenInlineResult{From: &tgbotapi.User{ID: 11},
 		Query: "https://x.com/artist/status/123/photo/2/", InlineMessageID: "inline"}
-	if err := editInlineArtwork(bot, nil, db, chosen, "11", nil, nil); err != nil {
+	if err := editInlineArtwork(context.Background(), bot, nil, db, chosen, "11", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	return chosen, previews
@@ -264,7 +266,7 @@ func TestInlineNumericPhotoSelection(t *testing.T) {
 	queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})
 	query := "look https://x.com/artist/status/123/photo/1 2 now"
 	chosen := &tgbotapi.ChosenInlineResult{From: user, ResultID: inlineResultID, InlineMessageID: "inline", Query: query}
-	handleInlineQuery(bot, db, &tgbotapi.InlineQuery{ID: "q", From: user, Query: query}, previews)
+	handleInlineQuery(time.Now(), bot, db, &tgbotapi.InlineQuery{ID: "q", From: user, Query: query}, previews)
 	if !strings.Contains(api.inlineResults, `"id":"artwork"`) || strings.Contains(api.inlineResults, `artwork:merged`) {
 		t.Fatal(api.inlineResults)
 	}
@@ -275,24 +277,24 @@ func TestInlineNumericPhotoSelection(t *testing.T) {
 		t.Fatalf("explicit selection started %d post-image previews", workCount)
 	}
 
-	handleChosenInlineResult(bot, nil, db, chosen, "11", queue, nil)
+	handleChosenInlineResult(time.Now(), bot, nil, db, chosen, "11", queue, nil)
 	selected, err := findArtwork(db, "x:123:photo:2")
 	if err != nil || selected == nil || len(selected.Photos) != 1 {
 		t.Fatalf("selected: %+v %v", selected, err)
 	}
-	handleInlineQuery(bot, db, &tgbotapi.InlineQuery{ID: "q", From: user, Query: query}, previews)
+	handleInlineQuery(time.Now(), bot, db, &tgbotapi.InlineQuery{ID: "q", From: user, Query: query}, previews)
 	if !strings.Contains(api.inlineResults, `"id":"x:123:photo:2"`) || strings.Contains(api.inlineResults, `artwork:merged`) {
 		t.Fatal(api.inlineResults)
 	}
 	chosen.ResultID = selected.ID
-	handleChosenInlineResult(bot, nil, db, chosen, "11", queue, nil)
+	handleChosenInlineResult(time.Now(), bot, nil, db, chosen, "11", queue, nil)
 	chosen.ResultID, chosen.Query = inlineResultID, "https://x.com/artist/status/123 9"
-	handleChosenInlineResult(bot, nil, db, chosen, "11", queue, nil)
+	handleChosenInlineResult(time.Now(), bot, nil, db, chosen, "11", queue, nil)
 	if !strings.Contains(api.edit, "media 9 is unavailable") {
 		t.Fatal(api.edit)
 	}
 
-	handleInlineQuery(bot, db, &tgbotapi.InlineQuery{
+	handleInlineQuery(time.Now(), bot, db, &tgbotapi.InlineQuery{
 		ID: "q", From: &tgbotapi.User{ID: 12}, Query: "https://x.com/artist/status/123/photo/2",
 	}, previews)
 	if !strings.Contains(api.inlineResults, "Post image") {
@@ -313,7 +315,7 @@ func TestSelectedXVideoFlow(t *testing.T) {
 	queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})
 	query := "https://x.com/artist/status/123 1"
 	chosen := &tgbotapi.ChosenInlineResult{From: user, ResultID: inlineResultID, InlineMessageID: "inline", Query: query}
-	handleChosenInlineResult(bot, nil, db, chosen, "11", queue, nil)
+	handleChosenInlineResult(time.Now(), bot, nil, db, chosen, "11", queue, nil)
 	selected, err := findArtwork(db, "x:123:photo:1")
 	if err != nil || selected == nil || len(selected.Types) != 1 || selected.Types[0] != "video" || !strings.Contains(selected.Caption, "/video/1") || strings.Contains(selected.Caption, "/media/") {
 		t.Fatalf("inline video: %+v %v", selected, err)
@@ -322,7 +324,7 @@ func TestSelectedXVideoFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	previews := testPreviews(t, db, bot)
-	handleInlineQuery(bot, db, &tgbotapi.InlineQuery{ID: "q", From: user, Query: query}, previews)
+	handleInlineQuery(time.Now(), bot, db, &tgbotapi.InlineQuery{ID: "q", From: user, Query: query}, previews)
 	if !strings.Contains(api.inlineResults, `"id":"x:123:photo:1"`) || !strings.Contains(api.inlineResults, "video-thumb") {
 		t.Fatal(api.inlineResults)
 	}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -41,7 +43,7 @@ func TestPostImageThemeSettingsFlow(t *testing.T) {
 
 	query := func(user int64, q string) []map[string]any {
 		t.Helper()
-		handleInlineQuery(bot, db, &tgbotapi.InlineQuery{ID: "query", From: &tgbotapi.User{ID: user}, Query: q}, previews)
+		handleInlineQuery(time.Now(), bot, db, &tgbotapi.InlineQuery{ID: "query", From: &tgbotapi.User{ID: user}, Query: q}, previews)
 		var results []map[string]any
 		if err := json.Unmarshal([]byte(resultsJSON), &results); err != nil {
 			t.Fatal(err)
@@ -63,7 +65,7 @@ func TestPostImageThemeSettingsFlow(t *testing.T) {
 		chosen := &tgbotapi.ChosenInlineResult{
 			From: &tgbotapi.User{ID: user}, ResultID: "theme:" + id, InlineMessageID: "inline",
 		}
-		handleChosenInlineResult(bot, nil, db, chosen, "", nil, previews)
+		handleChosenInlineResult(time.Now(), bot, nil, db, chosen, "", nil, previews)
 	}
 
 	choose(11, "warm")
@@ -241,7 +243,7 @@ func TestPostImageThemeAutomaticFallback(t *testing.T) {
 		From: message.From, ResultID: inlineResultID, InlineMessageID: "inline",
 		Query: "https://x.com/user/status/2",
 	}
-	if err := editInlineArtwork(bot, nil, db, chosen, "@cache", nil, nil); err != nil {
+	if err := editInlineArtwork(context.Background(), bot, nil, db, chosen, "@cache", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if reused != 1 || edits != 1 || uploads != 0 {
