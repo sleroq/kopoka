@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/draw"
 	"image/jpeg"
 	"net/http"
 	"net/http/httptest"
@@ -267,6 +268,31 @@ func TestMessagePreviewVideoAndPostText(t *testing.T) {
 	for _, id := range []string{"x:2", "x:3"} {
 		awaitCachedThumbnail(t, p.db, id, 0)
 	}
+}
+
+func TestMessagePreviewPortraitVideoKeepsFrame(t *testing.T) {
+	t.Setenv("KOPOKA_RENDERER", testPostImageRenderer(t))
+	// Approximate the aspect ratio of the rendered X video card, including its header and footer.
+	poster := image.NewRGBA(image.Rect(0, 0, 200, 286))
+	draw.Draw(poster, image.Rect(0, 0, 200, 16), image.NewUniform(color.RGBA{R: 255, A: 255}), image.Point{}, draw.Src)
+	draw.Draw(poster, image.Rect(0, 270, 200, 286), image.NewUniform(color.RGBA{B: 255, A: 255}), image.Point{}, draw.Src)
+	var data bytes.Buffer
+	if err := jpeg.Encode(&data, poster, nil); err != nil {
+		t.Fatal(err)
+	}
+	_, large, width, height, err := (&thumbnails{}).renderMessagePreview(t.Context(), []previewBlock{
+		{Kind: "media", Image: data.Bytes(), Video: true, Count: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, err := jpeg.Decode(bytes.NewReader(large))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Check both ends near the side so a centered, pillarboxed frame cannot pass.
+	motionAssertColor(t, img, width/8, 80, 0)
+	motionAssertColor(t, img, width/8, height-81, 2)
 }
 
 func TestPostTextPreviewBrailleArt(t *testing.T) {

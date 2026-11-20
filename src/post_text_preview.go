@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const postTextPreviewVersion = 11
+const postTextPreviewVersion = 12
 
 type postTextPreviewWork struct {
 	spanContext   trace.SpanContext

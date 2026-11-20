@@ -77,10 +77,17 @@ fn media(encoded: &str, video: bool, count: usize) -> Result<Node> {
         .decode(encoded)
         .context("invalid preview image base64")?;
     let image = image::load_from_memory(&bytes).context("invalid preview image")?;
-    let height = (344.0 * image.height() as f32 / image.width() as f32).clamp(70.0, 400.0);
+    let width = 344.0;
+    // Let portrait videos fill the bubble up to a 9:16 frame, then fit without cropping.
+    let (max_height, fit) = if video {
+        (width * 16.0 / 9.0, "contain")
+    } else {
+        (400.0, "cover")
+    };
+    let height = (width * image.height() as f32 / image.width() as f32).clamp(70.0, max_height);
     let mut nodes = vec![styled(
         Node::image(bytes),
-        &format!("width:344px;height:{height}px;object-fit:cover;flex-shrink:0"),
+        &format!("width:{width}px;height:{height}px;object-fit:{fit};flex-shrink:0"),
     )];
     if video {
         let play = r##"<svg xmlns="http://www.w3.org/2000/svg" width="52" height="52" viewBox="0 0 52 52"><circle cx="26" cy="26" r="25" fill="#14212b" fill-opacity="0.78"/><path d="M21 15v22l17-11z" fill="white"/></svg>"##;
@@ -109,7 +116,7 @@ fn media(encoded: &str, video: bool, count: usize) -> Result<Node> {
     Ok(column(
         nodes,
         &format!(
-            "position:relative;width:344px;height:{height}px;background:#18252e;overflow:hidden;flex-shrink:0"
+            "position:relative;width:{width}px;height:{height}px;background:#18252e;overflow:hidden;flex-shrink:0"
         ),
     ))
 }
