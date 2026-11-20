@@ -14,7 +14,8 @@ type artPanel struct {
 }
 
 // joinArtPanels only joins consecutive panels whose touching edges match at
-// their original alignment. It never reorders, scales, crops, or adds gutters.
+// their original alignment. It can extend a short panel's bottom edge by one
+// pixel, but never reorders, scales, or crops panels.
 func joinArtPanels(images []image.Image) []artPanel {
 	var panels []artPanel
 	for first := 0; first < len(images); {
@@ -63,6 +64,10 @@ func drawArtGrid(dst draw.Image, images []image.Image, columns int, op draw.Op) 
 		bounds := img.Bounds()
 		rect := image.Rectangle{Min: offset, Max: offset.Add(bounds.Size())}
 		draw.Draw(dst, rect, img, bounds.Min, op)
+		if columns == len(images) && rect.Max.Y < dst.Bounds().Max.Y {
+			bottom := image.Rect(rect.Min.X, rect.Max.Y, rect.Max.X, rect.Max.Y+1)
+			draw.Draw(dst, bottom, img, image.Pt(bounds.Min.X, bounds.Max.Y-1), op)
+		}
 		offset.X += bounds.Dx()
 		if (i+1)%columns == 0 {
 			offset.X = 0
@@ -73,6 +78,16 @@ func drawArtGrid(dst draw.Image, images []image.Image, columns int, op draw.Op) 
 
 func artGridSize(images []image.Image, columns int) (image.Point, bool) {
 	var size image.Point
+	if columns == len(images) {
+		shortest := images[0].Bounds().Dy()
+		for _, img := range images {
+			width, height := img.Bounds().Dx(), img.Bounds().Dy()
+			size.X += width
+			size.Y = max(size.Y, height)
+			shortest = min(shortest, height)
+		}
+		return size, size.Y-shortest <= 1
+	}
 	for i, img := range images {
 		bounds := img.Bounds()
 		row, column := i/columns, i%columns
@@ -149,6 +164,14 @@ func artSeamMatches(a, b image.Image, horizontal bool) bool {
 func artSeamScore(a, b image.Image, horizontal, relaxed bool) float64 {
 	left := artEdgeProfile(a, horizontal, true)
 	right := artEdgeProfile(b, horizontal, false)
+	if horizontal && a.Bounds().Dy() != b.Bounds().Dy() {
+		shortest := min(a.Bounds().Dy(), b.Bounds().Dy())
+		if relaxed || max(a.Bounds().Dy(), b.Bounds().Dy())-shortest > 1 {
+			return math.Inf(1)
+		}
+		// Compare only the shared height, starting at the original top edge.
+		left, right = left[:shortest/4], right[:shortest/4]
+	}
 	if len(left) < 16 || len(left) != len(right) {
 		return math.Inf(1)
 	}

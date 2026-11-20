@@ -16,7 +16,7 @@ import (
 )
 
 // Fixtures contain only the JPEG-decoded touching edges, not the full artwork.
-func artFixturePhotos(t *testing.T, fixture string, widths []int, height int) []any {
+func artFixturePhotos(t *testing.T, fixture string, widths, heights []int) []any {
 	t.Helper()
 	file, err := os.Open("testdata/" + fixture + "-edges.png")
 	if err != nil {
@@ -29,6 +29,7 @@ func artFixturePhotos(t *testing.T, fixture string, widths []int, height int) []
 	}
 	photos := make([]any, len(widths))
 	for i, width := range widths {
+		height := heights[i]
 		panel := image.NewRGBA(image.Rect(0, 0, width, height))
 		draw.Draw(panel, panel.Bounds(), image.NewUniform(color.White), image.Point{}, draw.Src)
 		draw.Draw(panel, image.Rect(0, 0, 3, height), edges, image.Pt(i*6, 0), draw.Src)
@@ -92,7 +93,7 @@ func TestMergeArtPhotosReportedPosts(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			photos := artFixturePhotos(t, tt.name, tt.widths, tt.height)
+			photos := artFixturePhotos(t, tt.name, tt.widths, slices.Repeat([]int{tt.height}, len(tt.widths)))
 			checkMergedArt(t, photos, tt.sizes, tt.captions)
 			if tt.name == "reyforn-panorama" {
 				checkMergedArt(t, photos[1:4], []image.Point{{1080, 1440}, {1080, 1440}, {1080, 1440}}, []int{1, 2, 3})
@@ -100,6 +101,21 @@ func TestMergeArtPhotosReportedPosts(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMergeArtPhotosOnePixelHeightDifference(t *testing.T) {
+	// https://x.com/yukia_1128/status/2123717992412479976
+	widths := []int{514, 594, 649}
+	photos := artFixturePhotos(t, "yukia-triptych", widths, []int{1199, 1200, 1200})
+	checkMergedArt(t, photos, []image.Point{{1757, 1200}}, []int{0})
+
+	slices.Reverse(photos)
+	if got := mergeArtPhotos(photos); !reflect.DeepEqual(got, photos) {
+		t.Error("reversed panels were merged, changed, or reordered")
+	}
+
+	photos = artFixturePhotos(t, "yukia-triptych", widths, []int{1198, 1200, 1200})
+	checkMergedArt(t, photos, []image.Point{{514, 1198}, {1243, 1200}}, []int{0, 1})
 }
 
 // https://x.com/Crysepia/status/2121525386106536012

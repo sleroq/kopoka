@@ -468,7 +468,7 @@ func TestPostImageOriginalPanels(t *testing.T) {
 		{name: "reyforn-panorama", widths: slices.Repeat([]int{1080}, 20), height: 1440, carousel: true},
 	} {
 		t.Run(fmt.Sprintf("%s-unrelated-%t", tc.name, tc.unrelated), func(t *testing.T) {
-			fixtures := artFixturePhotos(t, tc.name, tc.widths, tc.height)
+			fixtures := artFixturePhotos(t, tc.name, tc.widths, slices.Repeat([]int{tc.height}, len(tc.widths)))
 			assets := make([][]byte, len(fixtures))
 			for i, item := range fixtures {
 				assets[i] = item.(tgbotapi.InputMediaPhoto).Media.(tgbotapi.FileBytes).Bytes
