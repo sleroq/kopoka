@@ -69,6 +69,24 @@ fn cli_renders_braille_art_and_preserves_its_spacing() {
 }
 
 #[test]
+fn cli_renders_arabic_display_name_in_quote() {
+    let output = render_request(json!({
+        "theme": "light",
+        "post": {
+            "author_name": "Example", "author_username": "example", "author_avatar_url": "", "text": "Example post",
+            "quote": {"author_name": "ابو عزمي بني بكر", "author_username": "TrillaGz", "author_avatar_url": "", "text": "Example quote"}
+        }
+    }));
+    height(&output);
+    let image = image::load_from_memory(&output.stdout).unwrap().to_rgb8();
+    // In the quote header, joined Arabic letters form a longer stroke than tofu boxes.
+    assert!(
+        (250..315).any(|y| (146..442).any(|x| (x..x + 24).all(|i| image.get_pixel(i, y)[0] < 128))),
+        "quoted Arabic display name is missing or unjoined"
+    );
+}
+
+#[test]
 fn cli_highlights_post_mentions_and_links() {
     for theme in ["light", "warm", "dark", "dim"] {
         for body in ["Hello @alice!", "See https://example.com/path?x=1."] {

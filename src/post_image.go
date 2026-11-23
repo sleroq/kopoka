@@ -24,7 +24,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-const postImageVersion = 15
+const postImageVersion = 16
 const defaultPostImageTheme = "dark"
 
 type postImage struct {
