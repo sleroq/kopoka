@@ -129,19 +129,23 @@ func (s *postTextServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				{"url":"https://media.example/mid.mp4","container":"mp4","bitrate":832000}
 			]}]}}}`)
 
-	case "/user/status/8", "/user/status/15", "/user/status/16":
-		extra := ""
+	case "/user/status/8", "/user/status/15", "/user/status/16", "/user/status/17", "/user/status/18":
+		kind, file, extra := "photo", "main.jpg", ""
 		switch r.URL.Path {
 		case "/user/status/8":
 			extra = `, "replying_to_status": "99"`
 		case "/user/status/16":
 			extra = `, "quote": {"text": "Quoted post", "author": {"name": "Quoted"}}`
+		case "/user/status/17":
+			kind, file = "video", "main.mp4"
+		case "/user/status/18":
+			kind, file = "gif", "main.mp4"
 		}
 		_, _ = fmt.Fprintf(w, `{"code":200,"tweet":{
-			"text":"Photo <text> & @alice\nSecond line",
+			"text":"Post <text> & @alice\nSecond line",
 			"author":{"name":"Artist & Co","screen_name":"user"},
-			"media":{"photos":[{"url":"https://media.example/main.jpg"}]}%s
-		}}`, extra)
+			"media":{"all":[{"type":%q,"url":"https://media.example/%s"}]}%s
+		}}`, kind, file, extra)
 	case "/i/status/99":
 		http.Error(w, "unavailable", http.StatusNotFound)
 	default:
@@ -291,7 +295,7 @@ func TestXPostInlineVideoURLRetry(t *testing.T) {
 			want := []string{"https://media.example/original.mp4"}
 			if strings.Contains(failure, "failed to get HTTP URL content") {
 				want = append(want, "https://media.example/mid.mp4", "https://media.example/low.mp4")
-				if len(api.edits) != 1 || !strings.Contains(api.edits[0].Get("rich_message"), "file3") {
+				if len(api.edits) != 1 || !strings.Contains(api.edits[0].Get("media"), `"media":"file3"`) {
 					t.Fatalf("expected cached video in edit: %#v", api.edits)
 				}
 			}
@@ -330,7 +334,7 @@ func TestXPostRichMessageActions(t *testing.T) {
 	}
 }
 
-func TestXPostInlinePhotoCaption(t *testing.T) {
+func TestXPostInlineMediaCaption(t *testing.T) {
 	db := testArtworkDB(t)
 	api := &postTextServer{t: t}
 	server := httptest.NewServer(api)
@@ -345,14 +349,16 @@ func TestXPostInlinePhotoCaption(t *testing.T) {
 	}
 	queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})
 
-	for _, tc := range []struct{ name, id, richText string }{
-		{name: "single photo", id: "15"},
+	for _, tc := range []struct{ name, id, kind, richText string }{
+		{name: "single photo", id: "15", kind: "photo"},
+		{name: "single video", id: "17", kind: "video"},
+		{name: "single GIF", id: "18", kind: "video"},
 		{name: "oversize caption", id: "7", richText: strings.Repeat("😀", 2100)},
 		{name: "reply with missing parent", id: "8", richText: "Reply thread on"},
 		{name: "quote", id: "16", richText: "Quoted post"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			before := len(api.edits)
+			before, uploaded := len(api.edits), len(api.uploads)
 			handleChosenInlineResult(time.Now(), bot, nil, db, &tgbotapi.ChosenInlineResult{
 				From: &tgbotapi.User{ID: 1}, ResultID: inlinePostTextID, InlineMessageID: "inline",
 				Query: "https://x.com/user/status/" + tc.id,
@@ -367,24 +373,24 @@ func TestXPostInlinePhotoCaption(t *testing.T) {
 				}
 				return
 			}
-			type photoEdit struct {
+			type mediaEdit struct {
 				Type              string `json:"type"`
 				Media             string `json:"media"`
 				Caption           string `json:"caption"`
 				ParseMode         string `json:"parse_mode"`
 				CaptionAboveMedia bool   `json:"show_caption_above_media"`
 			}
-			var photo photoEdit
-			if err := json.Unmarshal([]byte(edit.Get("media")), &photo); err != nil {
-				t.Fatalf("expected photo edit: %v (%v)", err, edit)
+			var media mediaEdit
+			if err := json.Unmarshal([]byte(edit.Get("media")), &media); err != nil {
+				t.Fatalf("expected media edit: %v (%v)", err, edit)
 			}
-			want := photoEdit{
-				Type: "photo", Media: "file1", ParseMode: "HTML", CaptionAboveMedia: true,
-				Caption: `<b><a href="https://x.com/user/status/15">Artist &amp; Co</a></b> on X` + "\n\n" +
-					`Photo &lt;text&gt; &amp; <a href="https://x.com/alice">@alice</a>` + "\nSecond line",
+			want := mediaEdit{
+				Type: tc.kind, Media: fmt.Sprintf("file%d", uploaded+1), ParseMode: "HTML", CaptionAboveMedia: true,
+				Caption: `<b><a href="https://x.com/user/status/` + tc.id + `">Artist &amp; Co</a></b> on X` + "\n\n" +
+					`Post &lt;text&gt; &amp; <a href="https://x.com/alice">@alice</a>` + "\nSecond line",
 			}
-			if photo != want || edit.Get("rich_message") != "" {
-				t.Fatalf("unexpected photo edit: %v", edit)
+			if media != want || edit.Get("rich_message") != "" {
+				t.Fatalf("unexpected media edit: %v", edit)
 			}
 		})
 	}

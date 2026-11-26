@@ -209,7 +209,7 @@ func richPostAuthor(post *fxRichPost) string {
 	return "<b>" + xPostAuthorHTML(post) + "</b>"
 }
 
-func postPhotoCaption(post *fxRichPost) string {
+func postMediaCaption(post *fxRichPost) string {
 	text, poll := post.Text, post.Poll.text()
 	if text != "" {
 		text = "\n\n" + text
@@ -352,10 +352,10 @@ func richXPost(post *fxRichPost, parents []*fxRichPost, more bool, cached map[*f
 }
 
 func renderInlinePostText(post *fxRichPost, parents []*fxRichPost, more bool, byPost map[*fxRichPost][]cachedPostMedia, cached []cachedPostMedia) (string, tgbotapi.Params, error) {
-	if len(cached) == 1 && cached[0].kind == "photo" && post.Quote == nil && len(parents) == 0 && !more {
-		if caption := postPhotoCaption(post); caption != "" {
+	if len(cached) == 1 && post.Quote == nil && len(parents) == 0 && !more {
+		if caption := postMediaCaption(post); caption != "" {
 			payload, err := json.Marshal(map[string]any{
-				"type": "photo", "media": cached[0].id, "caption": caption, "parse_mode": "HTML",
+				"type": cached[0].kind, "media": cached[0].id, "caption": caption, "parse_mode": "HTML",
 				"show_caption_above_media": true,
 			})
 			return "editMessageMedia", tgbotapi.Params{"media": string(payload)}, err
