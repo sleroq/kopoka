@@ -177,7 +177,7 @@ func richPostBody(text string) string {
 
 var postTextLinks = regexp.MustCompile(`https?://[^\s<>]+|@[A-Za-z0-9_]{1,15}`)
 
-func richPostLinkedBody(value string) string {
+func postLinkedBodyHTML(value string) string {
 	var markup strings.Builder
 	end := 0
 	for _, match := range postTextLinks.FindAllStringIndex(value, -1) {
@@ -193,16 +193,35 @@ func richPostLinkedBody(value string) string {
 		if label[0] == '@' {
 			target = "https://x.com/" + label[1:]
 		}
-		markup.WriteString(richPostBody(value[end:start]))
+		markup.WriteString(html.EscapeString(value[end:start]))
 		fmt.Fprintf(&markup, `<a href="%s">%s</a>`, html.EscapeString(target), html.EscapeString(label))
 		end = start + len(label)
 	}
-	markup.WriteString(richPostBody(value[end:]))
+	markup.WriteString(html.EscapeString(value[end:]))
 	return markup.String()
+}
+
+func richPostLinkedBody(value string) string {
+	return strings.ReplaceAll(postLinkedBodyHTML(value), "\n", "<br>")
 }
 
 func richPostAuthor(post *fxRichPost) string {
 	return "<b>" + xPostAuthorHTML(post) + "</b>"
+}
+
+func postPhotoCaption(post *fxRichPost) string {
+	text, poll := post.Text, post.Poll.text()
+	if text != "" {
+		text = "\n\n" + text
+	}
+	if poll != "" {
+		poll = "\n\n" + poll
+	}
+	// Keep posts that exceed Telegram's caption limit in a rich message.
+	if utf8.RuneCountInString(post.Author.Name+" on X"+text+poll) > 1024 {
+		return ""
+	}
+	return richPostAuthor(post) + " on X" + postLinkedBodyHTML(text) + html.EscapeString(poll)
 }
 
 func limitRichPostText(post *fxRichPost, parents []*fxRichPost) map[*fxRichPost]string {
@@ -332,6 +351,20 @@ func richXPost(post *fxRichPost, parents []*fxRichPost, more bool, cached map[*f
 	return result
 }
 
+func renderInlinePostText(post *fxRichPost, parents []*fxRichPost, more bool, byPost map[*fxRichPost][]cachedPostMedia, cached []cachedPostMedia) (string, tgbotapi.Params, error) {
+	if len(cached) == 1 && cached[0].kind == "photo" && post.Quote == nil && len(parents) == 0 && !more {
+		if caption := postPhotoCaption(post); caption != "" {
+			payload, err := json.Marshal(map[string]any{
+				"type": "photo", "media": cached[0].id, "caption": caption, "parse_mode": "HTML",
+				"show_caption_above_media": true,
+			})
+			return "editMessageMedia", tgbotapi.Params{"media": string(payload)}, err
+		}
+	}
+	payload, err := json.Marshal(richXPost(post, parents, more, byPost, cached))
+	return "editMessageText", tgbotapi.Params{"rich_message": string(payload)}, err
+}
+
 func editInlinePostText(ctx context.Context, bot *tgbotapi.BotAPI, db *sql.DB, chosen *tgbotapi.ChosenInlineResult, cacheChat string, link *url.URL, r *inlineRetry) error {
 	type thread struct {
 		post    *fxRichPost
@@ -389,19 +422,16 @@ func editInlinePostText(ctx context.Context, bot *tgbotapi.BotAPI, db *sql.DB, c
 		offset += count
 	}
 	_, render := startInlineSpan(ctx, "post_text.render_message")
-	payload, err := json.Marshal(richXPost(post, parents, more, byPost, cached))
+	method, params, err := renderInlinePostText(post, parents, more, byPost, cached)
 	inlineSpanError(render, err)
 	render.End()
 	if err != nil {
 		return err
 	}
-	params := tgbotapi.Params{
-		"inline_message_id": chosen.InlineMessageID,
-		"reply_markup":      `{"inline_keyboard":[]}`,
-		"rich_message":      string(payload),
-	}
+	params["inline_message_id"] = chosen.InlineMessageID
+	params["reply_markup"] = `{"inline_keyboard":[]}`
 
-	if err := editInlineMessage(bot, r, "editMessageText", params); err != nil {
+	if err := editInlineMessage(bot, r, method, params); err != nil {
 		return fmt.Errorf("editing inline post: %w", err)
 	}
 	if err := recordInlineSelection(ctx, db, chosen.From.ID, artworkID(xPostLink(link))); err != nil {

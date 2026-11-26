@@ -99,15 +99,6 @@ func (s *postTextServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"photos": []map[string]string{{"url": "https://media.example/long.jpg"}},
 			},
 		}})
-	case "/user/status/8":
-		_, _ = fmt.Fprint(w, `{
-			"code": 200,
-			"tweet": {
-				"text": "Still here",
-				"author": {"name": "Reply", "screen_name": "user"},
-				"replying_to_status": "99"
-			}
-		}`)
 	case "/user/status/9":
 		_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "tweet": map[string]any{
 			"author": map[string]string{"name": "Long", "screen_name": "user"}, "text": strings.Repeat("a", 20000),
@@ -138,6 +129,19 @@ func (s *postTextServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				{"url":"https://media.example/mid.mp4","container":"mp4","bitrate":832000}
 			]}]}}}`)
 
+	case "/user/status/8", "/user/status/15", "/user/status/16":
+		extra := ""
+		switch r.URL.Path {
+		case "/user/status/8":
+			extra = `, "replying_to_status": "99"`
+		case "/user/status/16":
+			extra = `, "quote": {"text": "Quoted post", "author": {"name": "Quoted"}}`
+		}
+		_, _ = fmt.Fprintf(w, `{"code":200,"tweet":{
+			"text":"Photo <text> & @alice\nSecond line",
+			"author":{"name":"Artist & Co","screen_name":"user"},
+			"media":{"photos":[{"url":"https://media.example/main.jpg"}]}%s
+		}}`, extra)
 	case "/i/status/99":
 		http.Error(w, "unavailable", http.StatusNotFound)
 	default:
@@ -323,6 +327,66 @@ func TestXPostRichMessageActions(t *testing.T) {
 	if len(keyboard.InlineKeyboard) != 3 || keyboard.InlineKeyboard[2][0].SwitchInlineQueryCurrentChat == nil ||
 		*keyboard.InlineKeyboard[2][0].SwitchInlineQueryCurrentChat != "https://x.com/user/status/5" {
 		t.Fatalf("wrong post action: %s", api.message.Get("reply_markup"))
+	}
+}
+
+func TestXPostInlinePhotoCaption(t *testing.T) {
+	db := testArtworkDB(t)
+	api := &postTextServer{t: t}
+	server := httptest.NewServer(api)
+	t.Cleanup(server.Close)
+	target, _ := url.Parse(server.URL)
+	original := http.DefaultTransport
+	http.DefaultTransport = redirectTransport{target, original}
+	t.Cleanup(func() { http.DefaultTransport = original })
+	bot, err := tgbotapi.NewBotAPIWithAPIEndpoint("token", server.URL+"/bot%s/%s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue := newMediaQueue(mediaLimits{concurrency: 1, queuePerUser: 20, perHour: 100, perDay: 600})
+
+	for _, tc := range []struct{ name, id, richText string }{
+		{name: "single photo", id: "15"},
+		{name: "oversize caption", id: "7", richText: strings.Repeat("😀", 2100)},
+		{name: "reply with missing parent", id: "8", richText: "Reply thread on"},
+		{name: "quote", id: "16", richText: "Quoted post"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := len(api.edits)
+			handleChosenInlineResult(time.Now(), bot, nil, db, &tgbotapi.ChosenInlineResult{
+				From: &tgbotapi.User{ID: 1}, ResultID: inlinePostTextID, InlineMessageID: "inline",
+				Query: "https://x.com/user/status/" + tc.id,
+			}, "@cache", queue, nil)
+			if len(api.edits) != before+1 {
+				t.Fatalf("expected one edit, got %d", len(api.edits)-before)
+			}
+			edit := api.edits[before]
+			if tc.richText != "" {
+				if edit.Get("media") != "" || !strings.Contains(edit.Get("rich_message"), tc.richText) {
+					t.Fatalf("expected rich message, got %v", edit)
+				}
+				return
+			}
+			type photoEdit struct {
+				Type              string `json:"type"`
+				Media             string `json:"media"`
+				Caption           string `json:"caption"`
+				ParseMode         string `json:"parse_mode"`
+				CaptionAboveMedia bool   `json:"show_caption_above_media"`
+			}
+			var photo photoEdit
+			if err := json.Unmarshal([]byte(edit.Get("media")), &photo); err != nil {
+				t.Fatalf("expected photo edit: %v (%v)", err, edit)
+			}
+			want := photoEdit{
+				Type: "photo", Media: "file1", ParseMode: "HTML", CaptionAboveMedia: true,
+				Caption: `<b><a href="https://x.com/user/status/15">Artist &amp; Co</a></b> on X` + "\n\n" +
+					`Photo &lt;text&gt; &amp; <a href="https://x.com/alice">@alice</a>` + "\nSecond line",
+			}
+			if photo != want || edit.Get("rich_message") != "" {
+				t.Fatalf("unexpected photo edit: %v", edit)
+			}
+		})
 	}
 }
 
